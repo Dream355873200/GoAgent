@@ -64,13 +64,13 @@
 ### 安装
 
 ```bash
-go install github.com/anthropic-community/goagent@latest
+go install github.com/Dream355873200/GoAgent@latest
 ```
 
 或克隆源码：
 
 ```bash
-git clone https://github.com/anthropic-community/goagent.git
+git clone https://github.com/Dream355873200/GoAgent.git
 cd goagent
 go build -o goagent ./cmd/goagent
 ```
@@ -87,7 +87,7 @@ package main
 import (
     "os"
 
-    "github.com/anthropic-community/goagent"
+    "github.com/Dream355873200/GoAgent"
 )
 
 func main() {
@@ -114,8 +114,8 @@ import (
     "context"
     "os"
 
-    "github.com/anthropic-community/goagent"
-    "github.com/anthropic-community/goagent/hooks"
+    "github.com/Dream355873200/GoAgent"
+    "github.com/Dream355873200/GoAgent/hooks"
 )
 
 type DeployInput struct {
@@ -1040,7 +1040,7 @@ app := goagent.New(
 从自定义文件加载提示词：
 
 ```go
-import "github.com/anthropic-community/goagent/prompts"
+import "github.com/Dream355873200/GoAgent/prompts"
 
 // 加载内置提示词
 identity := prompts.MustLoad(prompts.Identity)

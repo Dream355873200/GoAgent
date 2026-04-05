@@ -1,6 +1,6 @@
 package builtin
 
-import "github.com/anthropic-community/goagent"
+import "github.com/Dream355873200/GoAgent"
 
 // FileKit 返回文件操作工具包：Read、Write、Edit。
 // 适用于需要读写文件但不需要搜索和命令执行的场景。

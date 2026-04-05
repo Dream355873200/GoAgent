@@ -1,4 +1,4 @@
-module github.com/anthropic-community/goagent
+module github.com/Dream355873200/GoAgent
 
 go 1.24.2
 

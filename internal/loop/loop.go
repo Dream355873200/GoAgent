@@ -12,14 +12,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/anthropic-community/goagent/budget"
-	"github.com/anthropic-community/goagent/compaction"
-	"github.com/anthropic-community/goagent/executor"
-	"github.com/anthropic-community/goagent/memory"
-	"github.com/anthropic-community/goagent/message"
-	"github.com/anthropic-community/goagent/observer"
-	"github.com/anthropic-community/goagent/permission"
-	"github.com/anthropic-community/goagent/provider"
+	"github.com/Dream355873200/GoAgent/budget"
+	"github.com/Dream355873200/GoAgent/compaction"
+	"github.com/Dream355873200/GoAgent/executor"
+	"github.com/Dream355873200/GoAgent/memory"
+	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/observer"
+	"github.com/Dream355873200/GoAgent/permission"
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // Config 包含循环运行所需的一切。

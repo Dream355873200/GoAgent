@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anthropic-community/goagent"
+	"github.com/Dream355873200/GoAgent"
 )
 
 // WebSearchInput 是 WebSearch 工具的输入。

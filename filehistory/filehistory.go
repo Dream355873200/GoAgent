@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anthropic-community/goagent"
+	"github.com/Dream355873200/GoAgent"
 )
 
 // Snapshot 表示一个文件快照。

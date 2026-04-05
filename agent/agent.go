@@ -11,8 +11,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/anthropic-community/goagent/message"
-	"github.com/anthropic-community/goagent/provider"
+	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // Definition 定义一个子 agent。

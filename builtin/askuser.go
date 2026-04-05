@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/anthropic-community/goagent"
+	"github.com/Dream355873200/GoAgent"
 )
 
 // AskUserInput 是 AskUser 工具的输入。

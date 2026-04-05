@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anthropic-community/goagent/task"
+	"github.com/Dream355873200/GoAgent/task"
 )
 
 // runHTTP 启动带 SSE 流式端点的 HTTP 服务器。

@@ -20,8 +20,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 
-	"github.com/anthropic-community/goagent/message"
-	"github.com/anthropic-community/goagent/provider"
+	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // Provider 实现 provider.Provider，对接 Anthropic Claude API。

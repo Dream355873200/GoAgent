@@ -26,7 +26,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anthropic-community/goagent/provider"
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // EventKind 分类 Observer 的事件类型。

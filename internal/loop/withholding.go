@@ -7,7 +7,7 @@
 package loop
 
 import (
-	"github.com/anthropic-community/goagent/provider"
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // WithholdReason 描述暂扣事件的原因。

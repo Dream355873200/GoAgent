@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/anthropic-community/goagent"
+	"github.com/Dream355873200/GoAgent"
 )
 
 // ImageInput 是通用图片读取的输入。

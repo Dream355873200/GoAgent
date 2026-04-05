@@ -16,8 +16,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/anthropic-community/goagent/message"
-	"github.com/anthropic-community/goagent/provider"
+	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // Config 是 OpenAI Provider 的配置。

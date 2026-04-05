@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // CompactBoundaryIndex 返回最后一个压缩边界消息的索引。

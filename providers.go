@@ -1,9 +1,9 @@
 package goagent
 
 import (
-	"github.com/anthropic-community/goagent/provider"
-	"github.com/anthropic-community/goagent/provider/anthropic"
-	"github.com/anthropic-community/goagent/provider/openai"
+	"github.com/Dream355873200/GoAgent/provider"
+	"github.com/Dream355873200/GoAgent/provider/anthropic"
+	"github.com/Dream355873200/GoAgent/provider/openai"
 )
 
 // Anthropic creates an Anthropic provider with the given API key.

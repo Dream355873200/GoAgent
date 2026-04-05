@@ -9,8 +9,8 @@ package loop
 import (
 	"context"
 
-	"github.com/anthropic-community/goagent/compaction"
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/compaction"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // PreprocessResult 包含预处理的结果。

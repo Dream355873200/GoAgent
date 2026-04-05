@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anthropic-community/goagent/message"
-	"github.com/anthropic-community/goagent/sessionmem"
+	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/sessionmem"
 )
 
 // SessionMemoryConfig 配置 SessionMemory 压缩。

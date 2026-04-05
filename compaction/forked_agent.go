@@ -5,8 +5,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/anthropic-community/goagent/message"
-	"github.com/anthropic-community/goagent/provider"
+	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // ForkedAgentConfig 配置 forked agent。

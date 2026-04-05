@@ -3,8 +3,8 @@ package goagent
 import (
 	"encoding/json"
 
-	"github.com/anthropic-community/goagent/message"
-	"github.com/anthropic-community/goagent/provider"
+	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // EventType categorizes events emitted by the agent loop.

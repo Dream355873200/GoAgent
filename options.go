@@ -1,16 +1,16 @@
 package goagent
 
 import (
-	"github.com/anthropic-community/goagent/agent"
-	"github.com/anthropic-community/goagent/bgtask"
-	"github.com/anthropic-community/goagent/hooks"
-	"github.com/anthropic-community/goagent/observer"
-	"github.com/anthropic-community/goagent/permission"
-	"github.com/anthropic-community/goagent/plan"
-	"github.com/anthropic-community/goagent/provider"
-	"github.com/anthropic-community/goagent/session"
-	"github.com/anthropic-community/goagent/sessionmem"
-	"github.com/anthropic-community/goagent/task"
+	"github.com/Dream355873200/GoAgent/agent"
+	"github.com/Dream355873200/GoAgent/bgtask"
+	"github.com/Dream355873200/GoAgent/hooks"
+	"github.com/Dream355873200/GoAgent/observer"
+	"github.com/Dream355873200/GoAgent/permission"
+	"github.com/Dream355873200/GoAgent/plan"
+	"github.com/Dream355873200/GoAgent/provider"
+	"github.com/Dream355873200/GoAgent/session"
+	"github.com/Dream355873200/GoAgent/sessionmem"
+	"github.com/Dream355873200/GoAgent/task"
 )
 
 // Option configures an App.

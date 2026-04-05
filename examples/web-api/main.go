@@ -33,9 +33,9 @@ import (
 	"os"
 	"sync"
 
-	"github.com/anthropic-community/goagent"
-	_ "github.com/anthropic-community/goagent/builtin" // 注册内置工具
-	"github.com/anthropic-community/goagent/provider/openai"
+	"github.com/Dream355873200/GoAgent"
+	_ "github.com/Dream355873200/GoAgent/builtin" // 注册内置工具
+	"github.com/Dream355873200/GoAgent/provider/openai"
 )
 
 func main() {

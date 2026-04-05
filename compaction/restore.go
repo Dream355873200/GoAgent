@@ -9,7 +9,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // PostCompactMaxFilesToRestore 是压缩后最多恢复的文件数。

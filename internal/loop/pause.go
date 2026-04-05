@@ -7,7 +7,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // ToolState 工具执行状态。

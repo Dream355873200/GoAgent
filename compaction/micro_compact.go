@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // 常见的可压缩工具类型（对齐 Claude Code 的 COMPACTABLE_TOOLS）。

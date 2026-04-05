@@ -18,8 +18,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/anthropic-community/goagent/message"
-	"github.com/anthropic-community/goagent/provider"
+	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // Summarizer 是一个文本摘要函数。它将本包与特定 LLM 提供者解耦 —

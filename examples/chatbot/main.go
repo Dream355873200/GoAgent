@@ -31,10 +31,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/anthropic-community/goagent"
-	"github.com/anthropic-community/goagent/builtin"
-	"github.com/anthropic-community/goagent/provider/openai"
-	"github.com/anthropic-community/goagent/sessionmem"
+	"github.com/Dream355873200/GoAgent"
+	"github.com/Dream355873200/GoAgent/builtin"
+	"github.com/Dream355873200/GoAgent/provider/openai"
+	"github.com/Dream355873200/GoAgent/sessionmem"
 )
 
 func main() {

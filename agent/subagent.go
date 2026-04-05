@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/anthropic-community/goagent/message"
-	"github.com/anthropic-community/goagent/provider"
+	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // AgentDefinition 定义一个子 agent 的配置。

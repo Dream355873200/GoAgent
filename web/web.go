@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anthropic-community/goagent"
+	"github.com/Dream355873200/GoAgent"
 )
 
 // ── WebFetch ──────────────────────────────────────────────────

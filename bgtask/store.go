@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // StoreInterface 是后台任务存储的接口。

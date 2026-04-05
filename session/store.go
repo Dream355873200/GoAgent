@@ -3,7 +3,7 @@ package session
 import (
 	"context"
 
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // SessionStore 是会话持久化的抽象接口。

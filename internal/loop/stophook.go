@@ -10,7 +10,7 @@ package loop
 import (
 	"context"
 
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // StopHookResult 是 stop hook 的执行结果。

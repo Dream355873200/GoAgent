@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/anthropic-community/goagent/prompts"
+	"github.com/Dream355873200/GoAgent/prompts"
 )
 
 // CompactMode 决定使用哪种摘要模式。

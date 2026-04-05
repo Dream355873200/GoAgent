@@ -11,10 +11,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/anthropic-community/goagent/extractmem"
-	"github.com/anthropic-community/goagent/memory"
-	"github.com/anthropic-community/goagent/session"
-	"github.com/anthropic-community/goagent/tui"
+	"github.com/Dream355873200/GoAgent/extractmem"
+	"github.com/Dream355873200/GoAgent/memory"
+	"github.com/Dream355873200/GoAgent/session"
+	"github.com/Dream355873200/GoAgent/tui"
 )
 
 // runCLI 启动交互式 TUI REPL。

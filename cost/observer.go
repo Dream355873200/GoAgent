@@ -23,8 +23,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/anthropic-community/goagent/observer"
-	"github.com/anthropic-community/goagent/provider"
+	"github.com/Dream355873200/GoAgent/observer"
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // Observer 将 cost.Tracker 包装为 observer.Observer。

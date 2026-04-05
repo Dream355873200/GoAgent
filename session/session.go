@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // State 表示会话的当前状态。

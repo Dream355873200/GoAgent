@@ -8,7 +8,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // AgentContext 是子 agent 的运行时上下文。

@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // Status 是后台任务的状态。

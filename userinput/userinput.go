@@ -14,7 +14,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/anthropic-community/goagent/skill"
+	"github.com/Dream355873200/GoAgent/skill"
 )
 
 // Action 是输入处理后的动作类型。

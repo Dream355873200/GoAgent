@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // Manager 是面向开发者的会话管理器。

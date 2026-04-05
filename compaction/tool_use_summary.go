@@ -4,7 +4,7 @@ package compaction
 import (
 	"strings"
 
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // ToolUseSummaryConfig 配置工具使用摘要。

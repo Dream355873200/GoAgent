@@ -29,7 +29,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/anthropic-community/goagent/userinput"
+	"github.com/Dream355873200/GoAgent/userinput"
 )
 
 // ── 解耦接口 ────────────────────────────────────────────────────────

@@ -14,9 +14,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anthropic-community/goagent/memory"
-	"github.com/anthropic-community/goagent/message"
-	"github.com/anthropic-community/goagent/provider"
+	"github.com/Dream355873200/GoAgent/memory"
+	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // Extractor 负责从对话中提取记忆。

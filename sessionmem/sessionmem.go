@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anthropic-community/goagent/message"
-	"github.com/anthropic-community/goagent/provider"
+	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // Config 配置 SessionMemory 的提取阈值。

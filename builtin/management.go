@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anthropic-community/goagent"
-	"github.com/anthropic-community/goagent/bgtask"
-	"github.com/anthropic-community/goagent/cron"
-	"github.com/anthropic-community/goagent/plan"
-	"github.com/anthropic-community/goagent/skill"
-	"github.com/anthropic-community/goagent/task"
-	"github.com/anthropic-community/goagent/worktree"
+	"github.com/Dream355873200/GoAgent"
+	"github.com/Dream355873200/GoAgent/bgtask"
+	"github.com/Dream355873200/GoAgent/cron"
+	"github.com/Dream355873200/GoAgent/plan"
+	"github.com/Dream355873200/GoAgent/skill"
+	"github.com/Dream355873200/GoAgent/task"
+	"github.com/Dream355873200/GoAgent/worktree"
 )
 
 // ManagementTools 返回所有管理类内置工具（Task/Plan/Skill/Cron/Worktree）。

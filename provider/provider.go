@@ -6,7 +6,7 @@ package provider
 import (
 	"context"
 
-	"github.com/anthropic-community/goagent/message"
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // Provider is the interface that all LLM backends must implement.
