@@ -132,6 +132,7 @@ func runHTTP(app *App, addr string) error {
 				Text:       ev.Text,
 				Thinking:   ev.Thinking,
 				ToolName:   ev.ToolName,
+				ToolUseID:  ev.ToolUseID,
 				ToolResult: ev.ToolResult,
 				Error:      errString(ev.Error),
 				Usage:      usageFromEvent(ev),
@@ -525,6 +526,7 @@ type sseEvent struct {
 	Text       string    `json:"text,omitempty"`
 	Thinking   string    `json:"thinking,omitempty"`
 	ToolName   string    `json:"tool_name,omitempty"`
+	ToolUseID  string    `json:"tool_use_id,omitempty"`
 	ToolResult string    `json:"tool_result,omitempty"`
 	Error      string    `json:"error,omitempty"`
 	Usage      *sseUsage `json:"usage,omitempty"`

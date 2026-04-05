@@ -81,6 +81,10 @@ type Event struct {
 	// ToolInput is set for EventToolStart and EventNeedApproval (JSON).
 	ToolInput json.RawMessage
 
+	// ToolUseID is set for EventToolStart and EventToolDone.
+	// 对齐 Claude Code 的 ToolUseBlock.id，用于前端关联 tool_start 和 tool_result。
+	ToolUseID string
+
 	// ToolResult is set for EventToolDone.
 	ToolResult string
 

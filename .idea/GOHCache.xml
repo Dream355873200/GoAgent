@@ -1,0 +1,4068 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="GoORMHelperCache">
+    <option name="schemaMapping">
+      <map>
+        <entry key="AIClassifier">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission/classifier.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AIClassifierConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission/classifier.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AgentCapability">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/swarm.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AgentContext">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/context.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AgentDefinition">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/subagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AgentToolEntry">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/tool.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AgentToolInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/tool.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AnalyticsEvent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/analytics/analytics.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="App">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/goagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ApprovalRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tui/bridge.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ApprovalResponse">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tui/bridge.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AskUserHTTPRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/askuser_handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AskUserHandler">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/askuser_handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AskUserInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/askuser.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AskUserRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/askuser_handler.go" />
+              <option value="file://$PROJECT_DIR$/tui/bridge.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AskUserResponse">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tui/bridge.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Attachment">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/message/attachment.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AttachmentConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/message/attachment.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AttachmentManager">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/message/attachment.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Attempt">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/retry/retry.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AutoCompactTracking">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/compaction.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AutoDegradeMiddleware">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tools/degrade.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AutoMemory">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/memory/automemory.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="AutoRefreshConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/hooks/tool_refresh.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="BaseQueryEvent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/query_tracking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="BashClassifier">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission/classifier.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="BashInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/bash.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="BoundaryMetadata">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/boundary.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="BraveBackend">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/web/web.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Builder">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sysprompt/sysprompt.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="BuiltinSkillProvider">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/skill/builtin.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="CacheControl">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/provider.go" />
+              <option value="file://$PROJECT_DIR$/sysprompt/sysprompt.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Capabilities">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/provider.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="CheckResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/budget/budget.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ClassificationResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission/classifier.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ClaudeMDConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/memory/claudemd.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ClaudeMDLayer">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/memory/claudemd.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Client">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/client.go" />
+              <option value="file://$PROJECT_DIR$/websocket/client.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="CommandHook">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/hooks/command.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="CompactConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/compact_main.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="CompactionConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/options.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="CompactionResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/session_memory.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Config">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/budget/budget.go" />
+              <option value="file://$PROJECT_DIR$/compaction/compaction.go" />
+              <option value="file://$PROJECT_DIR$/executor/executor.go" />
+              <option value="file://$PROJECT_DIR$/internal/loop/loop.go" />
+              <option value="file://$PROJECT_DIR$/memory/memory.go" />
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+              <option value="file://$PROJECT_DIR$/retry/retry.go" />
+              <option value="file://$PROJECT_DIR$/sessionmem/sessionmem.go" />
+              <option value="file://$PROJECT_DIR$/thinking/thinking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ContentBlock">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/message/message.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ContentItem">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/types.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Context">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/context.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="CostSummary">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/cost/cost.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Decision">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/internal/loop/loop.go" />
+              <option value="file://$PROJECT_DIR$/middleware.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="DefaultForkedAgent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/forked_agent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="DefaultPostCompactCleanup">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/hooks.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="DefaultSubAgent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/subagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="DefaultThinkingProvider">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/thinking/thinking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="DefaultThinkingSummarizer">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/thinking/thinking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Definition">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/agent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="DegradationAwareModifier">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tools/degrade.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="DegradationTracker">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tools/degrade.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="EditInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/tools.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Event">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/driver/driver.go" />
+              <option value="file://$PROJECT_DIR$/event.go" />
+              <option value="file://$PROJECT_DIR$/internal/loop/loop.go" />
+              <option value="file://$PROJECT_DIR$/tui/model.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ExecuteResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/driver/driver.go" />
+              <option value="file://$PROJECT_DIR$/goagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Executor">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/executor/executor.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Extractor">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/extractmem/extractmem.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="FastModeConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/fast_mode.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="FastModeProvider">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/fast_mode.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="FileBasedSkillProvider">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/skill/builtin.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="FileStore">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/session/store.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="FileTracker">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/restore.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ForkedAgentConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/forked_agent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ForkedAgentResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/forked_agent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="FrameworkTool">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/tools.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="FuncHook">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/hooks/command.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Gate">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission/permission.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="GlobInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/tools.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="GrepInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/tools.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="HTTPTransport">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/transport.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Handler">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/websocket/handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="HandoffResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/swarm.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="HookContext">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/hooks/hooks.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="HookResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/hooks/hooks.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ImageInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/media.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="InternalPlanConfirmRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/planconfirm_handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="InterruptHandler">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/interrupt_handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Job">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/cron/cron.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ListSummary">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/task/task.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Loop">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/internal/loop/loop.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="MCPServerConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/subagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="MCPSkillProvider">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/skill/builtin.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ManagementDeps">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/management.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Manager">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/bgtask/bgtask.go" />
+              <option value="file://$PROJECT_DIR$/compaction/compaction.go" />
+              <option value="file://$PROJECT_DIR$/hooks/hooks.go" />
+              <option value="file://$PROJECT_DIR$/memory/memory.go" />
+              <option value="file://$PROJECT_DIR$/plan/plan.go" />
+              <option value="file://$PROJECT_DIR$/session/manager.go" />
+              <option value="file://$PROJECT_DIR$/worktree/worktree.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="MaxOutputTokensError">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/provider.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="MemoryEntry">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/extractmem/extractmem.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="MemoryFile">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/memory/automemory.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="MemoryStore">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/session/store.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Message">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/message/message.go" />
+              <option value="file://$PROJECT_DIR$/websocket/handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Metadata">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/session/session.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="MicrocompactConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/micro_compact.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="MicrocompactResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/micro_compact.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Middleware">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/filehistory/filehistory.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="MiddlewareWithFilter">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/middleware.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Model">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tui/model.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ModelPricing">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/cost/cost.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="MultiObserver">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/observer/observer.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="NamedTool">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/goagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="NopObserver">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/observer/observer.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="NotebookAddCellInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/notebook.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="NotebookEditInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/notebook.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="NotebookInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/media.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="NotebookRunCellInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/notebook.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Observer">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/analytics/observer.go" />
+              <option value="file://$PROJECT_DIR$/cost/observer.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="OverloadError">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/provider.go" />
+              <option value="file://$PROJECT_DIR$/retry/retry.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PDFInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/media.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PauseManager">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/internal/loop/pause.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PausePoint">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/internal/loop/pause.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PermissionCheck">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tool.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PermissionHandler">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission_handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PermissionPredictor">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission/classifier.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PermissionRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission_handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PermissionResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission/permission.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PermissionRules">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/options.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PlanConfirmHTTPRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/planconfirm_handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PlanConfirmHandler">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/planconfirm_handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PlanConfirmRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/planconfirm_handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PostCompactCleanupRunner">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/hooks.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PreCompactHookRunner">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/hooks.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PreCompactResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/hooks.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PreprocessResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/internal/loop/preprocess.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Preprocessor">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/internal/loop/preprocess.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Processor">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/userinput/userinput.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PromptConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/options.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PromptTooLongError">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/provider.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PromptsCapability">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/types.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Provider">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/anthropic/anthropic.go" />
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Query">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/query_tracking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="QueryContext">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/query_tracking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="QueryTracker">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/query_tracking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="RateLimitError">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/retry/retry.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ReadInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/tools.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Record">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/session/storage.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Registry">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/skill/skill.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Request">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/types.go" />
+              <option value="file://$PROJECT_DIR$/provider/provider.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ResourcesCapability">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/types.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Response">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/types.go" />
+              <option value="file://$PROJECT_DIR$/provider/provider.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ResponseError">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/types.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Result">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tool.go" />
+              <option value="file://$PROJECT_DIR$/userinput/userinput.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ResumableLoop">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/internal/loop/pause.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="RetryStreamProvider">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/fallback.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Router">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/swarm.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Rule">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission/rules.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="RuleSet">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission/rules.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="RunResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/agent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Runner">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/agent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Scheduler">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/cron/cron.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SearchResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/web/web.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Section">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sysprompt/sysprompt.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ServerCapabilities">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/types.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ServerError">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/retry/retry.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ServerInfo">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/client.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Session">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/session/session.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SessionInfo">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tui/model.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SessionMemory">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sessionmem/sessionmem.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SessionMemoryConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/session_memory.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SessionSummary">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/session/store.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Skill">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/skill/skill.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SlashCommandInfo">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tui/commands.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SlowThinkingProvider">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/thinking/thinking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Snapshot">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/filehistory/filehistory.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="StdioTransport">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/transport.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="StopHookResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/internal/loop/stophook.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="StopHookRunner">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/internal/loop/stophook.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Storage">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/session/storage.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Store">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/filehistory/filehistory.go" />
+              <option value="file://$PROJECT_DIR$/task/task.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="StreamEvent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/subagent.go" />
+              <option value="file://$PROJECT_DIR$/provider/provider.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="StreamingExecutor">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/executor/executor.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="StreamingFallbackProvider">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/fallback.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SubAgentConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/subagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SubAgentManager">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/subagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SubAgentResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/subagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Summary">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/analytics/analytics.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SummaryConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/summary.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SwarmAgent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/swarm.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SwarmConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/swarm.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SyncObservable">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/observer/observer.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SystemBlock">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/provider.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="TUIApprover">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tui/bridge.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="TUIAsker">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tui/bridge.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Task">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/task/task.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="TaskOutputInfo">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/bgtask/tools.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="TaskOutputInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/bgtask/tools.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="TaskOutputResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/bgtask/tools.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="TaskState">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/bgtask/bgtask.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="TaskStopInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/bgtask/tools.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="TaskStopResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/bgtask/tools.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="TavilyBackend">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/web/web.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="TextDeltaEvent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/query_tracking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ThinkingBlock">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/thinking/thinking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ThinkingChunk">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/thinking/thinking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ThinkingConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/provider.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ThinkingStats">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/thinking/thinking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolAutoRefresher">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/hooks/tool_refresh.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolCall">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/executor/executor.go" />
+              <option value="file://$PROJECT_DIR$/message/message.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolCallResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/types.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolCallSummary">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/tool_use_summary.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolDef">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/agent.go" />
+              <option value="file://$PROJECT_DIR$/tool.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolDefinition">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/forked_agent.go" />
+              <option value="file://$PROJECT_DIR$/provider/provider.go" />
+              <option value="file://$PROJECT_DIR$/tools/degrade.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolDegradationConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tools/degrade.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolEntry">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/subagent.go" />
+              <option value="file://$PROJECT_DIR$/internal/loop/loop.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolGroup">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/middleware.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolInfo">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/types.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolKit">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/toolkit.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolPattern">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission/matcher.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolRefreshManager">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/hooks/tool_refresh.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/executor/executor.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolResultEvent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/query_tracking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolStat">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/analytics/analytics.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolState">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/internal/loop/pause.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolUseEvent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/query_tracking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolUseSummary">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/tool_use_summary.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolUseSummaryConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/tool_use_summary.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ToolsCapability">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/mcp/types.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="TrackedExecutor">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/executor/tracked.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="TrackedTool">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/executor/tracked.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Tracker">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/analytics/analytics.go" />
+              <option value="file://$PROJECT_DIR$/budget/budget.go" />
+              <option value="file://$PROJECT_DIR$/cost/cost.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="TurnUsage">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/budget/budget.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="UpdatePatch">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/task/task.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Usage">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/provider.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="UsageEvent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/agent/query_tracking.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="UsageInfo">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tui/commands.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="UsageRecord">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/cost/cost.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="WSConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/websocket/handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="WebFetchConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/web/web.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="WebFetchInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/web.go" />
+              <option value="file://$PROJECT_DIR$/web/web.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="WebSearchInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/web.go" />
+              <option value="file://$PROJECT_DIR$/web/web.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="WithheldEvent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/internal/loop/withholding.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Withholder">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/internal/loop/withholding.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Worktree">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/worktree/worktree.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="WriteInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/tools.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="agentEventMsg">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tui/model.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="agentRunnerAdapter">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/cli.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="appConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/options.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="appInfoAdapter">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/cli.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="approveRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="approverAdapter">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/goagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="askUserRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="autoApprover">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/options.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="autoCompressor">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/compaction.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="braveResponse">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/web/web.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="braveResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/web/web.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="braveWeb">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/web/web.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="budgetCompressor">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/compaction.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="chatChoice">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="chatFunction">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="chatFunctionCall">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="chatMessage">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="chatRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="chatResponse">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="chatTool">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="chatToolCall">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="chatUsage">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="collapseCompressor">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/compaction.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="commandHandler">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tui/commands.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="cronCreateInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/management.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="cronDeleteInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/management.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="cronField">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/cron/cron.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="customInstructionsBuilder">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/hooks.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="enterWorktreeInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/management.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="executeResponse">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="exitWorktreeInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/management.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="fileEntry">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/tools.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="filePathInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/filehistory/filehistory.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="healthResponse">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="hooksRunnerAdapter">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/goagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="interruptRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="loopState">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/internal/loop/loop.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="microCompressor">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/compaction.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="middlewareAdapter">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/goagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="middlewareConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/middleware.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="permRuleEntry">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/options.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="permissionResponse">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission_handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="planCheckerAdapter">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/goagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="planConfirmRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="registeredTool">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/goagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="searchResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/web.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="sessionMemHookAdapter">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/goagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="skillInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/management.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="snipCompressor">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/compaction.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="sseAskUserRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="sseEvent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ssePermissionRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ssePlanConfirmRequest">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="sseUsage">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="stdinApprover">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/cli.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="streamChunk">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="streamChunkChoice">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="streamDelta">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="streamFuncDelta">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="streamToolCall">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="subAgentState">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tui/subagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="subAgentTracker">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/tui/subagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="taskCreateInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/management.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="taskGetInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/management.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="taskOutputInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/management.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="taskStopInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/management.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="taskUpdateInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/management.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="tavilyResponse">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/web/web.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="tavilyResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/web/web.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ticker">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/hooks/tool_refresh.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="toolCallState">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="toolFilter">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/middleware.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="toolInfoResponse">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="trackedFile">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/compaction/restore.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="tuiApproverAdapter">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/cli.go" />
+            </set>
+          </value>
+        </entry>
+      </map>
+    </option>
+    <option name="scannedPathMapping">
+      <map>
+        <entry key="file://$PROJECT_DIR$/agent/agent.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153620891" />
+              <option name="schema">
+                <list>
+                  <option value="Definition" />
+                  <option value="ToolDef" />
+                  <option value="RunResult" />
+                  <option value="Runner" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/agent/context.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153620907" />
+              <option name="schema">
+                <list>
+                  <option value="AgentContext" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/agent/query_tracking.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775299059428" />
+              <option name="schema">
+                <list>
+                  <option value="BaseQueryEvent" />
+                  <option value="TextDeltaEvent" />
+                  <option value="ToolUseEvent" />
+                  <option value="ToolResultEvent" />
+                  <option value="UsageEvent" />
+                  <option value="QueryTracker" />
+                  <option value="Query" />
+                  <option value="QueryContext" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/agent/subagent.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775298174890" />
+              <option name="schema">
+                <list>
+                  <option value="AgentDefinition" />
+                  <option value="MCPServerConfig" />
+                  <option value="SubAgentConfig" />
+                  <option value="ToolEntry" />
+                  <option value="SubAgentResult" />
+                  <option value="StreamEvent" />
+                  <option value="DefaultSubAgent" />
+                  <option value="SubAgentManager" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/agent/swarm.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775298810299" />
+              <option name="schema">
+                <list>
+                  <option value="SwarmConfig" />
+                  <option value="SwarmAgent" />
+                  <option value="HandoffResult" />
+                  <option value="AgentCapability" />
+                  <option value="Router" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/agent/tool.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153620927" />
+              <option name="schema">
+                <list>
+                  <option value="AgentToolInput" />
+                  <option value="AgentToolEntry" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/analytics/analytics.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153861860" />
+              <option name="schema">
+                <list>
+                  <option value="AnalyticsEvent" />
+                  <option value="Tracker" />
+                  <option value="Summary" />
+                  <option value="ToolStat" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/analytics/observer.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775289903664" />
+              <option name="schema">
+                <list>
+                  <option value="Observer" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/askuser_handler.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775304942444" />
+              <option name="schema">
+                <list>
+                  <option value="AskUserRequest" />
+                  <option value="AskUserHandler" />
+                  <option value="AskUserHTTPRequest" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/bgtask/bgtask.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775216045533" />
+              <option name="schema">
+                <list>
+                  <option value="TaskState" />
+                  <option value="Manager" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/bgtask/store.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775290994444" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/bgtask/tools.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775201220721" />
+              <option name="schema">
+                <list>
+                  <option value="TaskStopInput" />
+                  <option value="TaskStopResult" />
+                  <option value="TaskOutputInput" />
+                  <option value="TaskOutputResult" />
+                  <option value="TaskOutputInfo" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/budget/budget.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775154991714" />
+              <option name="schema">
+                <list>
+                  <option value="Config" />
+                  <option value="TurnUsage" />
+                  <option value="CheckResult" />
+                  <option value="Tracker" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/askuser.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775203385484" />
+              <option name="schema">
+                <list>
+                  <option value="AskUserInput" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/bash.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775157188871" />
+              <option name="schema">
+                <list>
+                  <option value="BashInput" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/kits.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775158240929" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/management.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775291007088" />
+              <option name="schema">
+                <list>
+                  <option value="ManagementDeps" />
+                  <option value="taskCreateInput" />
+                  <option value="taskUpdateInput" />
+                  <option value="taskGetInput" />
+                  <option value="skillInput" />
+                  <option value="cronCreateInput" />
+                  <option value="cronDeleteInput" />
+                  <option value="enterWorktreeInput" />
+                  <option value="exitWorktreeInput" />
+                  <option value="taskStopInput" />
+                  <option value="taskOutputInput" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/media.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775299099433" />
+              <option name="schema">
+                <list>
+                  <option value="ImageInput" />
+                  <option value="PDFInput" />
+                  <option value="NotebookInput" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/notebook.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775299074738" />
+              <option name="schema">
+                <list>
+                  <option value="NotebookEditInput" />
+                  <option value="NotebookAddCellInput" />
+                  <option value="NotebookRunCellInput" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/tools.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775298351871" />
+              <option name="schema">
+                <list>
+                  <option value="ReadInput" />
+                  <option value="WriteInput" />
+                  <option value="EditInput" />
+                  <option value="GlobInput" />
+                  <option value="fileEntry" />
+                  <option value="GrepInput" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/web.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775298362295" />
+              <option name="schema">
+                <list>
+                  <option value="WebSearchInput" />
+                  <option value="searchResult" />
+                  <option value="WebFetchInput" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/cli.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775216045491" />
+              <option name="schema">
+                <list>
+                  <option value="agentRunnerAdapter" />
+                  <option value="appInfoAdapter" />
+                  <option value="tuiApproverAdapter" />
+                  <option value="stdinApprover" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/compaction/boundary.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775152928498" />
+              <option name="schema">
+                <list>
+                  <option value="BoundaryMetadata" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/compaction/compact_main.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775297212940" />
+              <option name="schema">
+                <list>
+                  <option value="CompactConfig" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/compaction/compaction.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775296399693" />
+              <option name="schema">
+                <list>
+                  <option value="Config" />
+                  <option value="Manager" />
+                  <option value="AutoCompactTracking" />
+                  <option value="budgetCompressor" />
+                  <option value="snipCompressor" />
+                  <option value="microCompressor" />
+                  <option value="collapseCompressor" />
+                  <option value="autoCompressor" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/compaction/forked_agent.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775297285162" />
+              <option name="schema">
+                <list>
+                  <option value="ForkedAgentConfig" />
+                  <option value="ToolDefinition" />
+                  <option value="ForkedAgentResult" />
+                  <option value="DefaultForkedAgent" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/compaction/hooks.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775297230975" />
+              <option name="schema">
+                <list>
+                  <option value="PreCompactResult" />
+                  <option value="PreCompactHookRunner" />
+                  <option value="customInstructionsBuilder" />
+                  <option value="PostCompactCleanupRunner" />
+                  <option value="DefaultPostCompactCleanup" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/compaction/micro_compact.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775297134292" />
+              <option name="schema">
+                <list>
+                  <option value="MicrocompactConfig" />
+                  <option value="MicrocompactResult" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/compaction/prompt.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775302560669" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/compaction/restore.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775155256717" />
+              <option name="schema">
+                <list>
+                  <option value="FileTracker" />
+                  <option value="trackedFile" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/compaction/session_memory.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775297221597" />
+              <option name="schema">
+                <list>
+                  <option value="SessionMemoryConfig" />
+                  <option value="CompactionResult" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/compaction/summary.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775296330719" />
+              <option name="schema">
+                <list>
+                  <option value="SummaryConfig" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/compaction/tool_use_summary.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775298695309" />
+              <option name="schema">
+                <list>
+                  <option value="ToolUseSummaryConfig" />
+                  <option value="ToolUseSummary" />
+                  <option value="ToolCallSummary" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/compaction/whitelist.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775152928507" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/context.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775148729240" />
+              <option name="schema">
+                <list>
+                  <option value="Context" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/cost/cost.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153722461" />
+              <option name="schema">
+                <list>
+                  <option value="ModelPricing" />
+                  <option value="UsageRecord" />
+                  <option value="CostSummary" />
+                  <option value="Tracker" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/cost/observer.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775289871892" />
+              <option name="schema">
+                <list>
+                  <option value="Observer" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/cron/cron.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775155079201" />
+              <option name="schema">
+                <list>
+                  <option value="Job" />
+                  <option value="Scheduler" />
+                  <option value="cronField" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/driver/driver.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775291065709" />
+              <option name="schema">
+                <list>
+                  <option value="Event" />
+                  <option value="ExecuteResult" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/event.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775300126802" />
+              <option name="schema">
+                <list>
+                  <option value="Event" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/executor/executor.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775213928546" />
+              <option name="schema">
+                <list>
+                  <option value="Config" />
+                  <option value="ToolCall" />
+                  <option value="ToolResult" />
+                  <option value="Executor" />
+                  <option value="StreamingExecutor" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/executor/tracked.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153376092" />
+              <option name="schema">
+                <list>
+                  <option value="TrackedTool" />
+                  <option value="TrackedExecutor" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/extractmem/extractmem.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775200423485" />
+              <option name="schema">
+                <list>
+                  <option value="Extractor" />
+                  <option value="MemoryEntry" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/filehistory/filehistory.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775216045579" />
+              <option name="schema">
+                <list>
+                  <option value="Snapshot" />
+                  <option value="Store" />
+                  <option value="Middleware" />
+                  <option value="filePathInput" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/goagent.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775305085728" />
+              <option name="schema">
+                <list>
+                  <option value="App" />
+                  <option value="registeredTool" />
+                  <option value="NamedTool" />
+                  <option value="ExecuteResult" />
+                  <option value="middlewareAdapter" />
+                  <option value="approverAdapter" />
+                  <option value="hooksRunnerAdapter" />
+                  <option value="planCheckerAdapter" />
+                  <option value="sessionMemHookAdapter" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/hooks/command.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153558577" />
+              <option name="schema">
+                <list>
+                  <option value="CommandHook" />
+                  <option value="FuncHook" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/hooks/hooks.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153558559" />
+              <option name="schema">
+                <list>
+                  <option value="HookContext" />
+                  <option value="HookResult" />
+                  <option value="Manager" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/hooks/tool_refresh.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775299020110" />
+              <option name="schema">
+                <list>
+                  <option value="ToolRefreshManager" />
+                  <option value="AutoRefreshConfig" />
+                  <option value="ToolAutoRefresher" />
+                  <option value="ticker" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/http.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775305039391" />
+              <option name="schema">
+                <list>
+                  <option value="chatRequest" />
+                  <option value="sseEvent" />
+                  <option value="ssePermissionRequest" />
+                  <option value="sseAskUserRequest" />
+                  <option value="ssePlanConfirmRequest" />
+                  <option value="approveRequest" />
+                  <option value="askUserRequest" />
+                  <option value="planConfirmRequest" />
+                  <option value="interruptRequest" />
+                  <option value="sseUsage" />
+                  <option value="executeResponse" />
+                  <option value="healthResponse" />
+                  <option value="toolInfoResponse" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/internal/loop/loop.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775302619625" />
+              <option name="schema">
+                <list>
+                  <option value="Config" />
+                  <option value="ToolEntry" />
+                  <option value="Decision" />
+                  <option value="Event" />
+                  <option value="loopState" />
+                  <option value="Loop" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/internal/loop/pause.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775299924767" />
+              <option name="schema">
+                <list>
+                  <option value="ToolState" />
+                  <option value="PausePoint" />
+                  <option value="ResumableLoop" />
+                  <option value="PauseManager" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/internal/loop/preprocess.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153097549" />
+              <option name="schema">
+                <list>
+                  <option value="PreprocessResult" />
+                  <option value="Preprocessor" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/internal/loop/stophook.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153097576" />
+              <option name="schema">
+                <list>
+                  <option value="StopHookResult" />
+                  <option value="StopHookRunner" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/internal/loop/withholding.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153097552" />
+              <option name="schema">
+                <list>
+                  <option value="WithheldEvent" />
+                  <option value="Withholder" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/interrupt_handler.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775304906285" />
+              <option name="schema">
+                <list>
+                  <option value="InterruptHandler" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/mcp/client.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153685040" />
+              <option name="schema">
+                <list>
+                  <option value="Client" />
+                  <option value="ServerInfo" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/mcp/tools.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153685082" />
+              <option name="schema">
+                <list>
+                  <option value="FrameworkTool" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/mcp/transport.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153685056" />
+              <option name="schema">
+                <list>
+                  <option value="StdioTransport" />
+                  <option value="HTTPTransport" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/mcp/types.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153685072" />
+              <option name="schema">
+                <list>
+                  <option value="Request" />
+                  <option value="Response" />
+                  <option value="ResponseError" />
+                  <option value="ToolInfo" />
+                  <option value="ToolCallResult" />
+                  <option value="ContentItem" />
+                  <option value="ServerCapabilities" />
+                  <option value="ToolsCapability" />
+                  <option value="ResourcesCapability" />
+                  <option value="PromptsCapability" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/memory/automemory.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775155237386" />
+              <option name="schema">
+                <list>
+                  <option value="AutoMemory" />
+                  <option value="MemoryFile" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/memory/claudemd.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153507993" />
+              <option name="schema">
+                <list>
+                  <option value="ClaudeMDConfig" />
+                  <option value="ClaudeMDLayer" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/memory/memory.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775161738137" />
+              <option name="schema">
+                <list>
+                  <option value="Config" />
+                  <option value="Manager" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/message/attachment.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775298932278" />
+              <option name="schema">
+                <list>
+                  <option value="AttachmentConfig" />
+                  <option value="Attachment" />
+                  <option value="AttachmentManager" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/message/message.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775159314668" />
+              <option name="schema">
+                <list>
+                  <option value="Message" />
+                  <option value="ContentBlock" />
+                  <option value="ToolCall" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/message/token.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775152928489" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/middleware.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775291843588" />
+              <option name="schema">
+                <list>
+                  <option value="Decision" />
+                  <option value="toolFilter" />
+                  <option value="middlewareConfig" />
+                  <option value="ToolGroup" />
+                  <option value="MiddlewareWithFilter" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/observer/observer.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775289830873" />
+              <option name="schema">
+                <list>
+                  <option value="NopObserver" />
+                  <option value="MultiObserver" />
+                  <option value="SyncObservable" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/options.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775304318333" />
+              <option name="schema">
+                <list>
+                  <option value="appConfig" />
+                  <option value="CompactionConfig" />
+                  <option value="PromptConfig" />
+                  <option value="autoApprover" />
+                  <option value="PermissionRules" />
+                  <option value="permRuleEntry" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/permission/classifier.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775298741148" />
+              <option name="schema">
+                <list>
+                  <option value="AIClassifierConfig" />
+                  <option value="ClassificationResult" />
+                  <option value="AIClassifier" />
+                  <option value="BashClassifier" />
+                  <option value="PermissionPredictor" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/permission/matcher.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153303896" />
+              <option name="schema">
+                <list>
+                  <option value="ToolPattern" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/permission/permission.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775290414058" />
+              <option name="schema">
+                <list>
+                  <option value="PermissionResult" />
+                  <option value="Gate" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/permission/rules.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153303870" />
+              <option name="schema">
+                <list>
+                  <option value="Rule" />
+                  <option value="RuleSet" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/permission_handler.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775158422125" />
+              <option name="schema">
+                <list>
+                  <option value="PermissionRequest" />
+                  <option value="permissionResponse" />
+                  <option value="PermissionHandler" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/plan/plan.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775216123440" />
+              <option name="schema">
+                <list>
+                  <option value="Manager" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/plan/store.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775290488608" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/planconfirm_handler.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775304955754" />
+              <option name="schema">
+                <list>
+                  <option value="PlanConfirmRequest" />
+                  <option value="PlanConfirmHandler" />
+                  <option value="PlanConfirmHTTPRequest" />
+                  <option value="InternalPlanConfirmRequest" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/prompts/prompts.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775302390982" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/provider/anthropic/anthropic.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775212655180" />
+              <option name="schema">
+                <list>
+                  <option value="Provider" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/provider/fallback.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775298871034" />
+              <option name="schema">
+                <list>
+                  <option value="StreamingFallbackProvider" />
+                  <option value="RetryStreamProvider" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/provider/fast_mode.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775298827717" />
+              <option name="schema">
+                <list>
+                  <option value="FastModeConfig" />
+                  <option value="FastModeProvider" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/provider/openai/openai.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775212620509" />
+              <option name="schema">
+                <list>
+                  <option value="Config" />
+                  <option value="Provider" />
+                  <option value="chatRequest" />
+                  <option value="chatMessage" />
+                  <option value="chatTool" />
+                  <option value="chatFunction" />
+                  <option value="chatToolCall" />
+                  <option value="chatFunctionCall" />
+                  <option value="chatResponse" />
+                  <option value="chatChoice" />
+                  <option value="chatUsage" />
+                  <option value="streamChunk" />
+                  <option value="streamChunkChoice" />
+                  <option value="streamDelta" />
+                  <option value="streamToolCall" />
+                  <option value="streamFuncDelta" />
+                  <option value="toolCallState" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/provider/provider.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775212577164" />
+              <option name="schema">
+                <list>
+                  <option value="Request" />
+                  <option value="SystemBlock" />
+                  <option value="CacheControl" />
+                  <option value="ThinkingConfig" />
+                  <option value="ToolDefinition" />
+                  <option value="Response" />
+                  <option value="StreamEvent" />
+                  <option value="Usage" />
+                  <option value="Capabilities" />
+                  <option value="PromptTooLongError" />
+                  <option value="MaxOutputTokensError" />
+                  <option value="OverloadError" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/providers.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775155923292" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/retry/retry.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775154991697" />
+              <option name="schema">
+                <list>
+                  <option value="Config" />
+                  <option value="RateLimitError" />
+                  <option value="ServerError" />
+                  <option value="OverloadError" />
+                  <option value="Attempt" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/schema/reflect.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775149636612" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/session/manager.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775159210270" />
+              <option name="schema">
+                <list>
+                  <option value="Manager" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/session/restore.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153465183" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/session/session.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153443121" />
+              <option name="schema">
+                <list>
+                  <option value="Metadata" />
+                  <option value="Session" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/session/storage.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153443141" />
+              <option name="schema">
+                <list>
+                  <option value="Record" />
+                  <option value="Storage" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/session/store.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775158977989" />
+              <option name="schema">
+                <list>
+                  <option value="SessionSummary" />
+                  <option value="FileStore" />
+                  <option value="MemoryStore" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/sessionmem/sessionmem.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775216045602" />
+              <option name="schema">
+                <list>
+                  <option value="Config" />
+                  <option value="SessionMemory" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/skill/builtin.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775299874772" />
+              <option name="schema">
+                <list>
+                  <option value="BuiltinSkillProvider" />
+                  <option value="FileBasedSkillProvider" />
+                  <option value="MCPSkillProvider" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/skill/skill.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775216206255" />
+              <option name="schema">
+                <list>
+                  <option value="Skill" />
+                  <option value="Registry" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/sysprompt/sysprompt.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775208101227" />
+              <option name="schema">
+                <list>
+                  <option value="Section" />
+                  <option value="CacheControl" />
+                  <option value="Builder" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/task/store.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775290488601" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/task/task.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775154991731" />
+              <option name="schema">
+                <list>
+                  <option value="Task" />
+                  <option value="Store" />
+                  <option value="UpdatePatch" />
+                  <option value="ListSummary" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/thinking/thinking.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775299839448" />
+              <option name="schema">
+                <list>
+                  <option value="Config" />
+                  <option value="ThinkingBlock" />
+                  <option value="ThinkingChunk" />
+                  <option value="DefaultThinkingProvider" />
+                  <option value="SlowThinkingProvider" />
+                  <option value="DefaultThinkingSummarizer" />
+                  <option value="ThinkingStats" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/tool.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775153229415" />
+              <option name="schema">
+                <list>
+                  <option value="PermissionCheck" />
+                  <option value="ToolDef" />
+                  <option value="Result" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/toolkit.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775158253170" />
+              <option name="schema">
+                <list>
+                  <option value="ToolKit" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/tools/degrade.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775299056002" />
+              <option name="schema">
+                <list>
+                  <option value="ToolDegradationConfig" />
+                  <option value="DegradationTracker" />
+                  <option value="DegradationAwareModifier" />
+                  <option value="ToolDefinition" />
+                  <option value="AutoDegradeMiddleware" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/tui/bridge.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775203742807" />
+              <option name="schema">
+                <list>
+                  <option value="ApprovalRequest" />
+                  <option value="ApprovalResponse" />
+                  <option value="TUIApprover" />
+                  <option value="AskUserRequest" />
+                  <option value="AskUserResponse" />
+                  <option value="TUIAsker" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/tui/commands.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775215489565" />
+              <option name="schema">
+                <list>
+                  <option value="UsageInfo" />
+                  <option value="commandHandler" />
+                  <option value="SlashCommandInfo" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/tui/model.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775215496352" />
+              <option name="schema">
+                <list>
+                  <option value="SessionInfo" />
+                  <option value="Event" />
+                  <option value="agentEventMsg" />
+                  <option value="Model" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/tui/signal_unix.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775203592244" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/tui/signal_windows.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775203592256" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/tui/styles.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775209195345" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/tui/subagent.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775211094761" />
+              <option name="schema">
+                <list>
+                  <option value="subAgentState" />
+                  <option value="subAgentTracker" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/tui/toolrender.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775211183186" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/userinput/userinput.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775215800976" />
+              <option name="schema">
+                <list>
+                  <option value="Result" />
+                  <option value="Processor" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/web/web.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775200203829" />
+              <option name="schema">
+                <list>
+                  <option value="WebFetchInput" />
+                  <option value="WebFetchConfig" />
+                  <option value="WebSearchInput" />
+                  <option value="SearchResult" />
+                  <option value="BraveBackend" />
+                  <option value="braveResult" />
+                  <option value="braveWeb" />
+                  <option value="braveResponse" />
+                  <option value="TavilyBackend" />
+                  <option value="tavilyResult" />
+                  <option value="tavilyResponse" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/websocket/client.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775299976026" />
+              <option name="schema">
+                <list>
+                  <option value="Client" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/websocket/handler.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775299954047" />
+              <option name="schema">
+                <list>
+                  <option value="WSConfig" />
+                  <option value="Message" />
+                  <option value="Handler" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/worktree/worktree.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775216045651" />
+              <option name="schema">
+                <list>
+                  <option value="Worktree" />
+                  <option value="Manager" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+      </map>
+    </option>
+    <option name="tableStructMapping">
+      <map>
+        <entry key="agent_capability" value="AgentCapability" />
+        <entry key="agent_context" value="AgentContext" />
+        <entry key="agent_definition" value="AgentDefinition" />
+        <entry key="agent_event_msg" value="agentEventMsg" />
+        <entry key="agent_runner_adapter" value="agentRunnerAdapter" />
+        <entry key="agent_tool_entry" value="AgentToolEntry" />
+        <entry key="agent_tool_input" value="AgentToolInput" />
+        <entry key="ai_classifier" value="AIClassifier" />
+        <entry key="ai_classifier_config" value="AIClassifierConfig" />
+        <entry key="analytics_event" value="AnalyticsEvent" />
+        <entry key="app" value="App" />
+        <entry key="app_config" value="appConfig" />
+        <entry key="app_info_adapter" value="appInfoAdapter" />
+        <entry key="approval_request" value="ApprovalRequest" />
+        <entry key="approval_response" value="ApprovalResponse" />
+        <entry key="approve_request" value="approveRequest" />
+        <entry key="approver_adapter" value="approverAdapter" />
+        <entry key="ask_user_handler" value="AskUserHandler" />
+        <entry key="ask_user_http_request" value="AskUserHTTPRequest" />
+        <entry key="ask_user_input" value="AskUserInput" />
+        <entry key="ask_user_request" value="AskUserRequest" />
+        <entry key="ask_user_response" value="AskUserResponse" />
+        <entry key="attachment" value="Attachment" />
+        <entry key="attachment_config" value="AttachmentConfig" />
+        <entry key="attachment_manager" value="AttachmentManager" />
+        <entry key="attempt" value="Attempt" />
+        <entry key="auto_approver" value="autoApprover" />
+        <entry key="auto_compact_tracking" value="AutoCompactTracking" />
+        <entry key="auto_compressor" value="autoCompressor" />
+        <entry key="auto_degrade_middleware" value="AutoDegradeMiddleware" />
+        <entry key="auto_memory" value="AutoMemory" />
+        <entry key="auto_refresh_config" value="AutoRefreshConfig" />
+        <entry key="base_query_event" value="BaseQueryEvent" />
+        <entry key="bash_classifier" value="BashClassifier" />
+        <entry key="bash_input" value="BashInput" />
+        <entry key="boundary_metadata" value="BoundaryMetadata" />
+        <entry key="brave_backend" value="BraveBackend" />
+        <entry key="brave_response" value="braveResponse" />
+        <entry key="brave_result" value="braveResult" />
+        <entry key="brave_web" value="braveWeb" />
+        <entry key="budget_compressor" value="budgetCompressor" />
+        <entry key="builder" value="Builder" />
+        <entry key="builtin_skill_provider" value="BuiltinSkillProvider" />
+        <entry key="cache_control" value="CacheControl" />
+        <entry key="capabilities" value="Capabilities" />
+        <entry key="chat_choice" value="chatChoice" />
+        <entry key="chat_function" value="chatFunction" />
+        <entry key="chat_function_call" value="chatFunctionCall" />
+        <entry key="chat_message" value="chatMessage" />
+        <entry key="chat_request" value="chatRequest" />
+        <entry key="chat_response" value="chatResponse" />
+        <entry key="chat_tool" value="chatTool" />
+        <entry key="chat_tool_call" value="chatToolCall" />
+        <entry key="chat_usage" value="chatUsage" />
+        <entry key="check_result" value="CheckResult" />
+        <entry key="classification_result" value="ClassificationResult" />
+        <entry key="claude_md_config" value="ClaudeMDConfig" />
+        <entry key="claude_md_layer" value="ClaudeMDLayer" />
+        <entry key="client" value="Client" />
+        <entry key="collapse_compressor" value="collapseCompressor" />
+        <entry key="command_handler" value="commandHandler" />
+        <entry key="command_hook" value="CommandHook" />
+        <entry key="compact_config" value="CompactConfig" />
+        <entry key="compaction_config" value="CompactionConfig" />
+        <entry key="compaction_result" value="CompactionResult" />
+        <entry key="config" value="Config" />
+        <entry key="content_block" value="ContentBlock" />
+        <entry key="content_item" value="ContentItem" />
+        <entry key="context" value="Context" />
+        <entry key="cost_summary" value="CostSummary" />
+        <entry key="cron_create_input" value="cronCreateInput" />
+        <entry key="cron_delete_input" value="cronDeleteInput" />
+        <entry key="cron_field" value="cronField" />
+        <entry key="custom_instructions_builder" value="customInstructionsBuilder" />
+        <entry key="decision" value="Decision" />
+        <entry key="default_forked_agent" value="DefaultForkedAgent" />
+        <entry key="default_post_compact_cleanup" value="DefaultPostCompactCleanup" />
+        <entry key="default_sub_agent" value="DefaultSubAgent" />
+        <entry key="default_thinking_provider" value="DefaultThinkingProvider" />
+        <entry key="default_thinking_summarizer" value="DefaultThinkingSummarizer" />
+        <entry key="definition" value="Definition" />
+        <entry key="degradation_aware_modifier" value="DegradationAwareModifier" />
+        <entry key="degradation_tracker" value="DegradationTracker" />
+        <entry key="edit_input" value="EditInput" />
+        <entry key="enter_worktree_input" value="enterWorktreeInput" />
+        <entry key="event" value="Event" />
+        <entry key="execute_response" value="executeResponse" />
+        <entry key="execute_result" value="ExecuteResult" />
+        <entry key="executor" value="Executor" />
+        <entry key="exit_worktree_input" value="exitWorktreeInput" />
+        <entry key="extractor" value="Extractor" />
+        <entry key="fast_mode_config" value="FastModeConfig" />
+        <entry key="fast_mode_provider" value="FastModeProvider" />
+        <entry key="file_based_skill_provider" value="FileBasedSkillProvider" />
+        <entry key="file_entry" value="fileEntry" />
+        <entry key="file_path_input" value="filePathInput" />
+        <entry key="file_store" value="FileStore" />
+        <entry key="file_tracker" value="FileTracker" />
+        <entry key="forked_agent_config" value="ForkedAgentConfig" />
+        <entry key="forked_agent_result" value="ForkedAgentResult" />
+        <entry key="framework_tool" value="FrameworkTool" />
+        <entry key="func_hook" value="FuncHook" />
+        <entry key="gate" value="Gate" />
+        <entry key="glob_input" value="GlobInput" />
+        <entry key="grep_input" value="GrepInput" />
+        <entry key="handler" value="Handler" />
+        <entry key="handoff_result" value="HandoffResult" />
+        <entry key="health_response" value="healthResponse" />
+        <entry key="hook_context" value="HookContext" />
+        <entry key="hook_result" value="HookResult" />
+        <entry key="hooks_runner_adapter" value="hooksRunnerAdapter" />
+        <entry key="http_transport" value="HTTPTransport" />
+        <entry key="image_input" value="ImageInput" />
+        <entry key="internal_plan_confirm_request" value="InternalPlanConfirmRequest" />
+        <entry key="interrupt_handler" value="InterruptHandler" />
+        <entry key="interrupt_request" value="interruptRequest" />
+        <entry key="job" value="Job" />
+        <entry key="list_summary" value="ListSummary" />
+        <entry key="loop" value="Loop" />
+        <entry key="loop_state" value="loopState" />
+        <entry key="management_deps" value="ManagementDeps" />
+        <entry key="manager" value="Manager" />
+        <entry key="max_output_tokens_error" value="MaxOutputTokensError" />
+        <entry key="mcp_server_config" value="MCPServerConfig" />
+        <entry key="mcp_skill_provider" value="MCPSkillProvider" />
+        <entry key="memory_entry" value="MemoryEntry" />
+        <entry key="memory_file" value="MemoryFile" />
+        <entry key="memory_store" value="MemoryStore" />
+        <entry key="message" value="Message" />
+        <entry key="metadata" value="Metadata" />
+        <entry key="micro_compressor" value="microCompressor" />
+        <entry key="microcompact_config" value="MicrocompactConfig" />
+        <entry key="microcompact_result" value="MicrocompactResult" />
+        <entry key="middleware" value="Middleware" />
+        <entry key="middleware_adapter" value="middlewareAdapter" />
+        <entry key="middleware_config" value="middlewareConfig" />
+        <entry key="middleware_with_filter" value="MiddlewareWithFilter" />
+        <entry key="model" value="Model" />
+        <entry key="model_pricing" value="ModelPricing" />
+        <entry key="multi_observer" value="MultiObserver" />
+        <entry key="named_tool" value="NamedTool" />
+        <entry key="nop_observer" value="NopObserver" />
+        <entry key="notebook_add_cell_input" value="NotebookAddCellInput" />
+        <entry key="notebook_edit_input" value="NotebookEditInput" />
+        <entry key="notebook_input" value="NotebookInput" />
+        <entry key="notebook_run_cell_input" value="NotebookRunCellInput" />
+        <entry key="observer" value="Observer" />
+        <entry key="overload_error" value="OverloadError" />
+        <entry key="pause_manager" value="PauseManager" />
+        <entry key="pause_point" value="PausePoint" />
+        <entry key="pdf_input" value="PDFInput" />
+        <entry key="perm_rule_entry" value="permRuleEntry" />
+        <entry key="permission_check" value="PermissionCheck" />
+        <entry key="permission_handler" value="PermissionHandler" />
+        <entry key="permission_predictor" value="PermissionPredictor" />
+        <entry key="permission_request" value="PermissionRequest" />
+        <entry key="permission_response" value="permissionResponse" />
+        <entry key="permission_result" value="PermissionResult" />
+        <entry key="permission_rules" value="PermissionRules" />
+        <entry key="plan_checker_adapter" value="planCheckerAdapter" />
+        <entry key="plan_confirm_handler" value="PlanConfirmHandler" />
+        <entry key="plan_confirm_http_request" value="PlanConfirmHTTPRequest" />
+        <entry key="plan_confirm_request" value="PlanConfirmRequest" />
+        <entry key="post_compact_cleanup_runner" value="PostCompactCleanupRunner" />
+        <entry key="pre_compact_hook_runner" value="PreCompactHookRunner" />
+        <entry key="pre_compact_result" value="PreCompactResult" />
+        <entry key="preprocess_result" value="PreprocessResult" />
+        <entry key="preprocessor" value="Preprocessor" />
+        <entry key="processor" value="Processor" />
+        <entry key="prompt_config" value="PromptConfig" />
+        <entry key="prompt_too_long_error" value="PromptTooLongError" />
+        <entry key="prompts_capability" value="PromptsCapability" />
+        <entry key="provider" value="Provider" />
+        <entry key="query" value="Query" />
+        <entry key="query_context" value="QueryContext" />
+        <entry key="query_tracker" value="QueryTracker" />
+        <entry key="rate_limit_error" value="RateLimitError" />
+        <entry key="read_input" value="ReadInput" />
+        <entry key="record" value="Record" />
+        <entry key="registered_tool" value="registeredTool" />
+        <entry key="registry" value="Registry" />
+        <entry key="request" value="Request" />
+        <entry key="resources_capability" value="ResourcesCapability" />
+        <entry key="response" value="Response" />
+        <entry key="response_error" value="ResponseError" />
+        <entry key="result" value="Result" />
+        <entry key="resumable_loop" value="ResumableLoop" />
+        <entry key="retry_stream_provider" value="RetryStreamProvider" />
+        <entry key="router" value="Router" />
+        <entry key="rule" value="Rule" />
+        <entry key="rule_set" value="RuleSet" />
+        <entry key="run_result" value="RunResult" />
+        <entry key="runner" value="Runner" />
+        <entry key="scheduler" value="Scheduler" />
+        <entry key="search_result" value="searchResult" />
+        <entry key="section" value="Section" />
+        <entry key="server_capabilities" value="ServerCapabilities" />
+        <entry key="server_error" value="ServerError" />
+        <entry key="server_info" value="ServerInfo" />
+        <entry key="session" value="Session" />
+        <entry key="session_info" value="SessionInfo" />
+        <entry key="session_mem_hook_adapter" value="sessionMemHookAdapter" />
+        <entry key="session_memory" value="SessionMemory" />
+        <entry key="session_memory_config" value="SessionMemoryConfig" />
+        <entry key="session_summary" value="SessionSummary" />
+        <entry key="skill" value="Skill" />
+        <entry key="skill_input" value="skillInput" />
+        <entry key="slash_command_info" value="SlashCommandInfo" />
+        <entry key="slow_thinking_provider" value="SlowThinkingProvider" />
+        <entry key="snapshot" value="Snapshot" />
+        <entry key="snip_compressor" value="snipCompressor" />
+        <entry key="sse_ask_user_request" value="sseAskUserRequest" />
+        <entry key="sse_event" value="sseEvent" />
+        <entry key="sse_permission_request" value="ssePermissionRequest" />
+        <entry key="sse_plan_confirm_request" value="ssePlanConfirmRequest" />
+        <entry key="sse_usage" value="sseUsage" />
+        <entry key="stdin_approver" value="stdinApprover" />
+        <entry key="stdio_transport" value="StdioTransport" />
+        <entry key="stop_hook_result" value="StopHookResult" />
+        <entry key="stop_hook_runner" value="StopHookRunner" />
+        <entry key="storage" value="Storage" />
+        <entry key="store" value="Store" />
+        <entry key="stream_chunk" value="streamChunk" />
+        <entry key="stream_chunk_choice" value="streamChunkChoice" />
+        <entry key="stream_delta" value="streamDelta" />
+        <entry key="stream_event" value="StreamEvent" />
+        <entry key="stream_func_delta" value="streamFuncDelta" />
+        <entry key="stream_tool_call" value="streamToolCall" />
+        <entry key="streaming_executor" value="StreamingExecutor" />
+        <entry key="streaming_fallback_provider" value="StreamingFallbackProvider" />
+        <entry key="sub_agent_config" value="SubAgentConfig" />
+        <entry key="sub_agent_manager" value="SubAgentManager" />
+        <entry key="sub_agent_result" value="SubAgentResult" />
+        <entry key="sub_agent_state" value="subAgentState" />
+        <entry key="sub_agent_tracker" value="subAgentTracker" />
+        <entry key="summary" value="Summary" />
+        <entry key="summary_config" value="SummaryConfig" />
+        <entry key="swarm_agent" value="SwarmAgent" />
+        <entry key="swarm_config" value="SwarmConfig" />
+        <entry key="sync_observable" value="SyncObservable" />
+        <entry key="system_block" value="SystemBlock" />
+        <entry key="task" value="Task" />
+        <entry key="task_create_input" value="taskCreateInput" />
+        <entry key="task_get_input" value="taskGetInput" />
+        <entry key="task_output_info" value="TaskOutputInfo" />
+        <entry key="task_output_input" value="taskOutputInput" />
+        <entry key="task_output_result" value="TaskOutputResult" />
+        <entry key="task_state" value="TaskState" />
+        <entry key="task_stop_input" value="taskStopInput" />
+        <entry key="task_stop_result" value="TaskStopResult" />
+        <entry key="task_update_input" value="taskUpdateInput" />
+        <entry key="tavily_backend" value="TavilyBackend" />
+        <entry key="tavily_response" value="tavilyResponse" />
+        <entry key="tavily_result" value="tavilyResult" />
+        <entry key="text_delta_event" value="TextDeltaEvent" />
+        <entry key="thinking_block" value="ThinkingBlock" />
+        <entry key="thinking_chunk" value="ThinkingChunk" />
+        <entry key="thinking_config" value="ThinkingConfig" />
+        <entry key="thinking_stats" value="ThinkingStats" />
+        <entry key="ticker" value="ticker" />
+        <entry key="tool_auto_refresher" value="ToolAutoRefresher" />
+        <entry key="tool_call" value="ToolCall" />
+        <entry key="tool_call_result" value="ToolCallResult" />
+        <entry key="tool_call_state" value="toolCallState" />
+        <entry key="tool_call_summary" value="ToolCallSummary" />
+        <entry key="tool_def" value="ToolDef" />
+        <entry key="tool_definition" value="ToolDefinition" />
+        <entry key="tool_degradation_config" value="ToolDegradationConfig" />
+        <entry key="tool_entry" value="ToolEntry" />
+        <entry key="tool_filter" value="toolFilter" />
+        <entry key="tool_group" value="ToolGroup" />
+        <entry key="tool_info" value="ToolInfo" />
+        <entry key="tool_info_response" value="toolInfoResponse" />
+        <entry key="tool_kit" value="ToolKit" />
+        <entry key="tool_pattern" value="ToolPattern" />
+        <entry key="tool_refresh_manager" value="ToolRefreshManager" />
+        <entry key="tool_result" value="ToolResult" />
+        <entry key="tool_result_event" value="ToolResultEvent" />
+        <entry key="tool_stat" value="ToolStat" />
+        <entry key="tool_state" value="ToolState" />
+        <entry key="tool_use_event" value="ToolUseEvent" />
+        <entry key="tool_use_summary" value="ToolUseSummary" />
+        <entry key="tool_use_summary_config" value="ToolUseSummaryConfig" />
+        <entry key="tools_capability" value="ToolsCapability" />
+        <entry key="tracked_executor" value="TrackedExecutor" />
+        <entry key="tracked_file" value="trackedFile" />
+        <entry key="tracked_tool" value="TrackedTool" />
+        <entry key="tracker" value="Tracker" />
+        <entry key="tui_approver" value="TUIApprover" />
+        <entry key="tui_approver_adapter" value="tuiApproverAdapter" />
+        <entry key="tui_asker" value="TUIAsker" />
+        <entry key="turn_usage" value="TurnUsage" />
+        <entry key="update_patch" value="UpdatePatch" />
+        <entry key="usage" value="Usage" />
+        <entry key="usage_event" value="UsageEvent" />
+        <entry key="usage_info" value="UsageInfo" />
+        <entry key="usage_record" value="UsageRecord" />
+        <entry key="web_fetch_config" value="WebFetchConfig" />
+        <entry key="web_fetch_input" value="WebFetchInput" />
+        <entry key="web_search_input" value="WebSearchInput" />
+        <entry key="withheld_event" value="WithheldEvent" />
+        <entry key="withholder" value="Withholder" />
+        <entry key="worktree" value="Worktree" />
+        <entry key="write_input" value="WriteInput" />
+        <entry key="ws_config" value="WSConfig" />
+      </map>
+    </option>
+    <option name="lastTimeChecked" value="1775374897073" />
+  </component>
+</project>

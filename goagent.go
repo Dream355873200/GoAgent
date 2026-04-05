@@ -1009,6 +1009,7 @@ func toPublicEvent(ev loop.Event) Event {
 		Thinking:   ev.Thinking,
 		ToolName:   ev.ToolName,
 		ToolInput:  ev.ToolInput,
+		ToolUseID:  ev.ToolUseID,
 		ToolResult: ev.ToolResult,
 		Usage:      ev.Usage,
 		Error:      ev.Error,

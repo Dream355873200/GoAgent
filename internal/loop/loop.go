@@ -125,6 +125,7 @@ type Event struct {
 	Thinking   string // thinking 内容增量
 	ToolName   string
 	ToolInput  json.RawMessage
+	ToolUseID  string // 对齐 Claude Code ToolUseBlock.id
 	ToolResult string
 	Usage      *provider.Usage
 	Error      error
@@ -414,7 +415,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 			case provider.EventToolUseStart:
 				if ev.ToolCall != nil {
 					toolCalls = append(toolCalls, *ev.ToolCall)
-					out <- Event{Type: EvtToolStart, ToolName: ev.ToolCall.Name, ToolInput: ev.ToolCall.Input}
+					out <- Event{Type: EvtToolStart, ToolName: ev.ToolCall.Name, ToolInput: ev.ToolCall.Input, ToolUseID: ev.ToolCall.ID}
 
 					// Observer: 通知工具开始执行。
 					if l.cfg.Observer != nil {
@@ -493,7 +494,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 
 			// 轮询已完成的流式工具。
 			for _, result := range streamingExec.Poll() {
-				out <- Event{Type: EvtToolDone, ToolName: result.Name, ToolResult: result.Content}
+				out <- Event{Type: EvtToolDone, ToolName: result.Name, ToolResult: result.Content, ToolUseID: result.ToolUseID}
 				// Observer: 通知工具执行完成。
 				if l.cfg.Observer != nil {
 					var duration time.Duration
@@ -641,7 +642,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 		// streamingToolExecutor.getRemainingResults() 路径。
 		remaining := streamingExec.Wait(ctx)
 		for _, result := range remaining {
-			out <- Event{Type: EvtToolDone, ToolName: result.Name, ToolResult: result.Content}
+			out <- Event{Type: EvtToolDone, ToolName: result.Name, ToolResult: result.Content, ToolUseID: result.ToolUseID}
 			// Observer: 通知工具执行完成。
 			if l.cfg.Observer != nil {
 				var duration time.Duration
