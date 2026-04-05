@@ -66,39 +66,61 @@ user:      [tool_result id="abc" content="工具执行被用户中断" is_error=
 
 ---
 
-## 3. 四层压缩系统
+## 3. 压缩系统
 
 位置：`compaction/`
 
 ### 3.1 层级设计
 
-| 层 | 名称 | 位置 | 机制 | 是否调模型 |
-|---|------|------|------|----------|
-| 0 | Budget | `compaction.go` | 超大工具结果截断 | 否 |
-| 1 | Snip | `compaction.go` | 截断最旧消息 | 否 |
-| 2 | Micro | `compaction.go` | 删除已消费的工具结果 | 否 |
-| 3 | Collapse | `compaction.go` | 折叠中间轮次 | 否 |
-| 4 | Auto | `compaction.go` | 调模型压缩为摘要 | 是 |
+| 层 | 常量 | 名称 | 位置 | 机制 | 是否调模型 |
+|---|------|------|------|------|----------|
+| 0 | `LayerBudget` | Budget | `compaction.go` | 超大工具结果截断 | 否 |
+| 1 | `LayerSnip` | Snip | `compaction.go` | 截断最旧消息 | 否 |
+| 2 | `LayerMicro` | Micro | `compaction.go` | 删除已消费的工具结果 | 否 |
+| 3 | `LayerCollapse` | Collapse | `compaction.go` | 折叠中间轮次 | 否 |
+| 4 | `LayerAuto` | Auto | `compaction.go` | 调模型压缩为摘要 | 是 |
 
-### 3.2 Circuit Breaker
+### 3.2 可组合层（Composable Layers）
+
+`Config.Layers` 字段允许选择性启用压缩层：
+
+```go
+// 全部启用（向后兼容，Layers 为 nil 或空）
+compaction.NewManager(compaction.Config{})
+
+// 只启用 L0+L2+L4（Pipeline worker 场景）
+compaction.NewManager(compaction.Config{
+    Layers: []compaction.Layer{
+        compaction.LayerBudget,
+        compaction.LayerMicro,
+        compaction.LayerAuto,
+    },
+})
+```
+
+`Apply()` 在每层执行前检查 `enabledLayers[LayerXxx]`，跳过未启用的层。
+
+> **注意**: Layer 0 Budget 当前仅截断保留头尾，尚未实现真正的磁盘持久化 + 引用替换（标记为 TODO）。
+
+### 3.3 Circuit Breaker
 
 连续 autocompact 失败 3 次后停止尝试（`MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`）。
 
-### 3.3 Compact Boundary
+### 3.4 Compact Boundary
 
 位置：`compaction/boundary.go`
 
 压缩后标记边界消息 (`IsCompactBoundary = true`)，后续只取边界之后的消息，
 保持 prompt cache 有效性。
 
-### 3.4 可压缩工具白名单
+### 3.5 可压缩工具白名单
 
 位置：`compaction/whitelist.go`
 
 只有白名单工具（Read, Bash, Grep, Glob, WebSearch, WebFetch, Agent, TaskOutput）
 的结果才会被 micro compact 清理。
 
-### 3.5 压缩后文件恢复
+### 3.6 压缩后文件恢复
 
 位置：`compaction/restore.go`
 

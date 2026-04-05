@@ -32,6 +32,17 @@ import (
 //	}
 type Summarizer func(ctx context.Context, text string) (string, error)
 
+// Layer 表示压缩层编号。
+type Layer int
+
+const (
+	LayerBudget   Layer = 0 // L0: 超大 tool result 截断
+	LayerSnip     Layer = 1 // L1: 旧消息文本截断
+	LayerMicro    Layer = 2 // L2: 移除已消费的 tool result
+	LayerCollapse Layer = 3 // L3: 旧轮次折叠
+	LayerAuto     Layer = 4 // L4: LLM 摘要
+)
+
 // Config 控制压缩行为。
 type Config struct {
 	// Summarizer 是 Layer 4（自动摘要）的可选函数。
@@ -45,18 +56,24 @@ type Config struct {
 	// MaxResultSize 是单个工具结果在持久化到磁盘前的最大字符数。
 	// 默认值：50000
 	MaxResultSize int
+
+	// Layers 指定启用的压缩层（可选）。
+	// nil 或空 = 启用全部层（向后兼容）。
+	// 例如：[]Layer{LayerBudget, LayerMicro, LayerAuto} 只启用 L0+L2+L4。
+	Layers []Layer
 }
 
-// Manager 协调四个压缩层。
+// Manager 协调压缩层。
 type Manager struct {
-	config   Config
-	provider provider.Provider
-	budget   *budgetCompressor
-	snip     *snipCompressor
-	micro    *microCompressor
-	collapse *collapseCompressor
-	auto     *autoCompressor
-	tracking AutoCompactTracking
+	config        Config
+	provider      provider.Provider
+	enabledLayers map[Layer]bool
+	budget        *budgetCompressor
+	snip          *snipCompressor
+	micro         *microCompressor
+	collapse      *collapseCompressor
+	auto          *autoCompressor
+	tracking      AutoCompactTracking
 }
 
 // SetProvider 设置用于 LLM 摘要的提供者。
@@ -116,13 +133,27 @@ func NewManager(cfg Config) *Manager {
 	if cfg.MaxResultSize == 0 {
 		cfg.MaxResultSize = 50_000
 	}
+
+	// 构建启用层映射。nil/空 = 全部启用（向后兼容）。
+	enabled := make(map[Layer]bool)
+	if len(cfg.Layers) == 0 {
+		for _, l := range []Layer{LayerBudget, LayerSnip, LayerMicro, LayerCollapse, LayerAuto} {
+			enabled[l] = true
+		}
+	} else {
+		for _, l := range cfg.Layers {
+			enabled[l] = true
+		}
+	}
+
 	return &Manager{
-		config:   cfg,
-		budget:   &budgetCompressor{maxSize: cfg.MaxResultSize},
-		snip:     &snipCompressor{},
-		micro:    &microCompressor{},
-		collapse: &collapseCompressor{},
-		auto:     &autoCompressor{summarizer: cfg.Summarizer, threshold: cfg.AutoCompactThreshold},
+		config:        cfg,
+		enabledLayers: enabled,
+		budget:        &budgetCompressor{maxSize: cfg.MaxResultSize},
+		snip:          &snipCompressor{},
+		micro:         &microCompressor{},
+		collapse:      &collapseCompressor{},
+		auto:          &autoCompressor{summarizer: cfg.Summarizer, threshold: cfg.AutoCompactThreshold},
 	}
 }
 
@@ -156,30 +187,40 @@ func (m *Manager) Tracking() AutoCompactTracking {
 	return m.tracking
 }
 
-// Apply 按顺序在消息上运行所有压缩层。
+// Apply 按顺序在消息上运行启用的压缩层。
 // 返回处理后的消息和所有层释放的总 token 数。
 func (m *Manager) Apply(ctx context.Context, messages []message.Message, contextWindow int) ([]message.Message, int) {
 	totalFreed := 0
+	var freed int
 
-	// Layer 0: Budget — 持久化超大工具结果。
-	messages, freed := m.budget.apply(messages)
-	totalFreed += freed
+	// Layer 0: Budget — 截断超大工具结果。
+	// TODO: 实现真正的磁盘持久化 + 引用替换（当前仅截断保留头尾）。
+	if m.enabledLayers[LayerBudget] {
+		messages, freed = m.budget.apply(messages)
+		totalFreed += freed
+	}
 
 	// Layer 1: Snip — 截断旧消息内容。
-	messages, freed = m.snip.apply(messages, contextWindow)
-	totalFreed += freed
+	if m.enabledLayers[LayerSnip] {
+		messages, freed = m.snip.apply(messages, contextWindow)
+		totalFreed += freed
+	}
 
 	// Layer 2: Micro — 移除已消费的工具结果。
-	messages, freed = m.micro.apply(messages)
-	totalFreed += freed
+	if m.enabledLayers[LayerMicro] {
+		messages, freed = m.micro.apply(messages)
+		totalFreed += freed
+	}
 
 	// Layer 3: Collapse — 折叠中间轮次。
-	messages, freed = m.collapse.apply(messages, contextWindow)
-	totalFreed += freed
+	if m.enabledLayers[LayerCollapse] {
+		messages, freed = m.collapse.apply(messages, contextWindow)
+		totalFreed += freed
+	}
 
 	// Layer 4: Auto — 基于模型的摘要（仅在仍超过阈值时触发）。
 	// 检查熔断器：如果连续失败过多则跳过。
-	if m.CircuitBreakerTripped() {
+	if !m.enabledLayers[LayerAuto] || m.CircuitBreakerTripped() {
 		return messages, totalFreed
 	}
 
@@ -188,7 +229,7 @@ func (m *Manager) Apply(ctx context.Context, messages []message.Message, context
 	if currentTokens > threshold {
 		compacted, err := m.auto.apply(ctx, messages, contextWindow)
 		if err == nil {
-			freed := currentTokens - estimateMessagesTokens(compacted)
+			freed = currentTokens - estimateMessagesTokens(compacted)
 			totalFreed += freed
 			messages = compacted
 			m.RecordAutocompactResult(true, 0)
@@ -222,8 +263,8 @@ func (m *Manager) HandleOverflow(ctx context.Context, messages []message.Message
 
 type budgetCompressor struct {
 	maxSize int
-	// 完整实现中，这里会持久化到磁盘。
-	// 骨架实现仅使用标记进行截断。
+	// TODO: 实现真正的磁盘持久化 + 引用替换。
+	// 当前仅截断保留头尾，注释说"持久化到磁盘"但实际未实现。
 }
 
 func (b *budgetCompressor) apply(messages []message.Message) ([]message.Message, int) {
@@ -235,7 +276,7 @@ func (b *budgetCompressor) apply(messages []message.Message) ([]message.Message,
 			if block.Type == "tool_result" && len(block.Text) > b.maxSize {
 				original := len(block.Text)
 				result[i].Content[j].Text = block.Text[:b.maxSize/2] +
-					fmt.Sprintf("\n\n[... %d 字符被截断，已持久化到磁盘 ...]\n\n", original-b.maxSize) +
+					fmt.Sprintf("\n\n[... %d 字符被截断 (TODO: 实现磁盘持久化 + 引用替换) ...]\n\n", original-b.maxSize) +
 					block.Text[original-b.maxSize/2:]
 				freed += (original - len(result[i].Content[j].Text)) / 4
 			}

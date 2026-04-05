@@ -9,7 +9,16 @@
       "Bash(git diff:*)",
       "Bash(go get:*)",
       "Bash(rm:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(grep:*)",
+      "Bash(for file:*)",
+      "Bash(do)",
+      "Bash(echo \"=== $file ===\")",
+      "Read(//e/claude-code-rev-study-main/claude-code-rev-study-main/goagent/**)",
+      "Bash(done)",
+      "Bash(go env:*)",
+      "Read(//c/Users/Yume/go/pkg/mod/github.com/!dream355873200/**)",
+      "Read(//c/Users/Yume/go/pkg/mod/github.com/**)"
     ]
   }
 }

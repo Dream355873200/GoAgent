@@ -69,6 +69,9 @@ type App struct {
 	bgTaskMgr  *bgtask.Manager // 后台任务管理器
 	mcpClients []*mcp.Client   // MCP 客户端列表
 
+	// Pipeline DAG 编排（可选）
+	pipeline *pipeline
+
 	// HTTP/WebSocket 处理器（可选）
 	askUserHandler     *AskUserHandler     // 异步提问处理器
 	planConfirmHandler *PlanConfirmHandler // 异步计划确认处理器

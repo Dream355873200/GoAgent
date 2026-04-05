@@ -256,8 +256,9 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 
 	// P1a: 工具定义缓存 — 一次性构建，跨迭代复用。
 	// 对齐 Claude Code 的 toolUseContext.options.tools（不在循环内重建）。
+	caps := activeProvider.Capabilities()
 	var toolDefs []provider.ToolDefinition
-	if caps := activeProvider.Capabilities(); caps.SupportsTools {
+	if caps.SupportsTools {
 		toolDefs = make([]provider.ToolDefinition, 0, len(l.cfg.Tools))
 		for _, t := range l.cfg.Tools {
 			toolDefs = append(toolDefs, provider.ToolDefinition{
@@ -265,6 +266,11 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 				Description: t.Description,
 				InputSchema: t.InputSchema,
 			})
+		}
+		// Prompt Caching: 给最后一个 tool 加 cache_control 标记。
+		// Anthropic 缓存从头到该标记为止的全部前缀（system + tools）。
+		if caps.SupportsCaching && len(toolDefs) > 0 {
+			toolDefs[len(toolDefs)-1].CacheControl = &provider.CacheControl{Type: "ephemeral"}
 		}
 	}
 
@@ -347,12 +353,27 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 			maxTokens = state.maxOutputTokensOverride
 		}
 
-		stream, err := activeProvider.Stream(ctx, &provider.Request{
-			Messages:     state.messages,
-			SystemPrompt: systemPrompt,
-			Tools:        toolDefs,
-			MaxTokens:    maxTokens,
-		})
+		// 构建请求：优先使用 SystemBlocks（带 cache_control），否则回退到 SystemPrompt。
+		req := &provider.Request{
+			Messages:  state.messages,
+			Tools:     toolDefs,
+			MaxTokens: maxTokens,
+		}
+		if caps.SupportsCaching {
+			// 将 system prompt 包装为 SystemBlocks，最后一个 block 标记缓存。
+			// 如果有 tools，tools 的最后一个已标记缓存，system prompt 不需要重复标记。
+			// 如果没有 tools，system prompt 最后一个 block 标记缓存。
+			req.SystemBlocks = []provider.SystemBlock{
+				{
+					Text:         systemPrompt,
+					CacheControl: cacheControlForSystemPrompt(caps.SupportsCaching, len(toolDefs)),
+				},
+			}
+		} else {
+			req.SystemPrompt = systemPrompt
+		}
+
+		stream, err := activeProvider.Stream(ctx, req)
 
 		if err != nil {
 			// 处理过载 → 后备。
@@ -831,4 +852,22 @@ func estimateCostUSD(modelID string, usage *provider.Usage) float64 {
 	cost := float64(usage.InputTokens)*pricing.inputPerMillion/1_000_000 +
 		float64(usage.OutputTokens)*pricing.outputPerMillion/1_000_000
 	return cost
+}
+
+// cacheControlForSystemPrompt 决定 system prompt block 是否需要 cache_control。
+// 策略：如果有 tools，tools 的最后一个已经标记了缓存断点，
+// system prompt 无需额外标记（Anthropic 缓存按前缀匹配，tools 的标记已覆盖 system prompt）。
+// 如果没有 tools，system prompt 需要自己标记。
+func cacheControlForSystemPrompt(supportsCaching bool, toolCount int) *provider.CacheControl {
+	if !supportsCaching {
+		return nil
+	}
+	if toolCount > 0 {
+		// tools 最后一个已标记，system prompt 不需要。
+		// 但为了最大化缓存命中（system prompt 和 tools 分别缓存），也标记上。
+		// Anthropic 最多支持 4 个 cache breakpoint，这里用掉 2 个（system + tools）是合理的。
+		return &provider.CacheControl{Type: "ephemeral"}
+	}
+	// 无 tools 场景，system prompt 是唯一可缓存前缀。
+	return &provider.CacheControl{Type: "ephemeral"}
 }
