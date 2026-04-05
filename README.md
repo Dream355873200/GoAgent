@@ -30,6 +30,8 @@
 - [完整选项参考](#完整选项参考)
 - [项目结构](#项目结构)
 - [版本状态](#版本状态)
+- [TODO: Agent Team 架构](#todo-agent-team-架构)
+- [TODO: Pipeline Registry（社区工作流）](#todo-pipeline-registry社区工作流)
 
 ---
 
@@ -45,6 +47,7 @@
 | **工具生态** | 内置文件工具（Bash/Read/Write/Edit/Glob/Grep/AskUser）、MCP 客户端 |
 | **任务系统** | Task/Todo V2（依赖管理）、Plan Mode、Skill 系统 |
 | **调度** | Cron 调度（5-field cron + jitter + 3 天过期）、Background Agents |
+| **编排** | Pipeline DAG 编排（拓扑调度、MapReduce 并行、Supervisor 审核） |
 | **隔离** | Git Worktree 隔离执行 |
 | **推理增强** | Extended Thinking（adaptive/enabled/disabled） |
 | **可观测性** | Observer 接口（11 种事件）、Cost Tracking、Analytics、HTTP 端点 |
@@ -1378,6 +1381,220 @@ goagent/
 | v0.6 | 可观测性重构：Observer 系统 + Store 接口 + Driver 接口 + 完整 REST API | ✅ 完成 |
 
 详细架构说明见 [docs/architecture.md](docs/architecture.md) 和 [docs/mechanisms.md](docs/mechanisms.md)。
+
+---
+
+## TODO: Agent Team 架构
+
+### 设计原则
+
+- **最小原语** — 只有两个协作原语：SubAgent（1:1）和 Pipeline（1:N），不增加新的顶层机制
+- **统一 agent 定义** — 一套 `AgentDefinition` 贯穿 SubAgent、Pipeline、未来扩展
+- **状态可选** — 共享状态按需启用，不用就不存在
+- **不造新概念** — 广播、委派都是现有原语的组合用法
+
+### 架构总览
+
+```
+┌─────────────────────────────────────────────────┐
+│                    App                           │
+│                                                 │
+│  AgentRegistry ─── 统一管理 AgentDefinition     │
+│       │                                         │
+│       ├── SubAgent（1:1 嵌套调用，LLM 驱动）      │
+│       │     └── agent tool，主 agent 自己决定    │
+│       │                                         │
+│       └── Pipeline（1:N DAG 编排，开发者驱动）    │
+│             ├── DAG 拓扑调度                     │
+│             ├── MapReduce（Concurrency + 队列）  │
+│             ├── Supervisor（LLM 审核）           │
+│             ├── Injects（单向队列通信）           │
+│             └── State（共享状态，可选，TODO）     │
+│                                                 │
+│  广播模式 = Pipeline 使用模式（BroadcastNodes）   │
+│  委派模式 = SubAgent 使用模式                    │
+└─────────────────────────────────────────────────┘
+```
+
+### 待办项
+
+#### 1. 统一 AgentDefinition
+
+现在 `agent/agent.go` 的 `Definition` 和 `agent/subagent.go` 的 `AgentDefinition` 两套重复，合并为一套：
+
+```go
+type AgentDefinition struct {
+    // 身份
+    Name, Description string
+    // 行为
+    SystemPrompt string
+    Tools, DisallowedTools []string
+    Model, MaxTurns string, int
+    // 隔离
+    Isolation string  // "none" / "worktree" / "process"
+    Memory    string  // "none" / "project" / "local"
+    // 来源（内置/插件/用户定义）
+    Source string
+}
+```
+
+#### 2. PipelineState（共享状态）
+
+Pipeline 的可选增强，解决节点间累积信息的问题：
+
+```go
+type PipelineState struct {
+    mu   sync.RWMutex
+    data map[string]any
+}
+
+// 任何节点都可以读写
+state.Set("plan", planText)
+plan := state.Get("plan")
+```
+
+和 Injects 的区别：
+
+| | Injects 队列 | PipelineState |
+|--|-------------|---------------|
+| 方向 | 单向推送（A→B） | 多向读写（任意节点） |
+| 生命周期 | 消费完消失 | 贯穿 pipeline 全程 |
+| 适合 | MapReduce 任务分发 | 信息累积、上下文共享 |
+
+通过 context 注入，`PipelineConfig.State` 非 nil 时启用。
+
+#### 3. BroadcastNodes 辅助函数
+
+广播是 Pipeline 的使用模式，不是新模块。提供语法糖简化配置：
+
+```go
+// 便捷函数：创建广播拓扑
+//   dispatcher → expert_a, expert_b, expert_c → supervisor
+nodes := BroadcastNodes("question", dispatcher,
+    []PipelineAgentDef{expertA, expertB, expertC}, aggregator)
+```
+
+底层还是 DependsOn + Injects + Supervisor。
+
+#### 4. 清理 swarm.go
+
+现有 `SwarmAgent`、`Router`、`Handoff` 的职责已被 SubAgent（agent tool 由 LLM 决定调哪个）和 Pipeline 覆盖：
+
+- `AgentDefinition` → 合并到统一定义
+- `SwarmAgent.Handoff()` → 被 SubAgent 的 agent tool 取代
+- `Router` → 不需要，LLM 自己决定交接目标
+- `SwarmConfig` → 被PipelineConfig 和 SubAgent 覆盖
+
+#### 5. 补齐与现有机制的集成
+
+- SubAgent 的 agent tool 应复用 `internal/loop.Loop`（而不是 `DefaultSubAgent` 自写的 API 调用循环）
+- Pipeline worker 的 `buildLightweightLoop` 已继承 Compaction/Hooks/Observer，SubAgent 同理
+
+---
+
+## TODO: Pipeline Registry（社区工作流）
+
+### 核心思路
+
+Pipeline 就是一个 `PipelineConfig` 结构体 — 可序列化、可分发、可直接 `Run()`。包装成模板后，用户选一个、填参数、跑。
+
+### 模板化设计
+
+```go
+type PipelineTemplate struct {
+    // 元信息
+    Name, Description, Version, Author string
+    Tags []string
+
+    // 参数定义（让用户填）
+    Params []ParamDef
+
+    // pipeline 定义（不含 provider，由运行时 App 提供）
+    Config PipelineConfig
+}
+
+type ParamDef struct {
+    Name, Type, Description string
+    Default      any
+    Required     bool
+}
+```
+
+### 使用流程
+
+```go
+// 1. 获取模板
+tpl := registry.Get("code-review")
+
+// 2. 填参数
+params := map[string]any{
+    "repo_path":   "./my-project",
+    "focus_areas": []string{"security", "performance"},
+}
+
+// 3. 渲染 → 运行
+cfg := tpl.Render(params)
+app.UsePipeline(cfg)
+app.RunPipeline(ctx)
+```
+
+### 模板间组合
+
+复杂 pipeline 可以组合多个子模板：
+
+```go
+// "full-release" = test + review + deploy
+PipelineConfig{
+    Nodes: []PipelineNode{
+        {Name: "test",   Agent: testTemplate.Render(params)...},
+        {Name: "review", Agent: reviewTemplate.Render(params)...},
+        {Name: "deploy", Agent: deployTemplate.Render(params)...},
+    },
+}
+```
+
+和 Unix 管道哲学一致 — 小工具组合成复杂流程。
+
+### 分发格式
+
+Go 包：
+
+```
+goagent-pipeline-registry/
+├── code-review/        # 代码审查工作流
+│   ├── template.go     # PipelineTemplate 定义
+│   └── prompt_*.md     # agent prompt
+├── anime-production/   # 动画制作工作流
+├── i18n-extract/       # 国际化提取工作流
+└── ...
+```
+
+CLI 命令（远期）：
+
+```bash
+goagent pipeline search                    # 浏览可用 pipeline
+goagent pipeline install code-review       # 安装
+goagent pipeline run code-review --repo ./my-project  # 运行
+```
+
+### 生态正循环
+
+```
+框架越好用 → 社区越愿意贡献 pipeline
+pipeline 越多 → 框架越有价值
+```
+
+从"框架开发者"转变为"平台提供者"。
+
+### 前置条件
+
+模板化和社区生态依赖以下基础：
+
+1. 统一 AgentDefinition（上述 TODO #1）
+2. PipelineState 共享状态（上述 TODO #2）
+3. 清理 swarm 冗余（上述 TODO #4）
+
+基础扎实后，模板化和社区生态水到渠成。
 
 ---
 
