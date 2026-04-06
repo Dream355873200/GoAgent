@@ -18,7 +18,8 @@
       "Bash(done)",
       "Bash(go env:*)",
       "Read(//c/Users/Yume/go/pkg/mod/github.com/!dream355873200/**)",
-      "Read(//c/Users/Yume/go/pkg/mod/github.com/**)"
+      "Read(//c/Users/Yume/go/pkg/mod/github.com/**)",
+      "Bash(pushd:*)"
     ]
   }
 }

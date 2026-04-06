@@ -104,7 +104,7 @@ func New(opts ...Option) *App {
 
 	// 从 ProviderConfig 自动创建 provider（如果未直接设置 provider）。
 	if app.provider == nil && app.config.providerConfig != nil {
-		app.provider = buildProvider(*app.config.providerConfig)
+		app.provider = BuildProvider(*app.config.providerConfig)
 	}
 
 	// 初始化 Observer 注册表。

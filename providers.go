@@ -97,8 +97,17 @@ func OpenAI(cfg openai.Config) provider.Provider {
 	return openai.New(cfg)
 }
 
-// buildProvider 根据 ProviderConfig 创建对应的 provider 实例。
-func buildProvider(cfg ProviderConfig) provider.Provider {
+// BuildProvider 根据 ProviderConfig 创建对应的 provider.Provider 实例。
+// 用于需要单独创建 provider（不通过 ga.New）的场景，如多阶段流水线。
+//
+// 示例：
+//
+//	prov := goagent.BuildProvider(goagent.ProviderConfig{
+//	    Type:   "openai",
+//	    Model:  "gpt-4o",
+//	    APIKey: "sk-...",
+//	})
+func BuildProvider(cfg ProviderConfig) provider.Provider {
 	typ := cfg.Type
 	if typ == "" {
 		typ = "openai"
