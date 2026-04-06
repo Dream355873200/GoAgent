@@ -88,21 +88,8 @@ type ToolEntry struct {
 	Concurrent  bool
 	ExecuteFn   func(ctx context.Context, input json.RawMessage) (string, error)
 
-	// --- 扩展字段，对齐 Claude Code 架构 ---
-
-	// IsConcurrencySafe 动态判定并发安全性。优先于静态 Concurrent。
-	IsConcurrencySafe func(ctx context.Context, input json.RawMessage) bool
-
-	// ValidateInput 预执行输入验证。
-	ValidateInput func(ctx context.Context, input json.RawMessage) error
-
-	// CheckPermissions 自定义权限检查。
-	CheckPermissions func(ctx context.Context, input json.RawMessage) (string, string, error) // behavior, reason, error
-
-	// InterruptBehavior 中断行为："cancel" 或 "block"。
-	InterruptBehavior string
-
-	// MaxResultSizeChars 结果最大字符数。
+	// InterruptBehavior 中断行为："cancel" 或 "block"。默认 "cancel"。
+	InterruptBehavior  string
 	MaxResultSizeChars int
 }
 
@@ -461,14 +448,14 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 							},
 						})
 					} else {
-						// 动态并发判定：优先使用 IsConcurrencySafe。
 						concurrent := tool.Concurrent
-						if tool.IsConcurrencySafe != nil {
-							concurrent = tool.IsConcurrencySafe(ctx, tc.Input)
-						}
 
 						// 构建 PreCheck 闭包：包含完整的权限检查链。
 						// 对齐 Claude Code StreamingToolExecutor.executeTool() 的内置权限检查。
+						// 更新 transcript 供 YOLO 分类器使用。
+						if l.cfg.Permission != nil {
+							l.cfg.Permission.SetTranscript(state.messages)
+						}
 						preCheck := l.buildPreCheck(tool, tc.Name, tc.Input)
 
 						streamingExec.Add(ctx, executor.ToolCall{
@@ -751,10 +738,8 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 // 检查链：ValidateInput → CheckPermissions → PlanChecker → Permission.Gate → Middlewares → Hooks。
 // 返回 nil 表示工具不需要预检查（如 ReadOnly 级别且无额外约束）。
 func (l *Loop) buildPreCheck(tool *ToolEntry, toolName string, toolInput json.RawMessage) executor.PreCheckFn {
-	// ReadOnly 工具且无自定义检查 → 跳过预检查，最大化并发。
+	// ReadOnly 工具且无额外检查 → 跳过预检查，最大化并发。
 	if tool.Permission == permission.LevelReadOnly &&
-		tool.ValidateInput == nil &&
-		tool.CheckPermissions == nil &&
 		l.cfg.PlanChecker == nil &&
 		l.cfg.Hooks == nil &&
 		len(l.cfg.Middlewares) == 0 {
@@ -762,33 +747,14 @@ func (l *Loop) buildPreCheck(tool *ToolEntry, toolName string, toolInput json.Ra
 	}
 
 	return func(ctx context.Context) (string, bool) {
-		// 1. 输入验证。
-		if tool.ValidateInput != nil {
-			if err := tool.ValidateInput(ctx, toolInput); err != nil {
-				return fmt.Sprintf("输入验证失败: %s", err.Error()), true
-			}
-		}
-
-		// 2. 自定义权限检查。
-		if tool.CheckPermissions != nil {
-			behavior, reason, err := tool.CheckPermissions(ctx, toolInput)
-			if err != nil {
-				return fmt.Sprintf("权限检查出错: %s", err.Error()), true
-			}
-			if behavior == "deny" {
-				return fmt.Sprintf("权限被拒绝: %s", reason), true
-			}
-			// behavior == "ask" 时继续走标准权限检查。
-		}
-
-		// 3. Plan mode 工具过滤。
+		// 1. Plan mode 工具过滤。
 		if l.cfg.PlanChecker != nil && l.cfg.PlanChecker.IsActive() {
 			if !l.cfg.PlanChecker.IsToolAllowed(tool.Permission) {
 				return fmt.Sprintf("Plan mode 下禁止使用工具 %q（仅允许只读工具和 ExitPlanMode）", toolName), true
 			}
 		}
 
-		// 4. Permission Gate 检查（可能阻塞等待用户审批）。
+		// 2. Permission Gate 检查（可能阻塞等待用户审批）。
 		if l.cfg.Permission != nil {
 			allowed, reason := l.cfg.Permission.Check(toolName, string(toolInput), tool.Permission)
 			// Observer: 通知权限决策。
@@ -804,14 +770,14 @@ func (l *Loop) buildPreCheck(tool *ToolEntry, toolName string, toolInput json.Ra
 			}
 		}
 
-		// 5. 中间件 BeforeTool。
+		// 3. 中间件 BeforeTool。
 		for _, mw := range l.cfg.Middlewares {
 			if d := mw.BeforeTool(ctx, toolName, toolInput); d != nil && !d.Allow {
 				return fmt.Sprintf("被中间件阻止: %s", d.Reason), true
 			}
 		}
 
-		// 6. Hooks PreToolUse。
+		// 4. Hooks PreToolUse。
 		if l.cfg.Hooks != nil {
 			block, msg, err := l.cfg.Hooks.RunPreToolUse(ctx, toolName, toolInput)
 			if err != nil {

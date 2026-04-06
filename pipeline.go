@@ -62,12 +62,12 @@ type PipelineNode struct {
 	// 框架在运行此 node 时，将指定队列注入到 context。
 	Injects []string
 
-	// MessageType message 队列元素类型（默认 string）。
-	// 使用 reflect.TypeOf(YourStruct{}) 设置。
-	MessageType reflect.Type
+	// MessageType message 队列元素类型的零值（默认 string）。
+	// 设置为零值即可，如 Task{}。框架通过反射推断实际类型。
+	MessageType any
 
-	// ResultType result 队列元素类型（默认 string）。
-	ResultType reflect.Type
+	// ResultType result 队列元素类型的零值（默认 string）。
+	ResultType any
 
 	// Review 是否需要 supervisor 审核 result（默认 false，自动通过）。
 	Review bool
@@ -259,12 +259,19 @@ type pipeline struct {
 
 	// 父 App（用于创建子 agent）
 	parentApp *App
+
+	// hasSupervisor 缓存 Supervisor 是否存在（初始化后不变，避免并发读 cfg.Supervisor）。
+	hasSupervisor bool
 }
 
 type pipelineNodeState struct {
 	PipelineNode
 	// 运行时状态
 	started bool
+
+	// 由 applyNodeDefaults 从零值推断的 reflect.Type
+	msgType    reflect.Type
+	resultType reflect.Type
 }
 
 // newPipeline 创建 pipeline 实例。
@@ -279,17 +286,20 @@ func newPipeline(cfg PipelineConfig, parent *App) *pipeline {
 		nodesDone:      make(map[string]bool),
 		reviewDone:     make(map[string]bool),
 		parentApp:      parent,
+		hasSupervisor:  cfg.Supervisor != nil,
 	}
 
 	// 初始化节点状态和队列
 	for i := range cfg.Nodes {
 		node := &cfg.Nodes[i]
 		applyNodeDefaults(node)
-		p.nodes[node.Name] = &pipelineNodeState{PipelineNode: *node}
+		state := &pipelineNodeState{PipelineNode: *node}
+		applyNodeTypes(node, state)
+		p.nodes[node.Name] = state
 
 		// 为 Concurrency>1 的节点创建 message 队列
 		if node.Concurrency > 1 {
-			p.msgQueues[node.Name] = newMessagePusher(node.QueueSize, node.MessageType)
+			p.msgQueues[node.Name] = newMessagePusher(node.QueueSize, state.msgType)
 		}
 	}
 
@@ -310,11 +320,19 @@ func applyNodeDefaults(node *PipelineNode) {
 	if node.MaxRetries <= 0 {
 		node.MaxRetries = 3
 	}
-	if node.MessageType == nil {
-		node.MessageType = reflect.TypeOf("")
+}
+
+// applyNodeTypes 从零值推断 reflect.Type 并写入 pipelineNodeState。
+func applyNodeTypes(node *PipelineNode, state *pipelineNodeState) {
+	if node.MessageType != nil {
+		state.msgType = reflect.TypeOf(node.MessageType)
+	} else {
+		state.msgType = reflect.TypeOf("")
 	}
-	if node.ResultType == nil {
-		node.ResultType = reflect.TypeOf("")
+	if node.ResultType != nil {
+		state.resultType = reflect.TypeOf(node.ResultType)
+	} else {
+		state.resultType = reflect.TypeOf("")
 	}
 }
 
@@ -482,9 +500,18 @@ func (p *pipeline) checkReviewTrigger(nodeName string, pendingCount int) {
 		p.pendingMu.Unlock()
 
 		if len(items) > 0 {
-			p.reviewSignal <- ReviewEvent{
-				NodeName: nodeName,
-				Results:  items,
+			if p.hasSupervisor {
+				p.reviewSignal <- ReviewEvent{
+					NodeName: nodeName,
+					Results:  items,
+				}
+			} else {
+				// 无 supervisor：自动通过。
+				for _, item := range items {
+					if node.OnResult != nil {
+						node.OnResult(item.rawResult)
+					}
+				}
 			}
 		}
 	}
@@ -507,10 +534,20 @@ func (p *pipeline) markNodeDone(nodeName string) {
 		p.pendingResults[nodeName] = nil
 		p.pendingMu.Unlock()
 
-		if len(items) > 0 {
-			p.reviewSignal <- ReviewEvent{
-				NodeName: nodeName,
-				Results:  items,
+		if p.cfg.Supervisor != nil {
+			// 有 supervisor：发送审核事件。
+			if len(items) > 0 {
+				p.reviewSignal <- ReviewEvent{
+					NodeName: nodeName,
+					Results:  items,
+				}
+			}
+		} else {
+			// 无 supervisor：自动通过，直接调用 OnResult。
+			for _, item := range items {
+				if node.OnResult != nil {
+					node.OnResult(item.rawResult)
+				}
 			}
 		}
 	} else {
@@ -547,7 +584,7 @@ func (p *pipeline) checkAllReviewDone() {
 
 	if allDone {
 		// 通知 supervisor 可以退出。
-		if p.hasReviewNodes() && p.cfg.Supervisor != nil {
+		if p.hasReviewNodes() && p.hasSupervisor {
 			p.reviewSignal <- ReviewEvent{Done: true}
 		}
 		p.doneOnce.Do(func() { close(p.doneCh) })
@@ -724,20 +761,18 @@ func (p *pipeline) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 
 	// 启动 supervisor（如果有 Review 节点）。
-	if p.cfg.Supervisor != nil && p.hasReviewNodes() {
+	if p.hasSupervisor && p.hasReviewNodes() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			p.runSupervisor(ctx)
 		}()
 	} else {
-		// 没有 supervisor，所有 Review 节点自动标记审核完成。
-		for name, node := range p.nodes {
-			if !node.Review {
-				p.nodesMu.Lock()
-				p.reviewDone[name] = true
-				p.nodesMu.Unlock()
-			}
+		// 没有 supervisor，所有节点自动标记审核完成。
+		for name := range p.nodes {
+			p.nodesMu.Lock()
+			p.reviewDone[name] = true
+			p.nodesMu.Unlock()
 		}
 	}
 
@@ -772,6 +807,8 @@ func (p *pipeline) Run(ctx context.Context) error {
 		for {
 			select {
 			case <-ctx.Done():
+				return
+			case <-p.doneCh:
 				return
 			case name := <-readyCh:
 				if !started[name] {
@@ -956,9 +993,17 @@ func (p *pipeline) runMultiWorkers(ctx context.Context, node *pipelineNodeState)
 		workerWg.Add(1)
 		go func() {
 			defer workerWg.Done()
-			for msg := range q.ch {
-				result := p.runWorkerOnce(ctx, node, msg)
-				p.handleResult(node.Name, result, msg, 0)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case msg, ok := <-q.ch:
+					if !ok {
+						return
+					}
+					result := p.runWorkerOnce(ctx, node, msg)
+					p.handleResult(node.Name, result, msg, 0)
+				}
 			}
 		}()
 	}

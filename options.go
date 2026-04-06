@@ -25,6 +25,7 @@ func (f optionFunc) apply(c *appConfig) { f(c) }
 // appConfig holds all configuration for an App.
 type appConfig struct {
 	provider            provider.Provider
+	providerConfig      *ProviderConfig // Provider 配置（与 provider 二选一）
 	fallback            provider.Provider
 	systemPrompt        string
 	maxTurns            int
@@ -58,6 +59,58 @@ type appConfig struct {
 
 	// MCP 服务器配置
 	mcpServers []agent.MCPServerConfig
+
+	// 子系统开关（默认均不启用）
+	enableTaskTools   bool
+	enablePlanTools   bool
+	enableAskTools    bool
+	enableBgTaskTools bool
+}
+
+// ProviderConfig 是 LLM Provider 的配置，可直接传给 New()。
+// 支持两种类型：OpenAI 兼容 API 和 Anthropic API。
+//
+// 示例：
+//
+//	app := goagent.New(goagent.ProviderConfig{
+//	    Type:   "openai",
+//	    Model:  "gpt-4o",
+//	    APIKey: "sk-...",
+//	    BaseURL: "https://api.openai.com/v1",
+//	})
+//
+// 可与 With* Option 混用：
+//
+//	app := goagent.New(
+//	    goagent.ProviderConfig{
+//	        Type:   "openai",
+//	        Model:  "deepseek-chat",
+//	    },
+//	    goagent.WithSystemPrompt("你是助手"),
+//	    goagent.WithMaxTurns(50),
+//	)
+type ProviderConfig struct {
+	// Type 指定 Provider 类型："openai" 或 "anthropic"。
+	// 默认为 "openai"。
+	Type string
+
+	// Model 模型名称。
+	// OpenAI 默认 "qwen2.5:7b"，Anthropic 默认 "claude-sonnet-4-6-v1"。
+	Model string
+
+	// APIKey API 密钥。留空表示无需鉴权（如本地 Ollama）。
+	APIKey string
+
+	// BaseURL API 基础 URL。
+	// OpenAI 默认 "http://localhost:11434/v1"，Anthropic 不需要。
+	BaseURL string
+}
+
+// ensure ProviderConfig implements Option.
+var _ Option = ProviderConfig{}
+
+func (cfg ProviderConfig) apply(c *appConfig) {
+	c.providerConfig = &cfg
 }
 
 func defaultConfig() appConfig {
@@ -345,14 +398,16 @@ func (a *autoApprover) Approve(string, string, Permission) (bool, bool) {
 
 // --- WithBuiltinTools ---
 
-// WithBuiltinTools 一行开启所有内置工具（Read/Write/Edit/Glob/Grep/Bash/AskUser）。
+// WithBuiltinTools 一行开启所有内置工具（Read/Write/Edit/Glob/Grep/Bash/WebSearch/WebFetch）。
 // 等价于手动调用 app.UseTools(builtin.AllTools()...)。
+// 注意：AskUser 不在此列，需通过 WithAskTools() 单独启用。
 //
 // 示例：
 //
 //	app := goagent.New(
 //	    goagent.WithProvider(provider),
 //	    goagent.WithBuiltinTools(),
+//	    goagent.WithAskTools(),
 //	)
 func WithBuiltinTools() Option {
 	return optionFunc(func(c *appConfig) {
@@ -723,5 +778,68 @@ func WithBgTaskStore(store bgtask.StoreInterface) Option {
 func WithMCP(servers ...agent.MCPServerConfig) Option {
 	return optionFunc(func(c *appConfig) {
 		c.mcpServers = append(c.mcpServers, servers...)
+	})
+}
+
+// --- 子系统开关 Options ---
+
+// WithTaskTools 启用 Task 管理工具（TaskCreate/TaskUpdate/TaskGet/TaskList）。
+// 默认不启用。CLI 应用如需任务管理能力需显式添加此 Option。
+//
+// 示例：
+//
+//	app := goagent.New(
+//	    goagent.WithProvider(provider),
+//	    goagent.WithTaskTools(),
+//	)
+func WithTaskTools() Option {
+	return optionFunc(func(c *appConfig) {
+		c.enableTaskTools = true
+	})
+}
+
+// WithPlanTools 启用 Plan Mode 工具（EnterPlanMode/ExitPlanMode）。
+// 默认不启用。CLI 应用如需规划模式需显式添加此 Option。
+//
+// 示例：
+//
+//	app := goagent.New(
+//	    goagent.WithProvider(provider),
+//	    goagent.WithPlanTools(),
+//	)
+func WithPlanTools() Option {
+	return optionFunc(func(c *appConfig) {
+		c.enablePlanTools = true
+	})
+}
+
+// WithAskTools 启用 AskUser 工具。
+// 默认不启用。CLI/TUI 应用如需与用户交互确认需显式添加此 Option。
+// 也可通过 InteractKit() 手动注册。
+//
+// 示例：
+//
+//	app := goagent.New(
+//	    goagent.WithProvider(provider),
+//	    goagent.WithAskTools(),
+//	)
+func WithAskTools() Option {
+	return optionFunc(func(c *appConfig) {
+		c.enableAskTools = true
+	})
+}
+
+// WithBgTaskTools 启用后台任务工具（TaskStop/TaskOutput）。
+// 默认不启用。CLI 应用如需后台任务管理需显式添加此 Option。
+//
+// 示例：
+//
+//	app := goagent.New(
+//	    goagent.WithProvider(provider),
+//	    goagent.WithBgTaskTools(),
+//	)
+func WithBgTaskTools() Option {
+	return optionFunc(func(c *appConfig) {
+		c.enableBgTaskTools = true
 	})
 }

@@ -62,12 +62,12 @@ type App struct {
 	groups      []*ToolGroup
 	config      appConfig
 
-	// 内部子系统（由 New() 初始化）。
-	taskStore  *task.Store     // Task 系统存储
-	planMgr    *plan.Manager   // Plan Mode 管理器
-	hooksMgr   *hooks.Manager  // Hooks 管理器
-	bgTaskMgr  *bgtask.Manager // 后台任务管理器
-	mcpClients []*mcp.Client   // MCP 客户端列表
+	// 内部子系统（由 New() 按需初始化）。
+	taskStore  task.StoreInterface // Task 系统存储（WithTaskTools 启用时初始化）
+	planMgr    plan.StoreInterface // Plan Mode 管理器（WithPlanTools 启用时初始化）
+	hooksMgr   *hooks.Manager      // Hooks 管理器
+	bgTaskMgr  *bgtask.Manager     // 后台任务管理器
+	mcpClients []*mcp.Client       // MCP 客户端列表
 
 	// Pipeline DAG 编排（可选）
 	pipeline *pipeline
@@ -101,6 +101,11 @@ func New(opts ...Option) *App {
 	app.provider = app.config.provider
 	app.fallback = app.config.fallback
 
+	// 从 ProviderConfig 自动创建 provider（如果未直接设置 provider）。
+	if app.provider == nil && app.config.providerConfig != nil {
+		app.provider = buildProvider(*app.config.providerConfig)
+	}
+
 	// 初始化 Observer 注册表。
 	app.obsRegistry = observer.NewSyncObservable()
 
@@ -122,12 +127,50 @@ func New(opts ...Option) *App {
 	}
 
 	// 初始化内部子系统。
-	app.taskStore = task.NewStore()
-	app.planMgr = plan.NewManager(".yume/plans")
 	app.hooksMgr = hooks.NewManager()
-	app.bgTaskMgr = bgtask.NewManager("")
 	for _, h := range app.config.hooks {
 		app.hooksMgr.Register(h)
+	}
+
+	// 后台任务系统（WithBgTaskTools 启用时才初始化）。
+	if app.config.enableBgTaskTools {
+		if app.config.bgTaskStore != nil {
+			app.bgTaskMgr = app.config.bgTaskStore.(*bgtask.Manager)
+		} else {
+			app.bgTaskMgr = bgtask.NewManager("")
+		}
+		if bgTaskToolsProvider != nil {
+			app.UseTools(bgTaskToolsProvider(app.bgTaskMgr)...)
+		}
+	}
+
+	// Task 系统（WithTaskTools 启用时才初始化）。
+	if app.config.enableTaskTools {
+		if app.config.taskStore != nil {
+			app.taskStore = app.config.taskStore
+		} else {
+			app.taskStore = task.NewStore()
+		}
+		if taskToolsProvider != nil {
+			app.UseTools(taskToolsProvider(app.taskStore)...)
+		}
+	}
+
+	// Plan 系统（WithPlanTools 启用时才初始化）。
+	if app.config.enablePlanTools {
+		if app.config.planStore != nil {
+			app.planMgr = app.config.planStore
+		} else {
+			app.planMgr = plan.NewManager(".yume/plans")
+		}
+		if planToolsProvider != nil {
+			app.UseTools(planToolsProvider(app.planMgr)...)
+		}
+	}
+
+	// AskUser 工具（WithAskTools 启用时才注册）。
+	if app.config.enableAskTools && askToolsProvider != nil {
+		app.UseTools(askToolsProvider()...)
 	}
 
 	// 自动注册内置工具（WithBuiltinTools）。
@@ -135,22 +178,9 @@ func New(opts ...Option) *App {
 		app.autoRegisterBuiltinTools()
 	}
 
-	// 注册 Task/Plan 内置工具（始终可用）。
-	if taskToolsProvider != nil {
-		app.UseTools(taskToolsProvider(app.taskStore)...)
-	}
-	if planToolsProvider != nil {
-		app.UseTools(planToolsProvider(app.planMgr)...)
-	}
-
 	// 注册子 agent 工具（如果配置了）。
 	if len(app.config.subAgentDefs) > 0 && app.provider != nil && subAgentToolsProvider != nil {
 		app.UseTools(subAgentToolsProvider(app.provider, app.config.subAgentDefs)...)
-	}
-
-	// 注册后台任务工具（TaskStop/TaskOutput）。
-	if bgTaskToolsProvider != nil {
-		app.UseTools(bgTaskToolsProvider(app.bgTaskMgr)...)
 	}
 
 	// 注册 ToolKit 工具（WithToolKits）。
@@ -307,6 +337,9 @@ var subAgentToolsProvider func(prov provider.Provider, defs []agent.Definition) 
 // bgTaskToolsProvider 是由 builtin 包注入的后台任务工具提供函数。
 var bgTaskToolsProvider func(store bgtask.StoreInterface) []NamedTool
 
+// askToolsProvider 是由 builtin 包注入的 AskUser 工具提供函数。
+var askToolsProvider func() []NamedTool
+
 // RegisterTaskToolsProvider 由 builtin 包调用以注册 Task 工具提供函数。
 func RegisterTaskToolsProvider(fn func(store task.StoreInterface) []NamedTool) {
 	taskToolsProvider = fn
@@ -325,6 +358,11 @@ func RegisterSubAgentToolsProvider(fn func(prov provider.Provider, defs []agent.
 // RegisterBgTaskToolsProvider 由 builtin 包调用以注册后台任务工具提供函数。
 func RegisterBgTaskToolsProvider(fn func(store bgtask.StoreInterface) []NamedTool) {
 	bgTaskToolsProvider = fn
+}
+
+// RegisterAskToolsProvider 由 builtin 包调用以注册 AskUser 工具提供函数。
+func RegisterAskToolsProvider(fn func() []NamedTool) {
+	askToolsProvider = fn
 }
 
 // Run starts an agent session and returns a channel of events.
@@ -647,6 +685,14 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		permGate.SetRules(cfg.permissionRules)
 	}
 
+	// 注入 YOLO LLM 分类器（对齐 Claude Code 的 YOLO classifier）。
+	// 需要 provider 才能调用子模型进行权限分类。
+	if a.provider != nil {
+		permGate.SetClassifier(permission.NewYoloClassifier(a.provider, permission.YoloClassifierConfig{
+			Mode: "both", // 两阶段：fast → thinking
+		}))
+	}
+
 	// 3. Memory Manager。
 	memMgr := memory.NewManager(memory.Config{
 		MemoryDir:      cfg.memoryDir,
@@ -686,9 +732,13 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		Executor:     exec,
 		Budget:       budgetTracker,
 		Hooks:        &hooksRunnerAdapter{mgr: a.hooksMgr},
-		PlanChecker:  &planCheckerAdapter{mgr: a.planMgr},
 		Observer:     a.obsRegistry.Observer(),
 		SessionID:    sess.ID,
+	}
+
+	// PlanChecker 仅在 Plan 系统启用时注入。
+	if a.planMgr != nil {
+		loopCfg.PlanChecker = &planCheckerAdapter{mgr: a.planMgr}
 	}
 
 	// 注册 PostSampling hook（SessionMemory）。
@@ -934,33 +984,10 @@ func (a *App) buildToolSet() []loop.ToolEntry {
 			Permission:         permission.Level(rt.def.Permission),
 			Concurrent:         rt.def.Concurrent,
 			MaxResultSizeChars: rt.def.MaxResultSizeChars,
+			InterruptBehavior:  rt.def.InterruptMode,
 			ExecuteFn: func(ctx context.Context, input json.RawMessage) (string, error) {
 				return rt.def.call(ctx, input)
 			},
-		}
-
-		// 传递扩展字段。
-		if rt.def.IsConcurrencySafe != nil {
-			entry.IsConcurrencySafe = rt.def.IsConcurrencySafe
-		}
-		if rt.def.ValidateInput != nil {
-			entry.ValidateInput = rt.def.ValidateInput
-		}
-		if rt.def.CheckPermissions != nil {
-			fn := rt.def.CheckPermissions
-			entry.CheckPermissions = func(ctx context.Context, input json.RawMessage) (string, string, error) {
-				result, err := fn(ctx, input)
-				if err != nil {
-					return "", "", err
-				}
-				if result == nil {
-					return "", "", nil
-				}
-				return result.Behavior, result.Reason, nil
-			}
-		}
-		if rt.def.InterruptBehavior != nil {
-			entry.InterruptBehavior = rt.def.InterruptBehavior()
 		}
 
 		entries = append(entries, entry)
@@ -1071,12 +1098,12 @@ func (h *hooksRunnerAdapter) RunStop(ctx context.Context) (block bool, message s
 	return false, "", nil
 }
 
-// planCheckerAdapter 将 plan.Manager 适配为 loop.PlanChecker 接口。
-// plan.Manager.IsToolAllowed 接收 string 权限名，
+// planCheckerAdapter 将 plan.StoreInterface 适配为 loop.PlanChecker 接口。
+// plan.StoreInterface.IsToolAllowed 接收 string 权限名，
 // loop.PlanChecker.IsToolAllowed 接收 permission.Level（int），
 // 此适配器做 Level → string 的映射。
 type planCheckerAdapter struct {
-	mgr *plan.Manager
+	mgr plan.StoreInterface
 }
 
 func (p *planCheckerAdapter) IsActive() bool {

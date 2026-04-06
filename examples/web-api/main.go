@@ -35,7 +35,6 @@ import (
 
 	"github.com/Dream355873200/GoAgent"
 	_ "github.com/Dream355873200/GoAgent/builtin" // 注册内置工具
-	"github.com/Dream355873200/GoAgent/provider/openai"
 )
 
 func main() {
@@ -44,11 +43,12 @@ func main() {
 
 	// ─── 2. 创建 GoAgent App（纯 SDK 模式）───
 	app := goagent.New(
-		goagent.WithProvider(goagent.OpenAI(openai.Config{
-			BaseURL: envOr("OPENAI_BASE_URL", "http://localhost:11434/v1"),
+		goagent.ProviderConfig{
+			Type:    "openai",
 			Model:   envOr("OPENAI_MODEL", "qwen2.5:7b"),
 			APIKey:  os.Getenv("OPENAI_API_KEY"),
-		})),
+			BaseURL: envOr("OPENAI_BASE_URL", "http://localhost:11434/v1"),
+		},
 		goagent.WithSystemPrompt("你是一个 AI 助手。你可以读写文件和执行命令。"),
 		goagent.WithBuiltinTools(),
 

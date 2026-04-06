@@ -3,8 +3,11 @@
 package permission
 
 import (
+	"context"
 	"fmt"
 	"sync"
+
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // Level 对应公共的 goagent.Permission 枚举。
@@ -95,12 +98,14 @@ type Approver interface {
 
 // Gate 管理工具调用的权限决定。
 type Gate struct {
-	approver    Approver
-	mu          sync.RWMutex
-	alwaysAllow map[string]bool // toolName -> 用户是否授权"始终允许"
-	deniedCache map[string]bool // toolName+input -> 用户是否最近拒绝
-	mode        PermissionMode
-	rules       *RuleSet
+	approver          Approver
+	mu                sync.RWMutex
+	alwaysAllow       map[string]bool // toolName -> 用户是否授权"始终允许"
+	deniedCache       map[string]bool // toolName+input -> 用户是否最近拒绝
+	mode              PermissionMode
+	rules             *RuleSet
+	classifier        *YoloClassifier   // YOLO LLM 分类器（对齐 Claude Code）
+	currentTranscript []message.Message // 由 loop 每轮更新，供 YOLO 分类器使用
 }
 
 // NewGate 使用给定的 Approver 创建一个新的权限 Gate。
@@ -126,6 +131,23 @@ func (g *Gate) SetRules(rules *RuleSet) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.rules = rules
+}
+
+// SetClassifier 设置 YOLO LLM 分类器。
+// 对齐 Claude Code 的 YOLO classifier 集成。
+// 设置后，非 ReadOnly 工具在 allow 规则通过后会经过 YOLO 分类。
+func (g *Gate) SetClassifier(c *YoloClassifier) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.classifier = c
+}
+
+// SetTranscript 更新当前对话记录，供 YOLO 分类器构建上下文。
+// 由 loop 每轮迭代时调用。
+func (g *Gate) SetTranscript(msgs []message.Message) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.currentTranscript = msgs
 }
 
 // CheckResult 执行完整的权限检查流程并返回 PermissionResult。
@@ -194,6 +216,47 @@ func (g *Gate) CheckResult(toolName string, input string, level Level) Permissio
 	if rules != nil {
 		if result := rules.Evaluate(toolName, input); result != nil && result.Behavior == BehaviorAllow {
 			return *result
+		}
+	}
+
+	// 第 3.5 步：YOLO LLM 分类器（对齐 Claude Code 的 classifyYoloAction 位置）。
+	// 在 allow 规则通过后、默认级别检查前，使用 LLM 子模型判断操作安全性。
+	if g.classifier != nil && level > LevelReadOnly {
+		g.mu.RLock()
+		clf := g.classifier
+		transcript := g.currentTranscript
+		g.mu.RUnlock()
+
+		if IsSafeYoloTool(toolName) {
+			return PermissionResult{
+				Behavior: BehaviorAllow,
+				Reason:   "安全工具白名单",
+				Source:   "yolo_whitelist",
+			}
+		}
+
+		result := clf.Classify(context.Background(), transcript, toolName, input)
+
+		if result.Unavailable {
+			// API 不可用，fail-open → 退回到正常权限逻辑（step 4）。
+		} else if result.TranscriptTooLong {
+			// 上下文过长，退回到正常权限逻辑（step 4）。
+		} else if result.ShouldBlock {
+			reason := "YOLO 分类器阻止"
+			if result.Reason != "" {
+				reason += ": " + result.Reason
+			}
+			return PermissionResult{
+				Behavior: BehaviorDeny,
+				Reason:   reason,
+				Source:   "yolo_classifier",
+			}
+		} else {
+			return PermissionResult{
+				Behavior: BehaviorAllow,
+				Reason:   "YOLO 分类器允许",
+				Source:   "yolo_classifier",
+			}
 		}
 	}
 

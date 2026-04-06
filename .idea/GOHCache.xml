@@ -343,6 +343,13 @@
             </set>
           </value>
         </entry>
+        <entry key="CustomTask">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline_test.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="Decision">
           <value>
             <set>
@@ -478,6 +485,13 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/compaction/restore.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Foo">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline_test.go" />
             </set>
           </value>
         </entry>
@@ -712,6 +726,27 @@
             </set>
           </value>
         </entry>
+        <entry key="MockProvider">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/mock.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="MockResponse">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/mock.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="MockToolCall">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/mock.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="Model">
           <value>
             <set>
@@ -854,6 +889,27 @@
             </set>
           </value>
         </entry>
+        <entry key="PipelineAgentDef">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PipelineConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="PipelineNode">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="PlanConfirmHTTPRequest">
           <value>
             <set>
@@ -943,6 +999,13 @@
             <set>
               <option value="file://$PROJECT_DIR$/provider/anthropic/anthropic.go" />
               <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ProviderConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/options.go" />
             </set>
           </value>
         </entry>
@@ -1044,6 +1107,20 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/provider/fallback.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ReviewEvent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="ReviewResultItem">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline.go" />
             </set>
           </value>
         </entry>
@@ -1325,6 +1402,7 @@
         <entry key="Task">
           <value>
             <set>
+              <option value="file://$PROJECT_DIR$/pipeline_test.go" />
               <option value="file://$PROJECT_DIR$/task/task.go" />
             </set>
           </value>
@@ -1688,6 +1766,27 @@
             </set>
           </value>
         </entry>
+        <entry key="YoloClassifier">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission/yolo.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="YoloClassifierConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission/yolo.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="YoloResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/permission/yolo.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="agentEventMsg">
           <value>
             <set>
@@ -1720,6 +1819,13 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="approveResultInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline.go" />
             </set>
           </value>
         </entry>
@@ -1934,6 +2040,13 @@
             </set>
           </value>
         </entry>
+        <entry key="injectedQueues">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="interruptRequest">
           <value>
             <set>
@@ -1945,6 +2058,13 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/internal/loop/loop.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="messagePusher">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline.go" />
             </set>
           </value>
         </entry>
@@ -1983,6 +2103,20 @@
             </set>
           </value>
         </entry>
+        <entry key="pipeline">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="pipelineNodeState">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="planCheckerAdapter">
           <value>
             <set>
@@ -2004,10 +2138,24 @@
             </set>
           </value>
         </entry>
+        <entry key="rejectResultInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="searchResult">
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/builtin/web.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="sendTaskInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline_test.go" />
             </set>
           </value>
         </entry>
@@ -2214,6 +2362,13 @@
             </set>
           </value>
         </entry>
+        <entry key="waitForReviewInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline.go" />
+            </set>
+          </value>
+        </entry>
       </map>
     </option>
     <option name="scannedPathMapping">
@@ -2221,7 +2376,7 @@
         <entry key="file://$PROJECT_DIR$/agent/agent.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153620891" />
+              <option name="lastModified" value="1775403240235" />
               <option name="schema">
                 <list>
                   <option value="Definition" />
@@ -2236,7 +2391,7 @@
         <entry key="file://$PROJECT_DIR$/agent/context.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153620907" />
+              <option name="lastModified" value="1775403240259" />
               <option name="schema">
                 <list>
                   <option value="AgentContext" />
@@ -2248,7 +2403,7 @@
         <entry key="file://$PROJECT_DIR$/agent/query_tracking.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775299059428" />
+              <option name="lastModified" value="1775403240263" />
               <option name="schema">
                 <list>
                   <option value="BaseQueryEvent" />
@@ -2267,7 +2422,7 @@
         <entry key="file://$PROJECT_DIR$/agent/subagent.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775298174890" />
+              <option name="lastModified" value="1775403240264" />
               <option name="schema">
                 <list>
                   <option value="AgentDefinition" />
@@ -2286,7 +2441,7 @@
         <entry key="file://$PROJECT_DIR$/agent/swarm.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775298810299" />
+              <option name="lastModified" value="1775403240266" />
               <option name="schema">
                 <list>
                   <option value="SwarmConfig" />
@@ -2302,7 +2457,7 @@
         <entry key="file://$PROJECT_DIR$/agent/tool.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153620927" />
+              <option name="lastModified" value="1775403240268" />
               <option name="schema">
                 <list>
                   <option value="AgentToolInput" />
@@ -2315,7 +2470,7 @@
         <entry key="file://$PROJECT_DIR$/analytics/analytics.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153861860" />
+              <option name="lastModified" value="1775403240270" />
               <option name="schema">
                 <list>
                   <option value="AnalyticsEvent" />
@@ -2330,7 +2485,7 @@
         <entry key="file://$PROJECT_DIR$/analytics/observer.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775289903664" />
+              <option name="lastModified" value="1775403240272" />
               <option name="schema">
                 <list>
                   <option value="Observer" />
@@ -2342,7 +2497,7 @@
         <entry key="file://$PROJECT_DIR$/askuser_handler.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775304942444" />
+              <option name="lastModified" value="1775403240275" />
               <option name="schema">
                 <list>
                   <option value="AskUserRequest" />
@@ -2356,7 +2511,7 @@
         <entry key="file://$PROJECT_DIR$/bgtask/bgtask.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775216045533" />
+              <option name="lastModified" value="1775403240276" />
               <option name="schema">
                 <list>
                   <option value="TaskState" />
@@ -2369,14 +2524,14 @@
         <entry key="file://$PROJECT_DIR$/bgtask/store.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775290994444" />
+              <option name="lastModified" value="1775403240278" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/bgtask/tools.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775201220721" />
+              <option name="lastModified" value="1775403240280" />
               <option name="schema">
                 <list>
                   <option value="TaskStopInput" />
@@ -2392,7 +2547,7 @@
         <entry key="file://$PROJECT_DIR$/budget/budget.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775154991714" />
+              <option name="lastModified" value="1775403240281" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -2407,7 +2562,7 @@
         <entry key="file://$PROJECT_DIR$/builtin/askuser.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775203385484" />
+              <option name="lastModified" value="1775403240284" />
               <option name="schema">
                 <list>
                   <option value="AskUserInput" />
@@ -2419,7 +2574,7 @@
         <entry key="file://$PROJECT_DIR$/builtin/bash.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775157188871" />
+              <option name="lastModified" value="1775467245301" />
               <option name="schema">
                 <list>
                   <option value="BashInput" />
@@ -2431,14 +2586,14 @@
         <entry key="file://$PROJECT_DIR$/builtin/kits.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775158240929" />
+              <option name="lastModified" value="1775470243312" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/builtin/management.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775291007088" />
+              <option name="lastModified" value="1775403240290" />
               <option name="schema">
                 <list>
                   <option value="ManagementDeps" />
@@ -2460,7 +2615,7 @@
         <entry key="file://$PROJECT_DIR$/builtin/media.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775299099433" />
+              <option name="lastModified" value="1775403240292" />
               <option name="schema">
                 <list>
                   <option value="ImageInput" />
@@ -2474,7 +2629,7 @@
         <entry key="file://$PROJECT_DIR$/builtin/notebook.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775299074738" />
+              <option name="lastModified" value="1775403240295" />
               <option name="schema">
                 <list>
                   <option value="NotebookEditInput" />
@@ -2488,7 +2643,7 @@
         <entry key="file://$PROJECT_DIR$/builtin/tools.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775298351871" />
+              <option name="lastModified" value="1775470044212" />
               <option name="schema">
                 <list>
                   <option value="ReadInput" />
@@ -2505,7 +2660,7 @@
         <entry key="file://$PROJECT_DIR$/builtin/web.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775298362295" />
+              <option name="lastModified" value="1775403240299" />
               <option name="schema">
                 <list>
                   <option value="WebSearchInput" />
@@ -2519,7 +2674,7 @@
         <entry key="file://$PROJECT_DIR$/cli.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775216045491" />
+              <option name="lastModified" value="1775403240301" />
               <option name="schema">
                 <list>
                   <option value="agentRunnerAdapter" />
@@ -2534,7 +2689,7 @@
         <entry key="file://$PROJECT_DIR$/compaction/boundary.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775152928498" />
+              <option name="lastModified" value="1775403240304" />
               <option name="schema">
                 <list>
                   <option value="BoundaryMetadata" />
@@ -2546,7 +2701,7 @@
         <entry key="file://$PROJECT_DIR$/compaction/compact_main.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775297212940" />
+              <option name="lastModified" value="1775403240308" />
               <option name="schema">
                 <list>
                   <option value="CompactConfig" />
@@ -2558,7 +2713,7 @@
         <entry key="file://$PROJECT_DIR$/compaction/compaction.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775296399693" />
+              <option name="lastModified" value="1775415891760" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -2577,7 +2732,7 @@
         <entry key="file://$PROJECT_DIR$/compaction/forked_agent.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775297285162" />
+              <option name="lastModified" value="1775403240310" />
               <option name="schema">
                 <list>
                   <option value="ForkedAgentConfig" />
@@ -2592,7 +2747,7 @@
         <entry key="file://$PROJECT_DIR$/compaction/hooks.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775297230975" />
+              <option name="lastModified" value="1775403240311" />
               <option name="schema">
                 <list>
                   <option value="PreCompactResult" />
@@ -2608,7 +2763,7 @@
         <entry key="file://$PROJECT_DIR$/compaction/micro_compact.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775297134292" />
+              <option name="lastModified" value="1775403240314" />
               <option name="schema">
                 <list>
                   <option value="MicrocompactConfig" />
@@ -2621,14 +2776,14 @@
         <entry key="file://$PROJECT_DIR$/compaction/prompt.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775302560669" />
+              <option name="lastModified" value="1775403240316" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/compaction/restore.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775155256717" />
+              <option name="lastModified" value="1775403240318" />
               <option name="schema">
                 <list>
                   <option value="FileTracker" />
@@ -2641,7 +2796,7 @@
         <entry key="file://$PROJECT_DIR$/compaction/session_memory.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775297221597" />
+              <option name="lastModified" value="1775403240320" />
               <option name="schema">
                 <list>
                   <option value="SessionMemoryConfig" />
@@ -2654,7 +2809,7 @@
         <entry key="file://$PROJECT_DIR$/compaction/summary.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775296330719" />
+              <option name="lastModified" value="1775403240323" />
               <option name="schema">
                 <list>
                   <option value="SummaryConfig" />
@@ -2666,7 +2821,7 @@
         <entry key="file://$PROJECT_DIR$/compaction/tool_use_summary.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775298695309" />
+              <option name="lastModified" value="1775403240324" />
               <option name="schema">
                 <list>
                   <option value="ToolUseSummaryConfig" />
@@ -2680,14 +2835,14 @@
         <entry key="file://$PROJECT_DIR$/compaction/whitelist.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775152928507" />
+              <option name="lastModified" value="1775403240326" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/context.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775148729240" />
+              <option name="lastModified" value="1775403240328" />
               <option name="schema">
                 <list>
                   <option value="Context" />
@@ -2699,7 +2854,7 @@
         <entry key="file://$PROJECT_DIR$/cost/cost.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153722461" />
+              <option name="lastModified" value="1775403240330" />
               <option name="schema">
                 <list>
                   <option value="ModelPricing" />
@@ -2714,7 +2869,7 @@
         <entry key="file://$PROJECT_DIR$/cost/observer.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775289871892" />
+              <option name="lastModified" value="1775403240332" />
               <option name="schema">
                 <list>
                   <option value="Observer" />
@@ -2726,7 +2881,7 @@
         <entry key="file://$PROJECT_DIR$/cron/cron.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775155079201" />
+              <option name="lastModified" value="1775403240334" />
               <option name="schema">
                 <list>
                   <option value="Job" />
@@ -2740,7 +2895,7 @@
         <entry key="file://$PROJECT_DIR$/driver/driver.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775291065709" />
+              <option name="lastModified" value="1775403240335" />
               <option name="schema">
                 <list>
                   <option value="Event" />
@@ -2753,7 +2908,7 @@
         <entry key="file://$PROJECT_DIR$/event.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775300126802" />
+              <option name="lastModified" value="1775403240337" />
               <option name="schema">
                 <list>
                   <option value="Event" />
@@ -2765,7 +2920,7 @@
         <entry key="file://$PROJECT_DIR$/executor/executor.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775213928546" />
+              <option name="lastModified" value="1775469273949" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -2781,7 +2936,7 @@
         <entry key="file://$PROJECT_DIR$/executor/tracked.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153376092" />
+              <option name="lastModified" value="1775403240353" />
               <option name="schema">
                 <list>
                   <option value="TrackedTool" />
@@ -2794,7 +2949,7 @@
         <entry key="file://$PROJECT_DIR$/extractmem/extractmem.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775200423485" />
+              <option name="lastModified" value="1775403240354" />
               <option name="schema">
                 <list>
                   <option value="Extractor" />
@@ -2807,7 +2962,7 @@
         <entry key="file://$PROJECT_DIR$/filehistory/filehistory.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775216045579" />
+              <option name="lastModified" value="1775403240356" />
               <option name="schema">
                 <list>
                   <option value="Snapshot" />
@@ -2822,7 +2977,7 @@
         <entry key="file://$PROJECT_DIR$/goagent.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775305085728" />
+              <option name="lastModified" value="1775470609356" />
               <option name="schema">
                 <list>
                   <option value="App" />
@@ -2842,7 +2997,7 @@
         <entry key="file://$PROJECT_DIR$/hooks/command.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153558577" />
+              <option name="lastModified" value="1775403240360" />
               <option name="schema">
                 <list>
                   <option value="CommandHook" />
@@ -2855,7 +3010,7 @@
         <entry key="file://$PROJECT_DIR$/hooks/hooks.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153558559" />
+              <option name="lastModified" value="1775403240363" />
               <option name="schema">
                 <list>
                   <option value="HookContext" />
@@ -2869,7 +3024,7 @@
         <entry key="file://$PROJECT_DIR$/hooks/tool_refresh.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775299020110" />
+              <option name="lastModified" value="1775403240365" />
               <option name="schema">
                 <list>
                   <option value="ToolRefreshManager" />
@@ -2884,7 +3039,7 @@
         <entry key="file://$PROJECT_DIR$/http.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775305039391" />
+              <option name="lastModified" value="1775403240367" />
               <option name="schema">
                 <list>
                   <option value="chatRequest" />
@@ -2905,10 +3060,17 @@
             </ScannedPath>
           </value>
         </entry>
+        <entry key="file://$PROJECT_DIR$/inferred.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775467259635" />
+            </ScannedPath>
+          </value>
+        </entry>
         <entry key="file://$PROJECT_DIR$/internal/loop/loop.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775302619625" />
+              <option name="lastModified" value="1775467241191" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -2925,7 +3087,7 @@
         <entry key="file://$PROJECT_DIR$/internal/loop/pause.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775299924767" />
+              <option name="lastModified" value="1775403240372" />
               <option name="schema">
                 <list>
                   <option value="ToolState" />
@@ -2940,7 +3102,7 @@
         <entry key="file://$PROJECT_DIR$/internal/loop/preprocess.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153097549" />
+              <option name="lastModified" value="1775403240374" />
               <option name="schema">
                 <list>
                   <option value="PreprocessResult" />
@@ -2953,7 +3115,7 @@
         <entry key="file://$PROJECT_DIR$/internal/loop/stophook.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153097576" />
+              <option name="lastModified" value="1775403240375" />
               <option name="schema">
                 <list>
                   <option value="StopHookResult" />
@@ -2966,7 +3128,7 @@
         <entry key="file://$PROJECT_DIR$/internal/loop/withholding.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153097552" />
+              <option name="lastModified" value="1775403240377" />
               <option name="schema">
                 <list>
                   <option value="WithheldEvent" />
@@ -2979,7 +3141,7 @@
         <entry key="file://$PROJECT_DIR$/interrupt_handler.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775304906285" />
+              <option name="lastModified" value="1775403240379" />
               <option name="schema">
                 <list>
                   <option value="InterruptHandler" />
@@ -2991,7 +3153,7 @@
         <entry key="file://$PROJECT_DIR$/mcp/client.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153685040" />
+              <option name="lastModified" value="1775403240381" />
               <option name="schema">
                 <list>
                   <option value="Client" />
@@ -3004,7 +3166,7 @@
         <entry key="file://$PROJECT_DIR$/mcp/tools.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153685082" />
+              <option name="lastModified" value="1775403240383" />
               <option name="schema">
                 <list>
                   <option value="FrameworkTool" />
@@ -3016,7 +3178,7 @@
         <entry key="file://$PROJECT_DIR$/mcp/transport.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153685056" />
+              <option name="lastModified" value="1775403240384" />
               <option name="schema">
                 <list>
                   <option value="StdioTransport" />
@@ -3029,7 +3191,7 @@
         <entry key="file://$PROJECT_DIR$/mcp/types.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153685072" />
+              <option name="lastModified" value="1775403240386" />
               <option name="schema">
                 <list>
                   <option value="Request" />
@@ -3050,7 +3212,7 @@
         <entry key="file://$PROJECT_DIR$/memory/automemory.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775155237386" />
+              <option name="lastModified" value="1775403240388" />
               <option name="schema">
                 <list>
                   <option value="AutoMemory" />
@@ -3063,7 +3225,7 @@
         <entry key="file://$PROJECT_DIR$/memory/claudemd.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153507993" />
+              <option name="lastModified" value="1775403240389" />
               <option name="schema">
                 <list>
                   <option value="ClaudeMDConfig" />
@@ -3076,7 +3238,7 @@
         <entry key="file://$PROJECT_DIR$/memory/memory.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775161738137" />
+              <option name="lastModified" value="1775403240391" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -3089,7 +3251,7 @@
         <entry key="file://$PROJECT_DIR$/message/attachment.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775298932278" />
+              <option name="lastModified" value="1775403240393" />
               <option name="schema">
                 <list>
                   <option value="AttachmentConfig" />
@@ -3103,7 +3265,7 @@
         <entry key="file://$PROJECT_DIR$/message/message.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775159314668" />
+              <option name="lastModified" value="1775403240394" />
               <option name="schema">
                 <list>
                   <option value="Message" />
@@ -3117,14 +3279,14 @@
         <entry key="file://$PROJECT_DIR$/message/token.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775152928489" />
+              <option name="lastModified" value="1775403240396" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/middleware.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775291843588" />
+              <option name="lastModified" value="1775403240397" />
               <option name="schema">
                 <list>
                   <option value="Decision" />
@@ -3140,7 +3302,7 @@
         <entry key="file://$PROJECT_DIR$/observer/observer.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775289830873" />
+              <option name="lastModified" value="1775403240399" />
               <option name="schema">
                 <list>
                   <option value="NopObserver" />
@@ -3154,10 +3316,11 @@
         <entry key="file://$PROJECT_DIR$/options.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775304318333" />
+              <option name="lastModified" value="1775470609357" />
               <option name="schema">
                 <list>
                   <option value="appConfig" />
+                  <option value="ProviderConfig" />
                   <option value="CompactionConfig" />
                   <option value="PromptConfig" />
                   <option value="autoApprover" />
@@ -3171,23 +3334,28 @@
         <entry key="file://$PROJECT_DIR$/permission/classifier.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775298741148" />
+              <option name="lastModified" value="1775466890414" />
               <option name="schema">
                 <list>
                   <option value="AIClassifierConfig" />
                   <option value="ClassificationResult" />
                   <option value="AIClassifier" />
-                  <option value="BashClassifier" />
-                  <option value="PermissionPredictor" />
                 </list>
               </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/permission/classifier_prompt.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775466909006" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/permission/matcher.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153303896" />
+              <option name="lastModified" value="1775403240404" />
               <option name="schema">
                 <list>
                   <option value="ToolPattern" />
@@ -3199,7 +3367,7 @@
         <entry key="file://$PROJECT_DIR$/permission/permission.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775290414058" />
+              <option name="lastModified" value="1775470608035" />
               <option name="schema">
                 <list>
                   <option value="PermissionResult" />
@@ -3212,7 +3380,7 @@
         <entry key="file://$PROJECT_DIR$/permission/rules.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153303870" />
+              <option name="lastModified" value="1775403240407" />
               <option name="schema">
                 <list>
                   <option value="Rule" />
@@ -3222,10 +3390,31 @@
             </ScannedPath>
           </value>
         </entry>
+        <entry key="file://$PROJECT_DIR$/permission/safe_tools.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775466815951" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/permission/yolo.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775466911857" />
+              <option name="schema">
+                <list>
+                  <option value="YoloResult" />
+                  <option value="YoloClassifierConfig" />
+                  <option value="YoloClassifier" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
         <entry key="file://$PROJECT_DIR$/permission_handler.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775158422125" />
+              <option name="lastModified" value="1775403240409" />
               <option name="schema">
                 <list>
                   <option value="PermissionRequest" />
@@ -3236,10 +3425,48 @@
             </ScannedPath>
           </value>
         </entry>
+        <entry key="file://$PROJECT_DIR$/pipeline.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775469545325" />
+              <option name="schema">
+                <list>
+                  <option value="PipelineConfig" />
+                  <option value="PipelineNode" />
+                  <option value="PipelineAgentDef" />
+                  <option value="ReviewEvent" />
+                  <option value="ReviewResultItem" />
+                  <option value="injectedQueues" />
+                  <option value="messagePusher" />
+                  <option value="pipeline" />
+                  <option value="pipelineNodeState" />
+                  <option value="waitForReviewInput" />
+                  <option value="approveResultInput" />
+                  <option value="rejectResultInput" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/pipeline_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775469357275" />
+              <option name="schema">
+                <list>
+                  <option value="Task" />
+                  <option value="Foo" />
+                  <option value="sendTaskInput" />
+                  <option value="CustomTask" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
         <entry key="file://$PROJECT_DIR$/plan/plan.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775216123440" />
+              <option name="lastModified" value="1775403240410" />
               <option name="schema">
                 <list>
                   <option value="Manager" />
@@ -3251,14 +3478,14 @@
         <entry key="file://$PROJECT_DIR$/plan/store.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775290488608" />
+              <option name="lastModified" value="1775403240413" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/planconfirm_handler.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775304955754" />
+              <option name="lastModified" value="1775403240414" />
               <option name="schema">
                 <list>
                   <option value="PlanConfirmRequest" />
@@ -3273,14 +3500,14 @@
         <entry key="file://$PROJECT_DIR$/prompts/prompts.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775302390982" />
+              <option name="lastModified" value="1775403240416" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/provider/anthropic/anthropic.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775212655180" />
+              <option name="lastModified" value="1775403240417" />
               <option name="schema">
                 <list>
                   <option value="Provider" />
@@ -3292,7 +3519,7 @@
         <entry key="file://$PROJECT_DIR$/provider/fallback.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775298871034" />
+              <option name="lastModified" value="1775403240419" />
               <option name="schema">
                 <list>
                   <option value="StreamingFallbackProvider" />
@@ -3305,7 +3532,7 @@
         <entry key="file://$PROJECT_DIR$/provider/fast_mode.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775298827717" />
+              <option name="lastModified" value="1775403240420" />
               <option name="schema">
                 <list>
                   <option value="FastModeConfig" />
@@ -3315,10 +3542,24 @@
             </ScannedPath>
           </value>
         </entry>
+        <entry key="file://$PROJECT_DIR$/provider/mock.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1775468996852" />
+              <option name="schema">
+                <list>
+                  <option value="MockProvider" />
+                  <option value="MockResponse" />
+                  <option value="MockToolCall" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
         <entry key="file://$PROJECT_DIR$/provider/openai/openai.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775212620509" />
+              <option name="lastModified" value="1775403240422" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -3346,7 +3587,7 @@
         <entry key="file://$PROJECT_DIR$/provider/provider.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775212577164" />
+              <option name="lastModified" value="1775403240423" />
               <option name="schema">
                 <list>
                   <option value="Request" />
@@ -3369,14 +3610,14 @@
         <entry key="file://$PROJECT_DIR$/providers.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775155923292" />
+              <option name="lastModified" value="1775470609358" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/retry/retry.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775154991697" />
+              <option name="lastModified" value="1775403240426" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -3392,14 +3633,14 @@
         <entry key="file://$PROJECT_DIR$/schema/reflect.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775149636612" />
+              <option name="lastModified" value="1775403240428" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/session/manager.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775159210270" />
+              <option name="lastModified" value="1775403240430" />
               <option name="schema">
                 <list>
                   <option value="Manager" />
@@ -3411,14 +3652,14 @@
         <entry key="file://$PROJECT_DIR$/session/restore.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153465183" />
+              <option name="lastModified" value="1775403240431" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/session/session.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153443121" />
+              <option name="lastModified" value="1775403240433" />
               <option name="schema">
                 <list>
                   <option value="Metadata" />
@@ -3431,7 +3672,7 @@
         <entry key="file://$PROJECT_DIR$/session/storage.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153443141" />
+              <option name="lastModified" value="1775403240434" />
               <option name="schema">
                 <list>
                   <option value="Record" />
@@ -3444,7 +3685,7 @@
         <entry key="file://$PROJECT_DIR$/session/store.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775158977989" />
+              <option name="lastModified" value="1775403240435" />
               <option name="schema">
                 <list>
                   <option value="SessionSummary" />
@@ -3458,7 +3699,7 @@
         <entry key="file://$PROJECT_DIR$/sessionmem/sessionmem.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775216045602" />
+              <option name="lastModified" value="1775403240438" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -3471,7 +3712,7 @@
         <entry key="file://$PROJECT_DIR$/skill/builtin.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775299874772" />
+              <option name="lastModified" value="1775403240439" />
               <option name="schema">
                 <list>
                   <option value="BuiltinSkillProvider" />
@@ -3485,7 +3726,7 @@
         <entry key="file://$PROJECT_DIR$/skill/skill.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775216206255" />
+              <option name="lastModified" value="1775403240440" />
               <option name="schema">
                 <list>
                   <option value="Skill" />
@@ -3498,7 +3739,7 @@
         <entry key="file://$PROJECT_DIR$/sysprompt/sysprompt.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775208101227" />
+              <option name="lastModified" value="1775403240441" />
               <option name="schema">
                 <list>
                   <option value="Section" />
@@ -3512,14 +3753,14 @@
         <entry key="file://$PROJECT_DIR$/task/store.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775290488601" />
+              <option name="lastModified" value="1775403240444" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/task/task.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775154991731" />
+              <option name="lastModified" value="1775403240445" />
               <option name="schema">
                 <list>
                   <option value="Task" />
@@ -3534,7 +3775,7 @@
         <entry key="file://$PROJECT_DIR$/thinking/thinking.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775299839448" />
+              <option name="lastModified" value="1775403240446" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -3552,10 +3793,9 @@
         <entry key="file://$PROJECT_DIR$/tool.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775153229415" />
+              <option name="lastModified" value="1775467195719" />
               <option name="schema">
                 <list>
-                  <option value="PermissionCheck" />
                   <option value="ToolDef" />
                   <option value="Result" />
                 </list>
@@ -3566,7 +3806,7 @@
         <entry key="file://$PROJECT_DIR$/toolkit.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775158253170" />
+              <option name="lastModified" value="1775403240450" />
               <option name="schema">
                 <list>
                   <option value="ToolKit" />
@@ -3578,7 +3818,7 @@
         <entry key="file://$PROJECT_DIR$/tools/degrade.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775299056002" />
+              <option name="lastModified" value="1775403240451" />
               <option name="schema">
                 <list>
                   <option value="ToolDegradationConfig" />
@@ -3594,7 +3834,7 @@
         <entry key="file://$PROJECT_DIR$/tui/bridge.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775203742807" />
+              <option name="lastModified" value="1775403240453" />
               <option name="schema">
                 <list>
                   <option value="ApprovalRequest" />
@@ -3611,7 +3851,7 @@
         <entry key="file://$PROJECT_DIR$/tui/commands.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775215489565" />
+              <option name="lastModified" value="1775403240455" />
               <option name="schema">
                 <list>
                   <option value="UsageInfo" />
@@ -3625,7 +3865,7 @@
         <entry key="file://$PROJECT_DIR$/tui/model.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775215496352" />
+              <option name="lastModified" value="1775403240456" />
               <option name="schema">
                 <list>
                   <option value="SessionInfo" />
@@ -3640,28 +3880,28 @@
         <entry key="file://$PROJECT_DIR$/tui/signal_unix.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775203592244" />
+              <option name="lastModified" value="1775403240457" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/tui/signal_windows.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775203592256" />
+              <option name="lastModified" value="1775403240459" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/tui/styles.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775209195345" />
+              <option name="lastModified" value="1775403240461" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/tui/subagent.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775211094761" />
+              <option name="lastModified" value="1775403240463" />
               <option name="schema">
                 <list>
                   <option value="subAgentState" />
@@ -3674,14 +3914,14 @@
         <entry key="file://$PROJECT_DIR$/tui/toolrender.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775211183186" />
+              <option name="lastModified" value="1775403240464" />
             </ScannedPath>
           </value>
         </entry>
         <entry key="file://$PROJECT_DIR$/userinput/userinput.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775215800976" />
+              <option name="lastModified" value="1775403240466" />
               <option name="schema">
                 <list>
                   <option value="Result" />
@@ -3694,7 +3934,7 @@
         <entry key="file://$PROJECT_DIR$/web/web.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775200203829" />
+              <option name="lastModified" value="1775403240468" />
               <option name="schema">
                 <list>
                   <option value="WebFetchInput" />
@@ -3716,7 +3956,7 @@
         <entry key="file://$PROJECT_DIR$/websocket/client.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775299976026" />
+              <option name="lastModified" value="1775403240469" />
               <option name="schema">
                 <list>
                   <option value="Client" />
@@ -3728,7 +3968,7 @@
         <entry key="file://$PROJECT_DIR$/websocket/handler.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775299954047" />
+              <option name="lastModified" value="1775403240472" />
               <option name="schema">
                 <list>
                   <option value="WSConfig" />
@@ -3742,7 +3982,7 @@
         <entry key="file://$PROJECT_DIR$/worktree/worktree.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775216045651" />
+              <option name="lastModified" value="1775403240473" />
               <option name="schema">
                 <list>
                   <option value="Worktree" />
@@ -3772,6 +4012,7 @@
         <entry key="approval_request" value="ApprovalRequest" />
         <entry key="approval_response" value="ApprovalResponse" />
         <entry key="approve_request" value="approveRequest" />
+        <entry key="approve_result_input" value="approveResultInput" />
         <entry key="approver_adapter" value="approverAdapter" />
         <entry key="ask_user_handler" value="AskUserHandler" />
         <entry key="ask_user_http_request" value="AskUserHTTPRequest" />
@@ -3830,6 +4071,7 @@
         <entry key="cron_delete_input" value="cronDeleteInput" />
         <entry key="cron_field" value="cronField" />
         <entry key="custom_instructions_builder" value="customInstructionsBuilder" />
+        <entry key="custom_task" value="CustomTask" />
         <entry key="decision" value="Decision" />
         <entry key="default_forked_agent" value="DefaultForkedAgent" />
         <entry key="default_post_compact_cleanup" value="DefaultPostCompactCleanup" />
@@ -3854,6 +4096,7 @@
         <entry key="file_path_input" value="filePathInput" />
         <entry key="file_store" value="FileStore" />
         <entry key="file_tracker" value="FileTracker" />
+        <entry key="foo" value="Foo" />
         <entry key="forked_agent_config" value="ForkedAgentConfig" />
         <entry key="forked_agent_result" value="ForkedAgentResult" />
         <entry key="framework_tool" value="FrameworkTool" />
@@ -3869,6 +4112,7 @@
         <entry key="hooks_runner_adapter" value="hooksRunnerAdapter" />
         <entry key="http_transport" value="HTTPTransport" />
         <entry key="image_input" value="ImageInput" />
+        <entry key="injected_queues" value="injectedQueues" />
         <entry key="internal_plan_confirm_request" value="InternalPlanConfirmRequest" />
         <entry key="interrupt_handler" value="InterruptHandler" />
         <entry key="interrupt_request" value="interruptRequest" />
@@ -3885,6 +4129,7 @@
         <entry key="memory_file" value="MemoryFile" />
         <entry key="memory_store" value="MemoryStore" />
         <entry key="message" value="Message" />
+        <entry key="message_pusher" value="messagePusher" />
         <entry key="metadata" value="Metadata" />
         <entry key="micro_compressor" value="microCompressor" />
         <entry key="microcompact_config" value="MicrocompactConfig" />
@@ -3893,6 +4138,9 @@
         <entry key="middleware_adapter" value="middlewareAdapter" />
         <entry key="middleware_config" value="middlewareConfig" />
         <entry key="middleware_with_filter" value="MiddlewareWithFilter" />
+        <entry key="mock_provider" value="MockProvider" />
+        <entry key="mock_response" value="MockResponse" />
+        <entry key="mock_tool_call" value="MockToolCall" />
         <entry key="model" value="Model" />
         <entry key="model_pricing" value="ModelPricing" />
         <entry key="multi_observer" value="MultiObserver" />
@@ -3915,6 +4163,11 @@
         <entry key="permission_response" value="permissionResponse" />
         <entry key="permission_result" value="PermissionResult" />
         <entry key="permission_rules" value="PermissionRules" />
+        <entry key="pipeline" value="pipeline" />
+        <entry key="pipeline_agent_def" value="PipelineAgentDef" />
+        <entry key="pipeline_config" value="PipelineConfig" />
+        <entry key="pipeline_node" value="PipelineNode" />
+        <entry key="pipeline_node_state" value="pipelineNodeState" />
         <entry key="plan_checker_adapter" value="planCheckerAdapter" />
         <entry key="plan_confirm_handler" value="PlanConfirmHandler" />
         <entry key="plan_confirm_http_request" value="PlanConfirmHTTPRequest" />
@@ -3929,6 +4182,7 @@
         <entry key="prompt_too_long_error" value="PromptTooLongError" />
         <entry key="prompts_capability" value="PromptsCapability" />
         <entry key="provider" value="Provider" />
+        <entry key="provider_config" value="ProviderConfig" />
         <entry key="query" value="Query" />
         <entry key="query_context" value="QueryContext" />
         <entry key="query_tracker" value="QueryTracker" />
@@ -3937,6 +4191,7 @@
         <entry key="record" value="Record" />
         <entry key="registered_tool" value="registeredTool" />
         <entry key="registry" value="Registry" />
+        <entry key="reject_result_input" value="rejectResultInput" />
         <entry key="request" value="Request" />
         <entry key="resources_capability" value="ResourcesCapability" />
         <entry key="response" value="Response" />
@@ -3944,6 +4199,8 @@
         <entry key="result" value="Result" />
         <entry key="resumable_loop" value="ResumableLoop" />
         <entry key="retry_stream_provider" value="RetryStreamProvider" />
+        <entry key="review_event" value="ReviewEvent" />
+        <entry key="review_result_item" value="ReviewResultItem" />
         <entry key="router" value="Router" />
         <entry key="rule" value="Rule" />
         <entry key="rule_set" value="RuleSet" />
@@ -3952,6 +4209,7 @@
         <entry key="scheduler" value="Scheduler" />
         <entry key="search_result" value="searchResult" />
         <entry key="section" value="Section" />
+        <entry key="send_task_input" value="sendTaskInput" />
         <entry key="server_capabilities" value="ServerCapabilities" />
         <entry key="server_error" value="ServerError" />
         <entry key="server_info" value="ServerInfo" />
@@ -4053,6 +4311,7 @@
         <entry key="usage_event" value="UsageEvent" />
         <entry key="usage_info" value="UsageInfo" />
         <entry key="usage_record" value="UsageRecord" />
+        <entry key="wait_for_review_input" value="waitForReviewInput" />
         <entry key="web_fetch_config" value="WebFetchConfig" />
         <entry key="web_fetch_input" value="WebFetchInput" />
         <entry key="web_search_input" value="WebSearchInput" />
@@ -4061,8 +4320,11 @@
         <entry key="worktree" value="Worktree" />
         <entry key="write_input" value="WriteInput" />
         <entry key="ws_config" value="WSConfig" />
+        <entry key="yolo_classifier" value="YoloClassifier" />
+        <entry key="yolo_classifier_config" value="YoloClassifierConfig" />
+        <entry key="yolo_result" value="YoloResult" />
       </map>
     </option>
-    <option name="lastTimeChecked" value="1775374897073" />
+    <option name="lastTimeChecked" value="1775462249097" />
   </component>
 </project>

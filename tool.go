@@ -46,14 +46,6 @@ func (p Permission) String() string {
 	}
 }
 
-// PermissionCheck 是工具权限检查的结果。
-type PermissionCheck struct {
-	// Behavior 指定权限行为："allow"、"deny" 或 "ask"。
-	Behavior string
-	// Reason 描述权限决定的原因。
-	Reason string
-}
-
 // ToolDef 定义 agent 可以使用的工具。
 //
 // 用户通过提供以下内容创建工具：
@@ -68,7 +60,7 @@ type PermissionCheck struct {
 //	    Description: "Deploy a service",
 //	    Input:       DeployInput{},
 //	    Permission:  goagent.Dangerous,
-//	    Concurrent:  false,
+//	    InterruptMode: "block",
 //	    Execute: func(ctx goagent.Context, in DeployInput) (string, error) {
 //	        return deploy(in.Service, in.Env)
 //	    },
@@ -98,30 +90,9 @@ type ToolDef struct {
 	// 其中 T 匹配 Input 的类型。
 	Execute any
 
-	// --- 以下为扩展字段，对齐 Claude Code 架构 ---
-
-	// IsConcurrencySafe 动态判定工具在给定输入下是否可以并发执行。
-	// 如果设置，优先于静态 Concurrent 字段。
-	// 例如：Bash 工具的 git 命令可以并发，但文件写入不行。
-	IsConcurrencySafe func(ctx context.Context, input json.RawMessage) bool
-
-	// IsReadOnly 动态判定工具在给定输入下是否为只读操作。
-	// 用于更精细的权限控制。
-	IsReadOnly func(ctx context.Context, input json.RawMessage) bool
-
-	// InterruptBehavior 返回工具被中断时的行为。
-	// 返回 "cancel"（取消执行）或 "block"（阻塞直到完成）。
-	// 默认为 "cancel"。
-	InterruptBehavior func() string
-
-	// CheckPermissions 在执行前进行自定义权限检查。
-	// 返回 PermissionCheck 指示允许、拒绝或询问。
-	// 如果为 nil，使用默认的 Permission 级别检查。
-	CheckPermissions func(ctx context.Context, input json.RawMessage) (*PermissionCheck, error)
-
-	// ValidateInput 在执行前验证输入。
-	// 返回错误时，工具不会执行，错误消息发回给 LLM。
-	ValidateInput func(ctx context.Context, input json.RawMessage) error
+	// InterruptMode 工具被中断时的行为："cancel"（取消）或 "block"（等待完成）。
+	// 默认 "cancel"。
+	InterruptMode string
 
 	// MaxResultSizeChars 是此工具结果的最大字符数。
 	// 超过此限制的结果会被截断。0 表示使用全局默认值。
@@ -135,13 +106,6 @@ type ToolDef struct {
 // call 使用给定的 JSON 输入调用 Execute 函数。
 // 由框架内部调用。
 func (d *ToolDef) call(ctx context.Context, rawInput json.RawMessage) (string, error) {
-	// 如果设置了输入验证，先执行验证。
-	if d.ValidateInput != nil {
-		if err := d.ValidateInput(ctx, rawInput); err != nil {
-			return "", fmt.Errorf("输入验证失败: %w", err)
-		}
-	}
-
 	execVal := reflect.ValueOf(d.Execute)
 	execType := execVal.Type()
 
@@ -177,22 +141,6 @@ func (d *ToolDef) call(ctx context.Context, rawInput json.RawMessage) (string, e
 		return resultStr, errIface.(error)
 	}
 	return resultStr, nil
-}
-
-// effectiveConcurrent 返回工具在给定输入下是否可以并发执行。
-func (d *ToolDef) effectiveConcurrent(ctx context.Context, input json.RawMessage) bool {
-	if d.IsConcurrencySafe != nil {
-		return d.IsConcurrencySafe(ctx, input)
-	}
-	return d.Concurrent
-}
-
-// effectiveInterruptBehavior 返回工具的中断行为。
-func (d *ToolDef) effectiveInterruptBehavior() string {
-	if d.InterruptBehavior != nil {
-		return d.InterruptBehavior()
-	}
-	return "cancel"
 }
 
 // Result 是工具执行的结果。

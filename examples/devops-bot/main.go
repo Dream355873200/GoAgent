@@ -11,6 +11,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"os"
@@ -29,7 +30,11 @@ func main() {
 
 	// Create the app — one line for the basics.
 	app := goagent.New(
-		goagent.WithProvider(goagent.Anthropic(apiKey)),
+		goagent.ProviderConfig{
+			Type:   "anthropic",
+			Model:  "claude-sonnet-4-6",
+			APIKey: apiKey,
+		},
 		goagent.WithSystemPrompt(
 			"You are a DevOps assistant. You help users manage their services. "+
 				"Use the available tools to check status, view logs, deploy, and restart services. "+
@@ -40,62 +45,22 @@ func main() {
 	)
 
 	// ─── Register tools ───
-	// Each tool: a struct for input, a Permission level, a function. That's it.
 
 	// 1. Check service status — ReadOnly, auto-allowed.
-	app.Tool("check_status", goagent.ToolDef{
-		Description: "Check the status of a service. Returns health info.",
-		Input:       StatusInput{},
-		Permission:  goagent.ReadOnly,
-		Concurrent:  true, // safe to run in parallel
-		Execute: func(ctx goagent.Context, in StatusInput) (string, error) {
-			ctx.Progress("checking " + in.Service + "...")
-			return checkStatus(in.Service)
-		},
-	})
-
 	// 2. View logs — ReadOnly, auto-allowed.
-	app.Tool("get_logs", goagent.ToolDef{
-		Description: "Get recent logs for a service.",
-		Input:       LogsInput{},
-		Permission:  goagent.ReadOnly,
-		Concurrent:  true,
-		Execute: func(ctx goagent.Context, in LogsInput) (string, error) {
-			return getLogs(in.Service, in.Lines)
-		},
-	})
+	app.UseTools(
+		goagent.InferTool("check_status", "Check the status of a service. Returns health info.", checkStatusFn),
+		goagent.InferTool("get_logs", "Get recent logs for a service.", getLogsFn),
+	)
 
 	// 3. Deploy — Dangerous, always warns + confirms.
-	app.Tool("deploy", goagent.ToolDef{
-		Description: "Deploy a service to the specified environment. This is a production-impacting operation.",
-		Input:       DeployInput{},
-		Permission:  goagent.Dangerous,
-		Execute: func(ctx goagent.Context, in DeployInput) (string, error) {
-			ctx.Progress(fmt.Sprintf("deploying %s to %s...", in.Service, in.Env))
-			return deploy(in.Service, in.Env, in.Version)
-		},
-	})
-
 	// 4. Restart — RequireApproval, asks every time.
-	app.Tool("restart_service", goagent.ToolDef{
-		Description: "Restart a service. Brief downtime expected.",
-		Input:       RestartInput{},
-		Permission:  goagent.RequireApproval,
-		Execute: func(ctx goagent.Context, in RestartInput) (string, error) {
-			return restart(in.Service)
-		},
-	})
-
 	// 5. List services — ReadOnly.
-	app.Tool("list_services", goagent.ToolDef{
-		Description: "List all available services.",
-		Input:       struct{}{}, // no input needed
-		Permission:  goagent.ReadOnly,
-		Concurrent:  true,
-		Execute: func(ctx goagent.Context, in struct{}) (string, error) {
-			return listServices()
-		},
-	})
+	app.UseTools(
+		goagent.InferTool("deploy", "Deploy a service to the specified environment. This is a production-impacting operation.", deployFn, goagent.Dangerous),
+		goagent.InferTool("restart_service", "Restart a service. Brief downtime expected.", restartFn, goagent.RequireApproval),
+		goagent.InferTool("list_services", "List all available services.", listServicesFn),
+	)
 
 	// ─── Run ───
 	// One line to start the CLI REPL.
@@ -135,23 +100,24 @@ var services = map[string]string{
 	"notification":    "healthy",
 }
 
-func checkStatus(service string) (string, error) {
+func checkStatusFn(ctx context.Context, in StatusInput) (string, error) {
 	time.Sleep(100 * time.Millisecond) // simulate latency
-	status, ok := services[service]
+	status, ok := services[in.Service]
 	if !ok {
-		return "", fmt.Errorf("service %q not found", service)
+		return "", fmt.Errorf("service %q not found", in.Service)
 	}
 	uptime := rand.Intn(720) + 1
 	return fmt.Sprintf("Service: %s\nStatus: %s\nUptime: %dh\nCPU: %.1f%%\nMemory: %dMB",
-		service, status, uptime, rand.Float64()*100, rand.Intn(512)+64), nil
+		in.Service, status, uptime, rand.Float64()*100, rand.Intn(512)+64), nil
 }
 
-func getLogs(service string, lines int) (string, error) {
+func getLogsFn(ctx context.Context, in LogsInput) (string, error) {
+	lines := in.Lines
 	if lines <= 0 {
 		lines = 20
 	}
-	if _, ok := services[service]; !ok {
-		return "", fmt.Errorf("service %q not found", service)
+	if _, ok := services[in.Service]; !ok {
+		return "", fmt.Errorf("service %q not found", in.Service)
 	}
 	levels := []string{"INFO", "INFO", "INFO", "WARN", "ERROR"}
 	msgs := []string{
@@ -169,33 +135,34 @@ func getLogs(service string, lines int) (string, error) {
 		ts := time.Now().Add(-time.Duration(lines-i) * time.Minute).Format("15:04:05")
 		level := levels[rand.Intn(len(levels))]
 		msg := msgs[rand.Intn(len(msgs))]
-		logLines = append(logLines, fmt.Sprintf("[%s] %s %s: %s", ts, service, level, msg))
+		logLines = append(logLines, fmt.Sprintf("[%s] %s %s: %s", ts, in.Service, level, msg))
 	}
 	return strings.Join(logLines, "\n"), nil
 }
 
-func deploy(service, env, version string) (string, error) {
+func deployFn(ctx context.Context, in DeployInput) (string, error) {
+	version := in.Version
 	if version == "" {
 		version = "latest"
 	}
-	if _, ok := services[service]; !ok {
-		return "", fmt.Errorf("service %q not found", service)
+	if _, ok := services[in.Service]; !ok {
+		return "", fmt.Errorf("service %q not found", in.Service)
 	}
 	time.Sleep(500 * time.Millisecond) // simulate deploy
 	return fmt.Sprintf("Successfully deployed %s@%s to %s\nRollout: 4/4 replicas ready\nTime: 12s",
-		service, version, env), nil
+		in.Service, version, in.Env), nil
 }
 
-func restart(service string) (string, error) {
-	if _, ok := services[service]; !ok {
-		return "", fmt.Errorf("service %q not found", service)
+func restartFn(ctx context.Context, in RestartInput) (string, error) {
+	if _, ok := services[in.Service]; !ok {
+		return "", fmt.Errorf("service %q not found", in.Service)
 	}
 	time.Sleep(300 * time.Millisecond) // simulate restart
 	return fmt.Sprintf("Service %s restarted successfully\nDowntime: 2.3s\nNew PID: %d",
-		service, rand.Intn(90000)+10000), nil
+		in.Service, rand.Intn(90000)+10000), nil
 }
 
-func listServices() (string, error) {
+func listServicesFn(ctx context.Context, in struct{}) (string, error) {
 	var lines []string
 	for name, status := range services {
 		lines = append(lines, fmt.Sprintf("  %-20s %s", name, status))

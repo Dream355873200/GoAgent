@@ -49,6 +49,18 @@ func InteractKit() goagent.ToolKit {
 	)
 }
 
+// WebKit 返回 Web 工具包：WebSearch、WebFetch。
+// 适用于需要搜索互联网或获取网页内容的场景。
+func WebKit() goagent.ToolKit {
+	return goagent.ToolKit{
+		Name:        "WebKit",
+		Description: "Web 搜索和获取工具包（WebSearch/WebFetch）",
+	}.WithTools(
+		goagent.NamedTool{Name: "WebSearch", Def: WebSearchTool()},
+		goagent.NamedTool{Name: "WebFetch", Def: WebFetchTool()},
+	)
+}
+
 // CodeKit 返回代码开发全套工具包：FileKit + SearchKit + ShellKit。
 // 适用于编码 Agent 场景，包含文件读写、代码搜索和命令执行。
 func CodeKit() goagent.ToolKit {
@@ -65,9 +77,10 @@ func CodeKit() goagent.ToolKit {
 
 // AllKit 返回全部内置工具包。
 // 等价于 AllTools() 的 ToolKit 形式。
+// 注意：不包含 AskUser，如需用户交互请使用 InteractKit。
 func AllKit() goagent.ToolKit {
 	return goagent.ToolKit{
 		Name:        "AllKit",
-		Description: "全部内置工具（Read/Write/Edit/Glob/Grep/Bash/AskUser）",
+		Description: "全部内置工具（Read/Write/Edit/Glob/Grep/Bash/WebSearch/WebFetch）",
 	}.WithTools(AllTools()...)
 }

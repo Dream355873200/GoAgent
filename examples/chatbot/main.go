@@ -33,7 +33,6 @@ import (
 
 	"github.com/Dream355873200/GoAgent"
 	"github.com/Dream355873200/GoAgent/builtin"
-	"github.com/Dream355873200/GoAgent/provider/openai"
 	"github.com/Dream355873200/GoAgent/sessionmem"
 )
 
@@ -67,12 +66,12 @@ func main() {
 	// 构建选项列表。
 	opts := []goagent.Option{
 		// LLM 提供者。
-		goagent.WithProvider(goagent.OpenAI(openai.Config{
-			APIKey:       apiKey,
-			BaseURL:      baseURL,
-			Model:        model,
-			DisableTools: disableTools,
-		})),
+		goagent.ProviderConfig{
+			Type:    "openai",
+			Model:   model,
+			APIKey:  apiKey,
+			BaseURL: baseURL,
+		},
 
 		// Claude Code 中文提示词体系。
 		goagent.WithClaudeCodePrompts(),
@@ -101,6 +100,11 @@ func main() {
 
 		// 权限模式：交互式开发（ReadOnly 和 Normal 自动通过，Dangerous 需确认）。
 		goagent.PermissionPresetInteractive(),
+
+		// 启用 Task/Plan/Ask 管理工具。
+		goagent.WithTaskTools(),
+		goagent.WithPlanTools(),
+		goagent.WithAskTools(),
 	}
 
 	// 如果存在项目级 CLAUDE.md，自动加载。
@@ -112,7 +116,7 @@ func main() {
 	app := goagent.New(opts...)
 
 	// 注册内置工具。
-	// Task/Plan/BgTask 等管理工具已由 goagent.New() 自动注册。
+	// Task/Plan/Ask 等管理工具已通过 WithTaskTools/WithPlanTools/WithAskTools 注册。
 	app.UseTools(builtin.AllTools()...)
 
 	// 启动 CLI（TUI 模式）。

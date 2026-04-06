@@ -27,27 +27,7 @@ func BashTool() goagent.ToolDef {
 		Input:              BashInput{},
 		Permission:         goagent.Normal,
 		MaxResultSizeChars: 50000,
-
-		// 动态并发: git 命令可并发，其他串行。
-		IsConcurrencySafe: func(ctx context.Context, input json.RawMessage) bool {
-			var in BashInput
-			if err := parseJSON(input, &in); err != nil {
-				return false
-			}
-			cmd := strings.TrimSpace(in.Command)
-			// git 只读命令可以并发。
-			gitReadPrefixes := []string{
-				"git status", "git diff", "git log", "git show",
-				"git branch", "git remote", "git tag", "git rev-parse",
-			}
-			for _, prefix := range gitReadPrefixes {
-				if strings.HasPrefix(cmd, prefix) {
-					return true
-				}
-			}
-			return false
-		},
-
+		InterruptMode:      "block",
 		Execute: func(ctx goagent.Context, in BashInput) (string, error) {
 			return executeBash(ctx, in)
 		},

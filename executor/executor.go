@@ -195,6 +195,7 @@ type StreamingExecutor struct {
 	wg            sync.WaitGroup
 	running       int
 	allConcurrent bool
+	ctx           context.Context // 保存调用方的 context
 }
 
 // NewStreamingExecutor 创建一个新的流式执行器。
@@ -203,6 +204,7 @@ func NewStreamingExecutor(exec *Executor) *StreamingExecutor {
 		executor:      exec,
 		completed:     make(chan ToolResult, 64),
 		allConcurrent: true,
+		ctx:           context.Background(),
 	}
 }
 
@@ -211,6 +213,9 @@ func NewStreamingExecutor(exec *Executor) *StreamingExecutor {
 func (se *StreamingExecutor) Add(ctx context.Context, call ToolCall) {
 	se.mu.Lock()
 	defer se.mu.Unlock()
+
+	// 保存调用方的 context，供后续 drainPending 使用。
+	se.ctx = ctx
 
 	if !call.Concurrent {
 		se.allConcurrent = false
@@ -232,8 +237,7 @@ func (se *StreamingExecutor) Poll() []ToolResult {
 			results = append(results, r)
 			se.mu.Lock()
 			se.running--
-			// 尝试启动待处理的工具。
-			se.drainPending(context.Background())
+			se.drainPending(se.ctx)
 			se.mu.Unlock()
 		default:
 			return results
@@ -243,14 +247,38 @@ func (se *StreamingExecutor) Poll() []ToolResult {
 
 // Wait 阻塞直到所有排队和运行中的工具完成。
 func (se *StreamingExecutor) Wait(ctx context.Context) []ToolResult {
-	// 启动所有剩余的待处理工具。
-	se.mu.Lock()
-	se.drainPending(ctx)
-	se.mu.Unlock()
+	// 循环：每次 drain 启动一批 pending 工具，等待它们完成后再检查剩余 pending。
+	// 确保非并发工具一个接一个执行时不会遗漏。
+	for {
+		se.mu.Lock()
+		se.ctx = ctx
+		se.drainPending(ctx)
+		running := se.running
+		pending := len(se.pending)
+		se.mu.Unlock()
 
-	se.wg.Wait()
+		if running == 0 && pending == 0 {
+			break
+		}
 
-	// 排空已完成的通道。
+		// 等待当前 running 的工具完成。
+		se.wg.Wait()
+
+		// 排空已完成的结果（同时递减 running 并 drainPending）。
+		for {
+			select {
+			case <-se.completed:
+				se.mu.Lock()
+				se.running--
+				se.mu.Unlock()
+			default:
+				goto nextRound
+			}
+		}
+	nextRound:
+	}
+
+	// 最终排空已完成的通道。
 	var results []ToolResult
 	for {
 		select {

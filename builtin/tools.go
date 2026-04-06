@@ -88,9 +88,17 @@ func init() {
 			{Name: "TaskOutput", Def: TaskOutputTool(store)},
 		}
 	})
+
+	// 注册 AskUser 工具提供函数。
+	goagent.RegisterAskToolsProvider(func() []goagent.NamedTool {
+		return []goagent.NamedTool{
+			{Name: "AskUser", Def: AskUserTool()},
+		}
+	})
 }
 
 // AllTools 返回全部内置工具，供 app.UseTools() 批量注册。
+// 注意：AskUser 不再包含在内，需通过 WithAskTools() 或 InteractKit() 单独启用。
 func AllTools() []goagent.NamedTool {
 	return []goagent.NamedTool{
 		{Name: "Read", Def: ReadTool()},
@@ -99,7 +107,6 @@ func AllTools() []goagent.NamedTool {
 		{Name: "Glob", Def: GlobTool()},
 		{Name: "Grep", Def: GrepTool()},
 		{Name: "Bash", Def: BashTool()},
-		{Name: "AskUser", Def: AskUserTool()},
 		{Name: "WebSearch", Def: WebSearchTool()},
 		{Name: "WebFetch", Def: WebFetchTool()},
 	}
