@@ -335,10 +335,8 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 		// ③ 工具定义已在循环外缓存（P1a），此处直接使用 toolDefs。
 
 		// ④ 调用 API（流式）。
-		maxTokens := 4096
-		if state.maxOutputTokensOverride > 0 {
-			maxTokens = state.maxOutputTokensOverride
-		}
+		// MaxTokens 为 0 表示不传 max_tokens，让模型 API 自动使用最大输出长度。
+		maxTokens := state.maxOutputTokensOverride
 
 		// 构建请求：优先使用 SystemBlocks（带 cache_control），否则回退到 SystemPrompt。
 		req := &provider.Request{

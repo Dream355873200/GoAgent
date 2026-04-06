@@ -108,6 +108,15 @@ type ProviderConfig struct {
 	// BaseURL API 基础 URL。
 	// OpenAI 默认 "http://localhost:11434/v1"，Anthropic 不需要。
 	BaseURL string
+
+	// ContextWindow 模型的上下文窗口大小（token 数）。
+	// 不设置时使用 Provider 的默认值（OpenAI 32768，Anthropic 200000）。
+	// 如果模型上下文窗口与默认值不同，需手动指定。
+	ContextWindow int
+
+	// MaxOutputTokens 模型的最大输出 token 数。
+	// 不设置时不传 max_tokens 参数，让模型 API 自动使用最大输出长度。
+	MaxOutputTokens int
 }
 
 // ensure ProviderConfig implements Option.

@@ -117,9 +117,11 @@ func buildProvider(cfg ProviderConfig) provider.Provider {
 		return anthropic.New(cfg.APIKey, opts...)
 	default: // "openai" 及其他兼容 API
 		return openai.New(openai.Config{
-			APIKey:  cfg.APIKey,
-			BaseURL: cfg.BaseURL,
-			Model:   cfg.Model,
+			APIKey:          cfg.APIKey,
+			BaseURL:         cfg.BaseURL,
+			Model:           cfg.Model,
+			ContextWindow:   cfg.ContextWindow,
+			MaxOutputTokens: cfg.MaxOutputTokens,
 		})
 	}
 }
