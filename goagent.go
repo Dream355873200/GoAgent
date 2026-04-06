@@ -544,6 +544,14 @@ func (a *App) SetModel(modelID string) bool {
 	return false
 }
 
+// SetProvider 动态替换 LLM Provider。
+// 线程安全，可在运行时调用（下次 Run 时生效）。
+func (a *App) SetProvider(p provider.Provider) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.provider = p
+}
+
 // ToolNames 返回已注册工具的名称列表（按注册顺序）。
 func (a *App) ToolNames() []string {
 	a.mu.RLock()

@@ -249,6 +249,7 @@ func (se *StreamingExecutor) Poll() []ToolResult {
 func (se *StreamingExecutor) Wait(ctx context.Context) []ToolResult {
 	// 循环：每次 drain 启动一批 pending 工具，等待它们完成后再检查剩余 pending。
 	// 确保非并发工具一个接一个执行时不会遗漏。
+	var results []ToolResult
 	for {
 		se.mu.Lock()
 		se.ctx = ctx
@@ -265,9 +266,11 @@ func (se *StreamingExecutor) Wait(ctx context.Context) []ToolResult {
 		se.wg.Wait()
 
 		// 排空已完成的结果（同时递减 running 并 drainPending）。
+		var roundResults []ToolResult
 		for {
 			select {
-			case <-se.completed:
+			case r := <-se.completed:
+				roundResults = append(roundResults, r)
 				se.mu.Lock()
 				se.running--
 				se.mu.Unlock()
@@ -276,10 +279,11 @@ func (se *StreamingExecutor) Wait(ctx context.Context) []ToolResult {
 			}
 		}
 	nextRound:
+		// 收集本轮结果
+		results = append(results, roundResults...)
 	}
 
 	// 最终排空已完成的通道。
-	var results []ToolResult
 	for {
 		select {
 		case r := <-se.completed:

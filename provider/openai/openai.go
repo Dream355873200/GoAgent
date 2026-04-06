@@ -142,6 +142,7 @@ type chatUsage struct {
 // streamChunk 是 SSE 流中的一个数据块。
 type streamChunk struct {
 	ID      string              `json:"id"`
+	Object  string              `json:"object,omitempty"`
 	Choices []streamChunkChoice `json:"choices"`
 	Usage   *chatUsage          `json:"usage,omitempty"`
 }
@@ -396,6 +397,11 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, out c
 			continue
 		}
 
+		// 跳过 MiniMax 等在流结束后发送的非 chunk 总结块（object="chat.completion" 而非 "chat.completion.chunk"）。
+		if chunk.Object != "" && chunk.Object != "chat.completion.chunk" {
+			continue
+		}
+
 		if len(chunk.Choices) == 0 {
 			// 可能是只有 usage 的最终块。
 			if chunk.Usage != nil {
@@ -610,9 +616,15 @@ func toOpenAIMessages(systemPrompt string, msgs []message.Message) []chatMessage
 			Role: string(msg.Role),
 		}
 
-		// 提取文本内容。
+		// 提取 thinking 内容，拼到 text 前面。
+		// OpenAI 兼容 API 不支持 thinking block，用 XML 标记包裹保留在历史中。
+		thinking := message.ExtractThinking(msg)
 		text := message.ExtractText(msg)
-		if text != "" {
+		if thinking != "" && text != "" {
+			openaiMsg.Content = "<thinking>\n" + thinking + "\n</thinking>\n\n" + text
+		} else if thinking != "" {
+			openaiMsg.Content = "<thinking>\n" + thinking + "\n</thinking>"
+		} else if text != "" {
 			openaiMsg.Content = text
 		}
 
