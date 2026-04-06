@@ -731,6 +731,12 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	// 7. 动态 System Prompt 组装。
 	systemPrompt := a.buildSystemPrompt(cfg, memMgr)
 
+	// 提取 SessionID（sess 可能为 nil，如 pipeline supervisor、RunWithHistory 等场景）。
+	var sessionID string
+	if sess != nil {
+		sessionID = sess.ID
+	}
+
 	// 构建 loop 配置。
 	loopCfg := loop.Config{
 		Provider:     a.provider,
@@ -746,7 +752,7 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		Budget:       budgetTracker,
 		Hooks:        &hooksRunnerAdapter{mgr: a.hooksMgr},
 		Observer:     a.obsRegistry.Observer(),
-		SessionID:    sess.ID,
+		SessionID:    sessionID,
 	}
 
 	// PlanChecker 仅在 Plan 系统启用时注入。
