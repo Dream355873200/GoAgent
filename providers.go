@@ -110,7 +110,11 @@ func buildProvider(cfg ProviderConfig) provider.Provider {
 		if model == "" {
 			model = "claude-sonnet-4-6-v1"
 		}
-		return anthropic.New(cfg.APIKey, anthropic.WithModel(model))
+		opts := []anthropic.Option{anthropic.WithModel(model)}
+		if cfg.BaseURL != "" {
+			opts = append(opts, anthropic.WithBaseURL(cfg.BaseURL))
+		}
+		return anthropic.New(cfg.APIKey, opts...)
 	default: // "openai" 及其他兼容 API
 		return openai.New(openai.Config{
 			APIKey:  cfg.APIKey,
