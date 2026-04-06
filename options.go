@@ -44,9 +44,6 @@ type appConfig struct {
 	hooks               []hooks.Hook       // 用户注册的 hooks
 	subAgentDefs        []agent.Definition // 子 agent 定义
 	sessionMemoryCfg    *sessionmem.Config // 会话记忆配置（nil 表示禁用）
-	useClaudePrompts    bool               // 是否使用 Claude Code 提示词体系
-	promptConfig        PromptConfig       // Prompt 自定义配置
-
 	// Observer 系统（可观测性）
 	observers         []observer.Observer // 观察者列表
 	costTracking      bool                // 是否启用成本追踪
@@ -65,6 +62,13 @@ type appConfig struct {
 	enablePlanTools   bool
 	enableAskTools    bool
 	enableBgTaskTools bool
+
+	// 动态注入开关
+	enableGitStatus bool // 是否在 system prompt 中注入 Git 状态（默认不启用）
+
+	// 外部 prompt 目录（优先从此目录加载，找不到则 fallback 到嵌入默认值）
+	promptDir      string
+	yoloPromptFile string // YOLO 分类 prompt 外部文件路径
 }
 
 // ProviderConfig 是 LLM Provider 的配置，可直接传给 New()。
@@ -168,123 +172,6 @@ func WithSystemPrompt(prompt string) Option {
 	return optionFunc(func(c *appConfig) {
 		c.systemPrompt = prompt
 	})
-}
-
-// PromptConfig 配置自定义 Prompt sections。
-// 支持从文件加载或直接使用字符串。
-type PromptConfig struct {
-	// 从文件加载的 prompt（文件路径）
-	Identity   string // system-identity.prompt.md
-	DoingTasks string // system-doing-tasks.prompt.md
-	Actions    string // system-actions.prompt.md
-	UsingTools string // system-using-tools.prompt.md
-	ToneStyle  string // system-tone-style.prompt.md
-	OutputEff  string // system-output-efficiency.prompt.md
-	Reminder   string // system-reminder.prompt.md
-	Workflow   string // system-workflow.prompt.md (兼容旧版)
-	Compact    string // compact.prompt.md
-
-	// 直接使用字符串的 prompt（优先级高于文件）
-	IdentityText   string
-	DoingTasksText string
-	ActionsText    string
-	UsingToolsText string
-	ToneStyleText  string
-	OutputEffText  string
-	ReminderText   string
-	WorkflowText   string
-	CompactText    string
-
-	// 追加到现有 prompt 之后
-	AppendIdentity   string
-	AppendDoingTasks string
-	AppendActions    string
-	AppendUsingTools string
-	AppendToneStyle  string
-	AppendOutputEff  string
-	AppendReminder   string
-	AppendWorkflow   string
-	AppendCompact    string
-}
-
-// WithPromptConfig 配置自定义 Prompt sections。
-// 支持从文件加载或直接使用字符串。
-//
-// 示例：
-//
-//	app := goagent.New(
-//	    goagent.WithPromptConfig(goagent.PromptConfig{
-//	        IdentityText: "你是一个客服助手...",
-//	        AppendToneStyle: "\n\n必须使用中文回答。",
-//	    }),
-//	)
-func WithPromptConfig(cfg PromptConfig) Option {
-	return optionFunc(func(c *appConfig) {
-		c.promptConfig = cfg
-		c.useClaudePrompts = true // 启用 prompt 体系
-	})
-}
-
-// WithClaudeCodePrompts 启用 Claude Code 原版提示词体系。
-// 使用嵌入的中文提示词替代 WithSystemPrompt。
-// 如果同时设置了 WithSystemPrompt，用户提示词会追加到 Claude Code 提示词之后。
-func WithClaudeCodePrompts() Option {
-	return optionFunc(func(c *appConfig) {
-		c.useClaudePrompts = true
-	})
-}
-
-// ScenarioPreset 是快捷场景预设类型。
-type ScenarioPreset int
-
-const (
-	// ScenarioMinimal 最小化场景，仅包含核心提示词。
-	ScenarioMinimal ScenarioPreset = iota
-	// ScenarioWeb Web 开发场景，包含 Web 相关提示词。
-	ScenarioWeb
-	// ScenarioCodeReview 代码审查场景。
-	ScenarioCodeReview
-	// ScenarioCustomerSupport 客服助手场景。
-	ScenarioCustomerSupport
-)
-
-// Scenario 返回对应场景的 PromptConfig。
-// 这是一个快捷方式，无需手动配置每个 prompt 字段。
-//
-// 示例：
-//
-//	app := goagent.New(
-//	    goagent.WithProvider(provider),
-//	    goagent.WithScenario(goagent.ScenarioWeb),
-//	)
-func Scenario(preset ScenarioPreset) PromptConfig {
-	switch preset {
-	case ScenarioWeb:
-		return PromptConfig{
-			AppendIdentity:   "\n\n你是一个专业的 Web 开发助手，专注于帮助用户构建现代 Web 应用。",
-			AppendDoingTasks: "\n\n- 优先使用主流前端框架（React/Vue/Angular）\n- 遵循最佳实践和性能优化",
-		}
-	case ScenarioCodeReview:
-		return PromptConfig{
-			AppendIdentity:   "\n\n你是一个专业的代码审查助手，专注于发现代码问题、提升代码质量。",
-			AppendDoingTasks: "\n\n- 重点关注代码安全性、性能、可维护性\n- 提供具体的改进建议",
-		}
-	case ScenarioCustomerSupport:
-		return PromptConfig{
-			IdentityText:    "你是一个友好、专业的客服助手。\n- 用亲切的语气与用户交流\n- 耐心解答问题\n- 无法回答时如实说明",
-			AppendToneStyle: "\n\n- 使用友好、耐心语气\n- 适当使用表情让对话更亲切",
-		}
-	default: // ScenarioMinimal
-		return PromptConfig{
-			// 仅使用内置提示词，不追加任何内容
-		}
-	}
-}
-
-// WithScenario 应用快捷场景预设。
-// 等价于 WithPromptConfig(Scenario(preset))。
-func WithScenario(preset ScenarioPreset) Option {
-	return WithPromptConfig(Scenario(preset))
 }
 
 // WithMaxTurns sets the maximum number of agent loop iterations. Default: 100.
@@ -841,5 +728,44 @@ func WithAskTools() Option {
 func WithBgTaskTools() Option {
 	return optionFunc(func(c *appConfig) {
 		c.enableBgTaskTools = true
+	})
+}
+
+// WithGitContext 启用开发环境上下文注入。
+// 开启后会在 system prompt 中注入：
+//   - 环境信息（平台、架构、Shell）
+//   - Git 分支和文件变更状态
+//
+// 适用于代码开发场景，默认不启用（Web 应用等非开发场景无需开启）。
+//
+// 示例：
+//
+//	app := goagent.New(
+//	    goagent.WithProvider(provider),
+//	    goagent.WithGitContext(),
+//	)
+func WithGitContext() Option {
+	return optionFunc(func(c *appConfig) {
+		c.enableGitStatus = true
+	})
+}
+
+// WithPromptDir 指定外部 prompt 目录。
+// 启用后，所有 prompt 文件优先从此目录加载（如 dir/system-identity.prompt.md），
+// 找不到则 fallback 到嵌入的默认值。
+//
+// 使用 prompts.ExportDefaults(dir) 可一键导出所有默认 prompt 到指定目录，
+// 然后修改文件后通过此 Option 加载。
+func WithPromptDir(dir string) Option {
+	return optionFunc(func(c *appConfig) {
+		c.promptDir = dir
+	})
+}
+
+// WithYoloPromptFile 指定 YOLO 分类 prompt 的外部文件路径。
+// 空字符串表示使用嵌入的默认值。
+func WithYoloPromptFile(path string) Option {
+	return optionFunc(func(c *appConfig) {
+		c.yoloPromptFile = path
 	})
 }

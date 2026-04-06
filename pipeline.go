@@ -21,6 +21,7 @@ import (
 	"github.com/Dream355873200/GoAgent/internal/loop"
 	"github.com/Dream355873200/GoAgent/observer"
 	"github.com/Dream355873200/GoAgent/permission"
+	"github.com/Dream355873200/GoAgent/prompts"
 	"github.com/Dream355873200/GoAgent/provider"
 	"github.com/Dream355873200/GoAgent/schema"
 )
@@ -929,11 +930,15 @@ func (p *pipeline) buildLightweightLoop(agentDef *PipelineAgentDef, nodeCtx cont
 	})
 
 	// 可组合压缩：只启用 L0(Budget) + L2(Micro) + L4(Auto)。
-	compMgr := compaction.NewManager(compaction.Config{
+	compCfg := compaction.Config{
 		MaxResultSize:        50_000,
 		AutoCompactThreshold: 0.8,
 		Layers:               []compaction.Layer{compaction.LayerBudget, compaction.LayerMicro, compaction.LayerAuto},
-	})
+	}
+	if p.parentApp.config.promptDir != "" {
+		compCfg.PromptFile = p.parentApp.config.promptDir + "/" + prompts.Compact
+	}
+	compMgr := compaction.NewManager(compCfg)
 	compMgr.SetProvider(prov)
 
 	// Hooks: 继承父 App 的 hooksMgr（如果有）。

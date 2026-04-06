@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/Dream355873200/GoAgent/agent"
@@ -663,10 +664,16 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	// 子系统初始化。
 
 	// 1. Compaction Manager（对齐 Claude Code 流程）。
-	compMgr := compaction.NewManager(compaction.Config{
+	compCfg := compaction.Config{
 		AutoCompactThreshold: cfg.compaction.AutoCompactThreshold,
 		MaxResultSize:        cfg.compaction.MaxResultSize,
-	})
+	}
+	if cfg.yoloPromptFile != "" {
+		compCfg.PromptFile = cfg.yoloPromptFile
+	} else if cfg.promptDir != "" {
+		compCfg.PromptFile = filepath.Join(cfg.promptDir, prompts.Compact)
+	}
+	compMgr := compaction.NewManager(compCfg)
 	// 设置 Provider 以支持新的 Compact() 方法（对齐 Claude Code 流程）。
 	if a.provider != nil {
 		compMgr.SetProvider(a.provider)
@@ -688,9 +695,15 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	// 注入 YOLO LLM 分类器（对齐 Claude Code 的 YOLO classifier）。
 	// 需要 provider 才能调用子模型进行权限分类。
 	if a.provider != nil {
-		permGate.SetClassifier(permission.NewYoloClassifier(a.provider, permission.YoloClassifierConfig{
+		yoloCfg := permission.YoloClassifierConfig{
 			Mode: "both", // 两阶段：fast → thinking
-		}))
+		}
+		if cfg.yoloPromptFile != "" {
+			yoloCfg.PromptFile = cfg.yoloPromptFile
+		} else if cfg.promptDir != "" {
+			yoloCfg.PromptFile = filepath.Join(cfg.promptDir, prompts.YoloClassifier)
+		}
+		permGate.SetClassifier(permission.NewYoloClassifier(a.provider, yoloCfg))
 	}
 
 	// 3. Memory Manager。
@@ -780,56 +793,31 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 func (a *App) buildSystemPrompt(cfg appConfig, memMgr *memory.Manager) string {
 	builder := sysprompt.NewBuilder()
 
-	if cfg.useClaudePrompts {
-		pc := cfg.promptConfig
-
-		// 1. 身份声明
-		identity := pc.resolveIdentity()
-		builder.AddSection("identity", identity, nil)
-
-		// 2. 执行任务
-		doingTasks := pc.resolveDoingTasks()
-		builder.AddSection("doing_tasks", doingTasks, nil)
-
-		// 3. 谨慎执行操作
-		actions := pc.resolveActions()
-		builder.AddSection("actions", actions, nil)
-
-		// 4. 使用工具
-		usingTools := pc.resolveUsingTools()
-		builder.AddSection("using_tools", usingTools, nil)
-
-		// 5. 语气和风格
-		toneStyle := pc.resolveToneStyle()
-		builder.AddSection("tone_style", toneStyle, nil)
-
-		// 6. 输出效率
-		outputEff := pc.resolveOutputEff()
-		builder.AddSection("output_efficiency", outputEff, nil)
-
-		// 7. 系统提醒
-		reminder := pc.resolveReminder()
-		builder.AddSection("reminder", reminder, nil)
-
-		// 8. 如果用户还设置了自定义 systemPrompt，追加。
-		if cfg.systemPrompt != "" {
-			builder.AddSection("custom", cfg.systemPrompt, nil)
-		}
+	if cfg.systemPrompt != "" {
+		// 传统模式：用户提供的纯字符串
+		builder.AddBasePrompt(cfg.systemPrompt)
 	} else {
-		// 传统模式：使用用户自定义提示词。
-		if cfg.systemPrompt != "" {
-			builder.AddBasePrompt(cfg.systemPrompt)
-		}
+		// 默认：加载 prompt 体系（promptDir 优先，否则嵌入默认值）
+		builder.AddSection("identity", resolvePrompt(cfg.promptDir, prompts.Identity), nil)
+		builder.AddSection("doing_tasks", resolvePrompt(cfg.promptDir, prompts.DoingTasks), nil)
+		builder.AddSection("actions", resolvePrompt(cfg.promptDir, prompts.Actions), nil)
+		builder.AddSection("using_tools", resolvePrompt(cfg.promptDir, prompts.UsingTools), nil)
+		builder.AddSection("tone_style", resolvePrompt(cfg.promptDir, prompts.ToneStyle), nil)
+		builder.AddSection("output_efficiency", resolvePrompt(cfg.promptDir, prompts.OutputEfficiency), nil)
+		builder.AddSection("reminder", resolvePrompt(cfg.promptDir, prompts.Reminder), nil)
 	}
 
-	// 环境信息（平台、架构、shell）。
-	builder.AddEnvironmentInfo()
+	// 环境信息和 Git 状态（WithGitContext 启用时才注入）。
+	if cfg.enableGitStatus {
+		builder.AddEnvironmentInfo()
+		if root := sysprompt.DetectGitRoot(); root != "" {
+			builder.SetGitRoot(root)
+		}
+		builder.AddGitStatus()
+	}
 
 	// 当前日期。
 	builder.AddCurrentDate()
-
-	// Git 状态。
-	builder.AddGitStatus()
 
 	// Memory 注入（CLAUDE.md 内容）。
 	if memMgr != nil {
@@ -842,112 +830,14 @@ func (a *App) buildSystemPrompt(cfg appConfig, memMgr *memory.Manager) string {
 	return text
 }
 
-// resolveIdentity 解析 identity prompt。
-func (pc PromptConfig) resolveIdentity() string {
-	if pc.IdentityText != "" {
-		return pc.IdentityText + pc.AppendIdentity
+// resolvePrompt 按 promptDir > 嵌入默认值 的优先级解析 prompt。
+func resolvePrompt(promptDir, embedName string) string {
+	if promptDir != "" {
+		if data, err := os.ReadFile(filepath.Join(promptDir, embedName)); err == nil {
+			return string(data)
+		}
 	}
-	if pc.Identity != "" {
-		content, _ := os.ReadFile(pc.Identity)
-		return string(content) + pc.AppendIdentity
-	}
-	return prompts.MustLoad(prompts.Identity) + pc.AppendIdentity
-}
-
-// resolveDoingTasks 解析 doing tasks prompt。
-func (pc PromptConfig) resolveDoingTasks() string {
-	if pc.DoingTasksText != "" {
-		return pc.DoingTasksText + pc.AppendDoingTasks
-	}
-	if pc.DoingTasks != "" {
-		content, _ := os.ReadFile(pc.DoingTasks)
-		return string(content) + pc.AppendDoingTasks
-	}
-	return prompts.MustLoad(prompts.DoingTasks) + pc.AppendDoingTasks
-}
-
-// resolveActions 解析 actions prompt。
-func (pc PromptConfig) resolveActions() string {
-	if pc.ActionsText != "" {
-		return pc.ActionsText + pc.AppendActions
-	}
-	if pc.Actions != "" {
-		content, _ := os.ReadFile(pc.Actions)
-		return string(content) + pc.AppendActions
-	}
-	return prompts.MustLoad(prompts.Actions) + pc.AppendActions
-}
-
-// resolveUsingTools 解析 using tools prompt。
-func (pc PromptConfig) resolveUsingTools() string {
-	if pc.UsingToolsText != "" {
-		return pc.UsingToolsText + pc.AppendUsingTools
-	}
-	if pc.UsingTools != "" {
-		content, _ := os.ReadFile(pc.UsingTools)
-		return string(content) + pc.AppendUsingTools
-	}
-	return prompts.MustLoad(prompts.UsingTools) + pc.AppendUsingTools
-}
-
-// resolveToneStyle 解析 tone style prompt。
-func (pc PromptConfig) resolveToneStyle() string {
-	if pc.ToneStyleText != "" {
-		return pc.ToneStyleText + pc.AppendToneStyle
-	}
-	if pc.ToneStyle != "" {
-		content, _ := os.ReadFile(pc.ToneStyle)
-		return string(content) + pc.AppendToneStyle
-	}
-	return prompts.MustLoad(prompts.ToneStyle) + pc.AppendToneStyle
-}
-
-// resolveOutputEff 解析 output efficiency prompt。
-func (pc PromptConfig) resolveOutputEff() string {
-	if pc.OutputEffText != "" {
-		return pc.OutputEffText + pc.AppendOutputEff
-	}
-	if pc.OutputEff != "" {
-		content, _ := os.ReadFile(pc.OutputEff)
-		return string(content) + pc.AppendOutputEff
-	}
-	return prompts.MustLoad(prompts.OutputEfficiency) + pc.AppendOutputEff
-}
-
-// resolveReminder 解析 reminder prompt。
-func (pc PromptConfig) resolveReminder() string {
-	if pc.ReminderText != "" {
-		return pc.ReminderText + pc.AppendReminder
-	}
-	if pc.Reminder != "" {
-		content, _ := os.ReadFile(pc.Reminder)
-		return string(content) + pc.AppendReminder
-	}
-	return prompts.MustLoad(prompts.Reminder) + pc.AppendReminder
-}
-
-// resolveWorkflow 解析 workflow prompt。
-func (pc PromptConfig) resolveWorkflow() string {
-	if pc.WorkflowText != "" {
-		return pc.WorkflowText + pc.AppendWorkflow
-	}
-	if pc.Workflow != "" {
-		content, _ := os.ReadFile(pc.Workflow)
-		return string(content) + pc.AppendWorkflow
-	}
-	return prompts.MustLoad(prompts.Workflow) + pc.AppendWorkflow
-}
-
-// resolveCompact 解析 compact prompt。
-func (pc PromptConfig) resolveCompact() string {
-	if pc.CompactText != "" {
-		return pc.CompactText + pc.AppendCompact
-	}
-	if pc.Compact != "" {
-		content, _ := os.ReadFile(pc.Compact)
-		return string(content) + pc.AppendCompact
-	}
-	return prompts.MustLoad(prompts.Compact) + pc.AppendCompact
+	return prompts.MustLoad(embedName)
 }
 
 // GetSystemPrompt 返回当前的完整 system prompt（供用户查看/调试）。

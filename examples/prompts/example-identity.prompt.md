@@ -1,6 +1,6 @@
 # 示例：自定义身份提示词 (Identity)
 # 这个文件展示如何自定义 Agent 的身份定义
-# 复制此文件到你的项目，按需修改，然后通过 PromptConfig 加载
+# 复制此文件到你的 prompt 目录，重命名为 system-identity.prompt.md，然后通过 WithPromptDir 加载
 
 你是一个[在这里填入你的 Agent 类型，例如：客服助手/代码审查助手/数据分析助手]。
 

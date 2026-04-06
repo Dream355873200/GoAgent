@@ -11,39 +11,47 @@
 
 ## 快速开始
 
-### 方式1：完全自定义身份
+### 方式一：使用外部目录覆盖
+
+将修改后的 prompt 文件放到一个目录中，通过 `WithPromptDir` 加载：
+找不到的文件会自动 fallback 到嵌入的默认值。
 
 ```go
 app := goagent.New(
-    goagent.WithPromptConfig(goagent.PromptConfig{
-        IdentityText: `你是一个客服助手。
-- 专注于帮助用户解决问题
-- 保持友好和专业的语气
-- 复杂问题需要先确认细节再回答`,
-    }),
+    goagent.ProviderConfig{Model: "gpt-4o", APIKey: "sk-..."},
+    goagent.WithPromptDir("./prompts"),
 )
 ```
 
-### 方式2：从文件加载
+文件名必须与内置文件名一致，例如 `system-identity.prompt.md`。
+
+可使用 `prompts.ExportDefaults(dir)` 一键导出所有默认 prompt 到目录：
+
+```go
+import "github.com/Dream355873200/GoAgent/prompts"
+
+files, _ := prompts.ExportDefaults("./my-prompts")
+fmt.Println("已导出:", files)
+// 修改 ./my-prompts/system-identity.prompt.md 后重新启动即可生效
+```
+
+### 方式二：纯字符串系统提示词
+
+不需要 prompt 体系时，直接传入自定义字符串：
 
 ```go
 app := goagent.New(
-    goagent.WithPromptConfig(goagent.PromptConfig{
-        Identity: "prompts/my-identity.prompt.md",
-    }),
+    goagent.WithSystemPrompt("你是一个客服助手。\n- 保持友好专业的语气\n- 复杂问题先确认细节再回答"),
 )
 ```
 
-### 方式3：追加到内置提示词
+### 方式三：默认模式
+
+不传任何 prompt Option，自动加载嵌入的 7 个 prompt 文件（对齐 Claude Code）：
 
 ```go
 app := goagent.New(
-    goagent.WithPromptConfig(goagent.PromptConfig{
-        // 追加到身份定义之后
-        AppendIdentity: "\n\n额外要求：你必须使用中文回答。",
-        // 追加到提醒之后
-        AppendReminder: "\n\n重要：不要修改生产环境代码。",
-    }),
+    goagent.ProviderConfig{Model: "gpt-4o", APIKey: "sk-..."},
 )
 ```
 
@@ -65,14 +73,3 @@ goagent 的提示词系统由以下部分组成（按顺序）：
 5. **ToneStyle** - 语气和风格
 6. **OutputEfficiency** - 输出效率
 7. **Reminder** - 系统提醒
-8. **Custom** - 用户自定义提示词（如果有）
-
-## 优先级
-
-每个部分支持三种配置方式，优先级如下：
-
-1. `*Text`（直接文本） - 最高优先级
-2. `*`（文件路径） - 次高优先级
-3. 内置提示词 - 默认使用内置提示词
-
-追加字段（`Append*`）始终添加到对应部分之后。

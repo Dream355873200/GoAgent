@@ -61,6 +61,9 @@ type Config struct {
 	// nil 或空 = 启用全部层（向后兼容）。
 	// 例如：[]Layer{LayerBudget, LayerMicro, LayerAuto} 只启用 L0+L2+L4。
 	Layers []Layer
+
+	// PromptFile 外部 compact prompt 文件路径（空则用嵌入默认值）。
+	PromptFile string
 }
 
 // Manager 协调压缩层。
@@ -98,6 +101,7 @@ func (m *Manager) Compact(ctx context.Context, messages []message.Message, custo
 			MaxToolResultChars: m.config.MaxResultSize,
 			ProtectedTail:      4,
 		},
+		PromptFile: m.config.PromptFile,
 	}
 
 	return Compact(ctx, messages, cfg)

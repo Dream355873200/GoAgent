@@ -73,9 +73,6 @@ func main() {
 			BaseURL: baseURL,
 		},
 
-		// Claude Code 中文提示词体系。
-		goagent.WithClaudeCodePrompts(),
-
 		// 最大轮次。
 		goagent.WithMaxTurns(50),
 

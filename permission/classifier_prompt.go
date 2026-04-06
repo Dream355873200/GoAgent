@@ -1,6 +1,10 @@
 package permission
 
-import "github.com/Dream355873200/GoAgent/prompts"
+import (
+	"os"
+
+	"github.com/Dream355873200/GoAgent/prompts"
+)
 
 const (
 	// YoloPromptFile 是 YOLO 分类器 system prompt 的文件名。
@@ -8,8 +12,13 @@ const (
 )
 
 // YoloSystemPrompt 返回 YOLO 分类器的 system prompt。
-// 从 prompts 包加载，对齐 Claude Code auto_mode_system_prompt.txt + permissions_external.txt。
-func YoloSystemPrompt() string {
+// 如果 fileOverride 非空，优先从外部文件加载；否则使用嵌入的默认值。
+func YoloSystemPrompt(fileOverride string) string {
+	if fileOverride != "" {
+		if data, err := os.ReadFile(fileOverride); err == nil {
+			return string(data)
+		}
+	}
 	return prompts.MustLoad(YoloPromptFile)
 }
 

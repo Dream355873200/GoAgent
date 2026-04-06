@@ -11,6 +11,7 @@ package compaction
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 
 	"github.com/Dream355873200/GoAgent/prompts"
@@ -284,14 +285,16 @@ Please provide your summary following this structure, ensuring precision and tho
 )
 
 // GetCompactPrompt 返回对齐 Claude Code 的摘要 prompt。
-func GetCompactPrompt(customInstructions string, mode CompactMode) string {
+// promptFile 非空时优先从外部文件加载，否则使用嵌入的默认值。
+func GetCompactPrompt(customInstructions string, mode CompactMode, promptFile string) string {
 	var template string
-	switch mode {
-	case CompactModePartial:
-		template = prompts.MustLoad(prompts.Compact)
-	case CompactModePartialUpTo:
-		template = prompts.MustLoad(prompts.Compact)
-	default:
+	if promptFile != "" {
+		if data, err := os.ReadFile(promptFile); err == nil {
+			template = string(data)
+		} else {
+			template = prompts.MustLoad(prompts.Compact)
+		}
+	} else {
 		template = prompts.MustLoad(prompts.Compact)
 	}
 

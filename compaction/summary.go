@@ -20,6 +20,8 @@ type SummaryConfig struct {
 	IsAutoCompact bool
 	// ContextWindow 上下文窗口大小。
 	ContextWindow int
+	// PromptFile 外部 compact prompt 文件路径（空则用嵌入默认值）。
+	PromptFile string
 }
 
 // CompactSummary 调用 LLM 生成对话摘要。
@@ -36,7 +38,7 @@ func CompactSummary(ctx context.Context, messages []message.Message, cfg Summary
 	}
 
 	// 构建摘要 prompt
-	prompt := GetCompactPrompt(cfg.CustomInstructions, mode)
+	prompt := GetCompactPrompt(cfg.CustomInstructions, mode, cfg.PromptFile)
 
 	// 构建请求消息
 	reqMessages := []message.Message{
@@ -99,7 +101,7 @@ func CompactSummaryStream(ctx context.Context, messages []message.Message, cfg S
 		}
 
 		// 构建摘要 prompt
-		prompt := GetCompactPrompt(cfg.CustomInstructions, mode)
+		prompt := GetCompactPrompt(cfg.CustomInstructions, mode, cfg.PromptFile)
 
 		// 构建请求消息
 		conversationText := buildConversationText(messages)

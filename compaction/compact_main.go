@@ -37,6 +37,8 @@ type CompactConfig struct {
 	PostCompactCleanup *PostCompactCleanupRunner
 	// PreCompactTokenCount 压缩前的 token 数（用于日志）。
 	PreCompactTokenCount int
+	// PromptFile 外部 compact prompt 文件路径（空则用嵌入默认值）。
+	PromptFile string
 }
 
 // DefaultCompactConfig 返回默认配置。
@@ -114,6 +116,7 @@ func Compact(ctx context.Context, messages []message.Message, cfg CompactConfig)
 			CustomInstructions: mergedInstructions,
 			IsAutoCompact:      cfg.IsAutoCompact,
 			ContextWindow:      cfg.ContextWindow,
+			PromptFile:         cfg.PromptFile,
 		})
 	} else if cfg.Summarizer != nil {
 		// 使用 Summarizer 函数（向后兼容）

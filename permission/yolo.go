@@ -29,6 +29,8 @@ type YoloClassifierConfig struct {
 	Stage2MaxTokens int
 	// Mode: "both"(默认两阶段), "fast"(仅快速), "thinking"(仅思考)。
 	Mode string
+	// PromptFile 外部 prompt 文件路径（空则使用嵌入默认值）。
+	PromptFile string
 }
 
 // YoloClassifier 使用 LLM 子模型调用进行权限分类。
@@ -86,7 +88,7 @@ func (c *YoloClassifier) Classify(ctx context.Context, messages []message.Messag
 }
 
 func (c *YoloClassifier) runStage(ctx context.Context, transcript string, stage int) YoloResult {
-	systemPrompt := YoloSystemPrompt()
+	systemPrompt := YoloSystemPrompt(c.config.PromptFile)
 	maxTokens := c.config.Stage1MaxTokens
 
 	if stage == 1 {

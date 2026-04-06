@@ -233,9 +233,8 @@ goagent.WithAnthropic()
 
 | Option | 说明 | 默认值 |
 |--------|------|--------|
-| `WithSystemPrompt(s)` | 系统提示词 | 无 |
-| `WithClaudeCodePrompts()` | 使用内置 Claude Code 中文提示词体系 | 不启用 |
-| `WithPromptConfig(cfg)` | 细粒度自定义提示词各 section | 不启用 |
+| `WithSystemPrompt(s)` | 系统提示词（纯字符串模式，不走 prompt 体系） | 无 |
+| `WithPromptDir(dir)` | 外部 prompt 目录（优先从此加载，找不到 fallback 嵌入默认值） | 无 |
 | `WithBuiltinTools()` | 开启所有内置工具（Read/Write/Edit/Glob/Grep/Bash/WebSearch/WebFetch） | 不启用 |
 | `WithTaskTools()` | 启用 Task 管理工具（TaskCreate/Update/Get/List），默认内存存储 | 不启用 |
 | `WithPlanTools()` | 启用 Plan Mode 工具（EnterPlanMode/ExitPlanMode） | 不启用 |
@@ -262,6 +261,8 @@ goagent.WithAnthropic()
 | `WithAnalytics()` | 启用使用分析 | 不启用 |
 | `WithMCP(servers...)` | 配置 MCP 服务器 | 无 |
 | `WithTaskStore(s)` / `WithPlanStore(s)` / `WithBgTaskStore(s)` | 自定义存储后端（需配合对应的 Tools Option） | 内存/文件存储 |
+| `WithGitContext()` | 在 system prompt 中注入环境信息和 Git 状态 | 不启用 |
+| `WithYoloPromptFile(path)` | YOLO 分类 prompt 外部文件路径 | 嵌入默认值 |
 
 ---
 
@@ -1344,13 +1345,14 @@ app.SetModel("gpt-4-turbo")  // 返回 false 表示不支持
 
 GoAgent 内置了一套对齐 Claude Code 的中文提示词体系，同时支持用户自定义。
 
-### 方式一：使用内置提示词（推荐）
+### 方式一：使用内置提示词（默认行为）
+
+不传任何 prompt Option，自动加载嵌入的 7 个 prompt 文件（对齐 Claude Code）：
 
 ```go
 app := goagent.New(
     goagent.ProviderConfig{Model: "gpt-4o", APIKey: "sk-..."},
     goagent.WithBuiltinTools(),
-    goagent.WithClaudeCodePrompts(),  // 启用内置 Claude Code 提示词体系
 )
 ```
 
@@ -1365,7 +1367,6 @@ app := goagent.New(
 | `system-tone-style.prompt.md` | 语气和风格 | ✅ 已集成 |
 | `system-output-efficiency.prompt.md` | 输出效率 | ✅ 已集成 |
 | `system-reminder.prompt.md` | 系统提醒 | ✅ 已集成 |
-| `system-workflow.prompt.md` | 兼容旧版 | ✅ 已集成 |
 | `compact.prompt.md` | 上下文压缩提示词 | ✅ 已集成 |
 
 ### 方式二：完全自定义
@@ -1378,18 +1379,19 @@ app := goagent.New(
 )
 ```
 
-### 方式三：混合模式
+### 方式三：外部目录覆盖
 
-内置提示词 + 自定义追加：
+通过 `WithPromptDir` 从外部目录加载 prompt 文件，找不到的文件会自动 fallback 到嵌入默认值：
 
 ```go
 app := goagent.New(
     goagent.ProviderConfig{Model: "gpt-4o", APIKey: "sk-..."},
     goagent.WithBuiltinTools(),
-    goagent.WithClaudeCodePrompts(),
-    goagent.WithSystemPrompt("\n\n额外指令：你只使用中文回答。"),
+    goagent.WithPromptDir("./my-prompts"),
 )
 ```
+
+可使用 `prompts.ExportDefaults(dir)` 一键导出所有默认 prompt 到指定目录，然后修改文件后重启生效。
 
 ### 提示词变量
 
@@ -1414,7 +1416,6 @@ import "github.com/Dream355873200/GoAgent/prompts"
 
 // 加载内置提示词
 identity := prompts.MustLoad(prompts.Identity)
-workflow := prompts.MustLoad(prompts.Workflow)
 
 // 带变量替换
 content := prompts.LoadWithVars(prompts.Compact, map[string]string{
@@ -1423,68 +1424,39 @@ content := prompts.LoadWithVars(prompts.Compact, map[string]string{
 })
 ```
 
-### PromptConfig 自定义配置
+### WithPromptDir 外部目录
 
-`PromptConfig` 提供细粒度的提示词自定义，支持三种配置方式（优先级从高到低）：
+通过 `WithPromptDir(dir)` 指定外部 prompt 目录，框架优先从此目录加载 prompt 文件，找不到的文件会自动 fallback 到嵌入的默认值。
 
 ```go
 app := goagent.New(
-    goagent.WithPromptConfig(goagent.PromptConfig{
-        // 方式1：从文件加载（优先级高于内置提示词）
-        Identity:     "my-identity.prompt.md",
-        DoingTasks:   "my-tasks.prompt.md",
-
-        // 方式2：直接使用字符串（优先级最高）
-        IdentityText: "你是一个专属客服助手...",
-        AppendToneStyle: "\n\n必须使用中文回答。",
-
-        // 方式3：追加到内置提示词之后
-        AppendReminder: "\n\n额外提醒：xxx",
-    }),
+    goagent.ProviderConfig{Model: "gpt-4o", APIKey: "sk-..."},
+    goagent.WithPromptDir("./my-prompts"),
 )
 ```
 
-**查看当前提示词**：
+**一键导出并修改**：
 
 ```go
-// 获取当前使用的完整 system prompt
-fmt.Println(app.GetSystemPrompt())
+import "github.com/Dream355873200/GoAgent/prompts"
+
+// 导出所有默认 prompt 到目录（已存在的不覆盖）
+files, _ := prompts.ExportDefaults("./my-prompts")
+fmt.Println("已导出:", files)
+// 修改 ./my-prompts/system-identity.prompt.md 后重启生效
 ```
 
-**PromptConfig 字段说明**：
+**文件名对应**：
 
-| 字段（文件） | 字段（文本） | 追加字段 | 说明 |
-|------------|------------|---------|------|
-| `Identity` | `IdentityText` | `AppendIdentity` | Agent 身份定义 |
-| `DoingTasks` | `DoingTasksText` | `AppendDoingTasks` | 执行任务指令 |
-| `Actions` | `ActionsText` | `AppendActions` | 谨慎执行操作 |
-| `UsingTools` | `UsingToolsText` | `AppendUsingTools` | 工具使用策略 |
-| `ToneStyle` | `ToneStyleText` | `AppendToneStyle` | 语气和风格 |
-| `OutputEff` | `OutputEffText` | `AppendOutputEff` | 输出效率 |
-| `Reminder` | `ReminderText` | `AppendReminder` | 系统提醒 |
-| `Workflow` | `WorkflowText` | `AppendWorkflow` | 兼容旧版 |
-| `Compact` | `CompactText` | `AppendCompact` | 上下文压缩 |
-
-**示例场景**：
-
-```go
-// 场景1：完全自定义身份
-goagent.PromptConfig{
-    IdentityText: "你是一个专注于代码审查的 AI 助手...",
-}
-
-// 场景2：追加额外要求
-goagent.PromptConfig{
-    AppendToneStyle: "\n\n所有回答必须使用中文。",
-    AppendReminder: "\n\n重要：不要修改生产环境代码。",
-}
-
-// 场景3：使用自定义文件
-goagent.PromptConfig{
-    Identity:   "./prompts/my-identity.prompt.md",
-    DoingTasks: "./prompts/my-tasks.prompt.md",
-}
-```
+| 文件名 | 说明 |
+|--------|------|
+| `system-identity.prompt.md` | Agent 身份定义 |
+| `system-doing-tasks.prompt.md` | 执行任务指令 |
+| `system-actions.prompt.md` | 谨慎执行操作 |
+| `system-using-tools.prompt.md` | 工具使用策略 |
+| `system-tone-style.prompt.md` | 语气和风格 |
+| `system-output-efficiency.prompt.md` | 输出效率 |
+| `system-reminder.prompt.md` | 系统提醒 |
 
 ### 项目上下文（CLAUDE.md）
 
@@ -1549,8 +1521,8 @@ goagent.New(
     // === 运行模式 ===
     WithBuiltinTools(),                  // 开启所有内置工具
     WithToolKits(FileKit(), ShellKit()), // 按包注册工具
-    WithSystemPrompt("你是一个..."),     // 系统提示词
-    WithClaudeCodePrompts(),             // 使用 Claude Code 原版提示词体系
+    WithSystemPrompt("你是一个..."),     // 系统提示词（纯字符串模式）
+    WithPromptDir("./prompts"),           // 外部 prompt 目录覆盖
 
     // === 并发与限制 ===
     WithMaxTurns(100),                   // 最大循环次数（默认 100）
