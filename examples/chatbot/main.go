@@ -115,9 +115,9 @@ func main() {
 
 	app := goagent.New(opts...)
 
-	// 注册内置工具。
+	// 注册核心工具。
 	// Task/Plan/Ask 等管理工具已通过 WithTaskTools/WithPlanTools/WithAskTools 注册。
-	app.UseTools(builtin.AllTools()...)
+	app.UseTools(builtin.CoreTools()...)
 
 	// 启动 CLI（TUI 模式）。
 	app.RunCLI()

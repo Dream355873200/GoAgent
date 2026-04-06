@@ -2,7 +2,7 @@
 //
 // 包含 Claude Code 核心工具的 Go 实现：
 // Read, Write, Edit, Glob, Grep, Bash。
-// 用户可通过 builtin.AllTools() 一次注册全部内置工具。
+// 用户可通过 builtin.CoreTools() 一次注册核心工具。
 package builtin
 
 import (
@@ -25,7 +25,7 @@ import (
 func init() {
 	// 注册内置工具提供函数，使 WithBuiltinTools() 可以工作。
 	goagent.RegisterBuiltinToolsProvider(func() []goagent.NamedTool {
-		return AllTools()
+		return CoreTools()
 	})
 
 	// 注册 AskUser 回调设置函数（供 TUI 模式使用）。
@@ -97,9 +97,12 @@ func init() {
 	})
 }
 
-// AllTools 返回全部内置工具，供 app.UseTools() 批量注册。
-// 注意：AskUser 不再包含在内，需通过 WithAskTools() 或 InteractKit() 单独启用。
-func AllTools() []goagent.NamedTool {
+// CoreTools 返回核心内置工具，供 app.UseTools() 批量注册。
+// 包含 Read/Write/Edit/Glob/Grep/Bash/WebSearch/WebFetch。
+// 不包含 AskUser/Task/Plan/BgTask 等子系统工具，需通过对应 With* Option 单独启用。
+//
+// AllTools 是 CoreTools 的别名（向后兼容）。
+func CoreTools() []goagent.NamedTool {
 	return []goagent.NamedTool{
 		{Name: "Read", Def: ReadTool()},
 		{Name: "Write", Def: WriteTool()},
@@ -111,6 +114,10 @@ func AllTools() []goagent.NamedTool {
 		{Name: "WebFetch", Def: WebFetchTool()},
 	}
 }
+
+// AllTools 是 CoreTools 的别名，向后兼容。
+// Deprecated: 请使用 CoreTools()。
+func AllTools() []goagent.NamedTool { return CoreTools() }
 
 // ---------- Read ----------
 

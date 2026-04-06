@@ -75,12 +75,12 @@ func CodeKit() goagent.ToolKit {
 	)
 }
 
-// AllKit 返回全部内置工具包。
-// 等价于 AllTools() 的 ToolKit 形式。
-// 注意：不包含 AskUser，如需用户交互请使用 InteractKit。
+// AllKit 返回全部核心工具包。
+// 等价于 CoreTools() 的 ToolKit 形式。
+// 不包含 AskUser/Task/Plan/BgTask 等子系统工具。
 func AllKit() goagent.ToolKit {
 	return goagent.ToolKit{
 		Name:        "AllKit",
-		Description: "全部内置工具（Read/Write/Edit/Glob/Grep/Bash/WebSearch/WebFetch）",
-	}.WithTools(AllTools()...)
+		Description: "全部核心工具（Read/Write/Edit/Glob/Grep/Bash/WebSearch/WebFetch）",
+	}.WithTools(CoreTools()...)
 }

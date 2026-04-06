@@ -483,25 +483,25 @@ func (a *App) Sessions() *session.Manager {
 }
 
 // BgTasks 返回后台任务管理器。
-// 开发者可用此方法管理后台 agent 和 shell 任务。
+// 需先启用 WithBgTaskTools()，否则返回 nil。
 func (a *App) BgTasks() *bgtask.Manager {
 	return a.bgTaskMgr
 }
 
 // BgTaskStore 返回后台任务存储接口。
-// 可用于自定义存储后端或 HTTP 端点访问。
+// 需先启用 WithBgTaskTools()，否则返回 nil。
 func (a *App) BgTaskStore() bgtask.StoreInterface {
 	return a.bgTaskMgr
 }
 
 // TaskStore 返回 Task 存储接口。
-// 可用于自定义存储后端或 HTTP 端点访问。
+// 需先启用 WithTaskTools()，否则返回 nil。
 func (a *App) TaskStore() task.StoreInterface {
 	return a.taskStore
 }
 
 // PlanStore 返回 Plan 存储接口。
-// 可用于自定义存储后端或 HTTP 端点访问。
+// 需先启用 WithPlanTools()，否则返回 nil。
 func (a *App) PlanStore() plan.StoreInterface {
 	return a.planMgr
 }

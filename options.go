@@ -399,7 +399,7 @@ func (a *autoApprover) Approve(string, string, Permission) (bool, bool) {
 // --- WithBuiltinTools ---
 
 // WithBuiltinTools 一行开启所有内置工具（Read/Write/Edit/Glob/Grep/Bash/WebSearch/WebFetch）。
-// 等价于手动调用 app.UseTools(builtin.AllTools()...)。
+// 等价于手动调用 app.UseTools(builtin.CoreTools()...)。
 // 注意：AskUser 不在此列，需通过 WithAskTools() 单独启用。
 //
 // 示例：
