@@ -19,7 +19,26 @@
       "Bash(go env:*)",
       "Read(//c/Users/Yume/go/pkg/mod/github.com/!dream355873200/**)",
       "Read(//c/Users/Yume/go/pkg/mod/github.com/**)",
-      "Bash(pushd:*)"
+      "Bash(pushd:*)",
+      "Read(//d/AnimeCreater/frontend/**)",
+      "Bash(npx tsc:*)",
+      "Bash(echo \"EXIT: $?\")",
+      "Read(//d/AnimeCreater/**)",
+      "Bash(sed -n '233,353p' internal/service/node_generation_task_service.go)",
+      "Bash(ls /mnt/)",
+      "Read(//d//**)",
+      "Bash(cat:*)",
+      "Bash(/c/Go/bin/go.exe build:*)",
+      "Bash(which go:*)",
+      "Bash(bash -c 'cd /d/AnimeCreater && go build ./... 2>&1')",
+      "Bash(xxd)",
+      "Bash(sed -i '460s/^n//' internal/service/node_generation_task_service.go)",
+      "Bash(sed -i '751s/^n//' internal/service/node_generation_task_service.go)",
+      "Bash(popd)",
+      "Bash(xxd \"D:/AnimeCreater/internal/service/variant_generation_service.go\")",
+      "Bash(xxd \"D:\\\\AnimeCreater\\\\internal\\\\service\\\\workflow_service.go\")",
+      "Bash(python3:*)",
+      "Bash(xxd \"C:\\\\Users\\\\Yume\\\\Desktop\\\\wend.txt\")"
     ]
   }
 }

@@ -552,6 +552,26 @@ func (a *App) SetProvider(p provider.Provider) {
 	a.provider = p
 }
 
+// SetSystemPrompt 动态替换 System Prompt。
+// 线程安全，可在运行时调用（下次 Run 时生效）。
+func (a *App) SetSystemPrompt(prompt string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.config.systemPrompt = prompt
+}
+
+// SetTools 动态替换全部工具（清空后重新注册）。
+// 线程安全，可在运行时调用（下次 Run 时生效）。
+func (a *App) SetTools(tools ...NamedTool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.tools = make(map[string]*registeredTool, len(tools))
+	a.toolOrder = a.toolOrder[:0]
+	for _, t := range tools {
+		a.Tool(t.Name, t.Def)
+	}
+}
+
 // ToolNames 返回已注册工具的名称列表（按注册顺序）。
 func (a *App) ToolNames() []string {
 	a.mu.RLock()

@@ -1148,6 +1148,57 @@ app.UsePipeline(goagent.PipelineConfig{
 - `approve_result` — 批准，触发 `OnResult`
 - `reject_result` — 拒绝并附带改进建议，结果重新入队（超过 `MaxRetries` 后自动通过）
 
+### 并行独立节点 + SharedData 注入
+
+多个无依赖的节点自动并行执行，适合同一数据源的不同维度处理：
+
+```go
+app.UsePipeline(goagent.PipelineConfig{
+    Nodes: []goagent.PipelineNode{
+        // splitter：拆剧本，下游注入到 enrichers 和 storyboard
+        {
+            Name:        "splitter",
+            Concurrency: 1,
+            Message:     "请读取项目剧本，拆分为各集，并识别角色、场景和道具。",
+            Review:      true,
+            Injects:     []string{"character_enricher", "scene_enricher", "storyboard"},
+            Agent:       splitterAgent,
+        },
+        // worldview：与 splitter 并行，直接注入剧本内容提取世界观
+        // 无 Injects/CloseQueues（无下游），独立完成
+        {
+            Name:        "worldview",
+            Concurrency: 1,
+            Message:     buildWorldviewMessage(ctx, services, projectID, userID),
+            Review:      true,
+            Agent:       worldviewAgent,
+        },
+        // enrichers 依赖 splitter...
+    },
+    SharedData: map[string]any{
+        "project_id": projectID,
+        "user_id":    userID,
+    },
+    Supervisor: supervisorAgent,
+})
+```
+
+工具通过 `GetPipelineDataInt64` 从 SharedData 获取注入的 project_id：
+
+```go
+func NewCreateWorldviewEntryTool(svc *service.WorldviewService, userID int64) ga.NamedTool {
+    return ga.InferTool("create_worldview_entry", "创建世界观条目",
+        func(ctx context.Context, input CreateWorldviewEntryInput) (*CreateWorldviewEntryOutput, error) {
+            // project_id 从 SharedData 自动获取，无需 LLM 传入
+            pid, ok := ga.GetPipelineDataInt64(ctx, "project_id")
+            if !ok || pid == 0 {
+                return nil, fmt.Errorf("无法获取 project_id")
+            }
+            return svc.CreateWorldview(ctx, pid, userID, input)
+        })
+}
+```
+
 ### 队列注入
 
 工具内通过 `GetMessageQueue` 向下游节点推送任务：

@@ -47,6 +47,15 @@ type PipelineConfig struct {
 	// Supervisor 是上帝节点（可选，不参与 DAG 调度）。
 	// 当存在 Review=true 的节点时，框架自动注入审核 tool。
 	Supervisor *PipelineAgentDef
+
+	// SharedData 是 pipeline 全局共享数据，会注入到所有节点的 context 中。
+	// tool 通过 GetPipelineData(ctx, key) 获取。
+	SharedData map[string]any
+
+	// TransactionFactory 应用层事务工厂（可选）。
+	// 如果设置，Review=true 的节点每次 worker 执行前会创建事务，
+	// approve 时 Commit，reject 时 Rollback 后重试。
+	TransactionFactory TransactionFactory
 }
 
 // PipelineNode 定义一个 agent 节点。
@@ -58,19 +67,24 @@ type PipelineNode struct {
 	Agent *PipelineAgentDef
 
 	// Concurrency worker 并发数（默认 1）。
-	// Concurrency=1：直接执行，无 message 队列。
-	// Concurrency>1：自动创建 message 队列 + N 个 worker。
+	// 所有节点都创建 message 队列，Concurrency 控制同时运行几个 worker。
 	Concurrency int
 
 	// DependsOn 依赖的节点名列表。全部完成后才启动此节点。
 	DependsOn []string
 
-	// Message 初始 message（Concurrency=1 时使用）。
+	// Message 节点上下文消息。作为每个 worker 的 user message 前缀。
+	// 非空时自动 Push 到队列作为初始任务。
 	Message string
 
 	// Injects 声明此 node 的 agent tool 可以往哪些下游 node 的队列推送。
 	// 框架在运行此 node 时，将指定队列注入到 context。
 	Injects []string
+
+	// CloseQueues 当前节点完成时应关闭的下游队列名列表。
+	// 默认等于 Injects（向后兼容）。
+	// 多个节点声明 Close 同一队列时，队列需要所有 Close 调用后才真正关闭（引用计数）。
+	CloseQueues []string
 
 	// MessageType message 队列元素类型的零值（默认 string）。
 	// 设置为零值即可，如 Task{}。框架通过反射推断实际类型。
@@ -90,11 +104,15 @@ type PipelineNode struct {
 	// 仅 Review=true 时生效。
 	MaxRetries int
 
-	// OnResult 通过后的回调。
+	// OnTaskResult 通过后的回调。
 	// Review=false 时，worker 完成后自动调用。
 	// Review=true 时，supervisor 批准后调用。
 	// result 参数的实际类型由 ResultType 决定，用户需做类型断言。
-	OnResult func(result any)
+	OnTaskResult func(result any)
+
+	// OnNodeComplete 所有 worker 完成 + review 通过后触发一次。
+	// 适合执行收尾操作（如批量发布、发送通知）。
+	OnNodeComplete func()
 
 	// QueueSize 队列缓冲大小（默认 64）。
 	QueueSize int
@@ -145,6 +163,48 @@ func GetMessageQueue(ctx context.Context, nodeName string) MessagePusher {
 }
 
 // ---------------------------------------------------------------------------
+// GetPipelineData — 从 context 获取 SharedData
+// ---------------------------------------------------------------------------
+
+// GetPipelineData 从 context 获取 SharedData 中 key 对应的值。
+func GetPipelineData(ctx context.Context, key string) (any, bool) {
+	data, ok := ctx.Value(ctxKeySharedData).(map[string]any)
+	if !ok || data == nil {
+		return nil, false
+	}
+	v, ok := data[key]
+	return v, ok
+}
+
+// GetPipelineDataString 获取 SharedData 中 key 对应的字符串值。
+func GetPipelineDataString(ctx context.Context, key string) (string, bool) {
+	v, ok := GetPipelineData(ctx, key)
+	if !ok {
+		return "", false
+	}
+	s, ok := v.(string)
+	return s, ok
+}
+
+// GetPipelineDataInt64 获取 SharedData 中 key 对应的 int64 值。
+func GetPipelineDataInt64(ctx context.Context, key string) (int64, bool) {
+	v, ok := GetPipelineData(ctx, key)
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case float64:
+		return int64(n), true
+	default:
+		return 0, false
+	}
+}
+
+// ---------------------------------------------------------------------------
 // ReviewEvent — supervisor 审核事件
 // ---------------------------------------------------------------------------
 
@@ -174,8 +234,12 @@ type ReviewResultItem struct {
 	// RetryCount 此 message 已重试的次数。
 	RetryCount int `json:"-"`
 
-	// rawResult 未序列化的原始 result（用于 OnResult 回调）。
+	// rawResult 未序列化的原始 result（用于 OnTaskResult 回调）。
 	rawResult any
+
+	// tx 此 worker 执行期间的应用层事务（可选）。
+	// approve 时 Commit，reject 时 Rollback。
+	tx Transaction
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +252,7 @@ const (
 	ctxKeyMessageQueues ctxKey = iota
 	ctxKeyReviewSignal
 	ctxKeyPipeline
+	ctxKeySharedData
 )
 
 // injectedQueues 是注入到 context 中的队列集合（受 Injects 限制）。
@@ -200,16 +265,22 @@ type injectedQueues struct {
 // ---------------------------------------------------------------------------
 
 type messagePusher struct {
-	ch       chan any
-	closed   bool
-	mu       sync.Mutex
-	nodeType reflect.Type // 期望的 message 类型（nil 表示 string）
+	ch          chan any
+	closed      bool
+	mu          sync.Mutex
+	nodeType    reflect.Type // 期望的 message 类型（nil 表示 string）
+	closeCount  int          // 需要多少个 Close 调用才真正关闭
+	closedTimes int          // 已被 Close 的次数
 }
 
-func newMessagePusher(size int, msgType reflect.Type) *messagePusher {
+func newMessagePusher(size int, msgType reflect.Type, expectedCloseCount int) *messagePusher {
+	if expectedCloseCount <= 0 {
+		expectedCloseCount = 1
+	}
 	return &messagePusher{
-		ch:       make(chan any, size),
-		nodeType: msgType,
+		ch:         make(chan any, size),
+		nodeType:   msgType,
+		closeCount: expectedCloseCount,
 	}
 }
 
@@ -225,7 +296,8 @@ func (mp *messagePusher) Push(msg any) {
 func (mp *messagePusher) Close() {
 	mp.mu.Lock()
 	defer mp.mu.Unlock()
-	if !mp.closed {
+	mp.closedTimes++
+	if mp.closedTimes >= mp.closeCount && !mp.closed {
 		mp.closed = true
 		close(mp.ch)
 	}
@@ -256,9 +328,10 @@ type pipeline struct {
 	msgQueues map[string]*messagePusher // 每个节点的 message 队列
 
 	// 审核
-	pendingResults map[string][]ReviewResultItem // 每个节点待审 result
-	reviewSignal   chan ReviewEvent              // supervisor 的审核事件 channel
-	pendingMu      sync.Mutex                    // 保护 pendingResults
+	pendingResults     map[string][]ReviewResultItem // 每个节点待审 result
+	reviewSignal       chan ReviewEvent              // supervisor 的审核事件 channel
+	pendingMu          sync.Mutex                    // 保护 pendingResults
+	currentReviewItems map[string][]ReviewResultItem // 当前正在审核的 items（供 reject_result 读取）
 
 	// DAG 状态
 	doneCh       chan struct{} // pipeline 完成信号
@@ -267,6 +340,14 @@ type pipeline struct {
 	nodesMu      sync.Mutex
 	reviewDone   map[string]bool // Review 节点审核完成标记
 	reviewDoneCh chan string     // 审核完成信号，通知调度器重新检查下游依赖
+
+	// 节点错误状态：当某个节点的 LLM 返回空响应或致命错误时记录。
+	// recordNodeError 会 cancel pipeline context，中断所有正在运行的节点。
+	firstError error
+	errMu      sync.Mutex
+
+	// cancelFunc 用于中断 pipeline（由 recordNodeError 调用）。
+	cancelFunc context.CancelFunc
 
 	// 父 App（用于创建子 agent）
 	parentApp *App
@@ -280,6 +361,14 @@ type pipelineNodeState struct {
 	// 运行时状态
 	started bool
 
+	// nodeCtx 节点执行时的 context（包含注入的 queues、SharedData 等）。
+	// 在 runNode 中设置，供 reject 重试时复用。
+	nodeCtx context.Context
+
+	// reviewApproved 当 Review=true 时，review 全部通过后关闭此 channel，
+	// 通知 runNode 可以 self-close 队列并退出 worker。
+	reviewApproved chan struct{}
+
 	// 由 applyNodeDefaults 从零值推断的 reflect.Type
 	msgType    reflect.Type
 	resultType reflect.Type
@@ -288,17 +377,32 @@ type pipelineNodeState struct {
 // newPipeline 创建 pipeline 实例。
 func newPipeline(cfg PipelineConfig, parent *App) *pipeline {
 	p := &pipeline{
-		cfg:            cfg,
-		nodes:          make(map[string]*pipelineNodeState),
-		msgQueues:      make(map[string]*messagePusher),
-		pendingResults: make(map[string][]ReviewResultItem),
-		reviewSignal:   make(chan ReviewEvent, 64),
-		doneCh:         make(chan struct{}),
-		nodesDone:      make(map[string]bool),
-		reviewDone:     make(map[string]bool),
-		reviewDoneCh:   make(chan string, len(cfg.Nodes)),
-		parentApp:      parent,
-		hasSupervisor:  cfg.Supervisor != nil,
+		cfg:                cfg,
+		nodes:              make(map[string]*pipelineNodeState),
+		msgQueues:          make(map[string]*messagePusher),
+		pendingResults:     make(map[string][]ReviewResultItem),
+		currentReviewItems: make(map[string][]ReviewResultItem),
+		reviewSignal:       make(chan ReviewEvent, 64),
+		doneCh:             make(chan struct{}),
+		nodesDone:          make(map[string]bool),
+		reviewDone:         make(map[string]bool),
+		reviewDoneCh:       make(chan string, len(cfg.Nodes)),
+		parentApp:          parent,
+		hasSupervisor:      cfg.Supervisor != nil,
+	}
+
+	// 统计每个队列被多少个节点声明 Close（引用计数）。
+	// 每个节点的自身队列额外 +1（self-close：节点执行完自己关闭自己的队列）。
+	closeCounts := make(map[string]int)
+	for i := range cfg.Nodes {
+		node := &cfg.Nodes[i]
+		if len(node.CloseQueues) == 0 {
+			node.CloseQueues = node.Injects
+		}
+		for _, target := range node.CloseQueues {
+			closeCounts[target]++
+		}
+		closeCounts[node.Name]++ // self-close
 	}
 
 	// 初始化节点状态和队列
@@ -307,12 +411,13 @@ func newPipeline(cfg PipelineConfig, parent *App) *pipeline {
 		applyNodeDefaults(node)
 		state := &pipelineNodeState{PipelineNode: *node}
 		applyNodeTypes(node, state)
+		if node.Review {
+			state.reviewApproved = make(chan struct{})
+		}
 		p.nodes[node.Name] = state
 
-		// 为 Concurrency>1 的节点创建 message 队列
-		if node.Concurrency > 1 {
-			p.msgQueues[node.Name] = newMessagePusher(node.QueueSize, state.msgType)
-		}
+		// 所有节点都创建 message 队列
+		p.msgQueues[node.Name] = newMessagePusher(node.QueueSize, state.msgType, closeCounts[node.Name])
 	}
 
 	return p
@@ -456,19 +561,19 @@ func (p *pipeline) injectQueuesForNode(ctx context.Context, nodeName string) con
 // ---------------------------------------------------------------------------
 
 // handleResult 处理 worker 产出的 result。
-// Review=false 时自动通过（直接调用 OnResult 回调）。
+// Review=false 时自动通过（直接调用 OnTaskResult 回调）。
 // Review=true 时进入待审队列，触发攒批检查。
-func (p *pipeline) handleResult(nodeName string, result any, originalMsg any, retryCount int) {
+func (p *pipeline) handleResult(nodeName string, result any, originalMsg any, retryCount int, tx Transaction) {
 	node, ok := p.nodes[nodeName]
 	if !ok {
 		return
 	}
-	log.Printf("[pipeline] handleResult: node=%s review=%v retry=%d result_type=%T", nodeName, node.Review, retryCount, result)
+	log.Printf("[pipeline] handleResult: node=%s review=%v retry=%d result_type=%T has_tx=%v", nodeName, node.Review, retryCount, result, tx != nil)
 
 	if !node.Review {
-		// 自动通过，直接调用 OnResult 回调。
-		if node.OnResult != nil {
-			node.OnResult(result)
+		// 自动通过，直接调用 OnTaskResult 回调。
+		if node.OnTaskResult != nil {
+			node.OnTaskResult(result)
 		}
 		return
 	}
@@ -480,6 +585,7 @@ func (p *pipeline) handleResult(nodeName string, result any, originalMsg any, re
 		OriginalMessage: originalMsg,
 		RetryCount:      retryCount,
 		rawResult:       result,
+		tx:              tx,
 	}
 
 	p.pendingMu.Lock()
@@ -525,10 +631,22 @@ func (p *pipeline) checkReviewTrigger(nodeName string, pendingCount int) {
 			} else {
 				// 无 supervisor：自动通过。
 				for _, item := range items {
-					if node.OnResult != nil {
-						node.OnResult(item.rawResult)
+					if item.tx != nil {
+						item.tx.Commit()
+					}
+					if node.OnTaskResult != nil {
+						node.OnTaskResult(item.rawResult)
 					}
 				}
+				// 关闭 reviewApproved channel，让 worker 可以退出。
+				if node.reviewApproved != nil {
+					select {
+					case <-node.reviewApproved:
+					default:
+						close(node.reviewApproved)
+					}
+				}
+				p.markReviewDone(nodeName)
 			}
 		}
 	}
@@ -561,12 +679,24 @@ func (p *pipeline) markNodeDone(nodeName string) {
 				}
 			}
 		} else {
-			// 无 supervisor：自动通过，直接调用 OnResult。
+			// 无 supervisor：自动通过，直接调用 OnTaskResult。
 			for _, item := range items {
-				if node.OnResult != nil {
-					node.OnResult(item.rawResult)
+				if item.tx != nil {
+					item.tx.Commit()
+				}
+				if node.OnTaskResult != nil {
+					node.OnTaskResult(item.rawResult)
 				}
 			}
+			// 关闭 reviewApproved channel，让 worker 可以退出。
+			if node.reviewApproved != nil {
+				select {
+				case <-node.reviewApproved:
+				default:
+					close(node.reviewApproved)
+				}
+			}
+			p.markReviewDone(nodeName)
 		}
 	} else {
 		// Review=false 的节点，完成即审核完成。
@@ -577,6 +707,11 @@ func (p *pipeline) markNodeDone(nodeName string) {
 
 	// 检查是否所有 Review 节点都审核完成。
 	p.checkAllReviewDone()
+
+	// 所有 worker 完成 + review 通过后触发一次。
+	if node.OnNodeComplete != nil {
+		node.OnNodeComplete()
+	}
 }
 
 // markReviewDone 标记某个 Review 节点的审核全部完成。
@@ -597,12 +732,14 @@ func (p *pipeline) checkAllReviewDone() {
 	allDone := true
 	for name := range p.nodes {
 		if !p.nodesDone[name] || !p.reviewDone[name] {
+			log.Printf("[pipeline] checkAllReviewDone: node=%s nodesDone=%v reviewDone=%v (blocking)", name, p.nodesDone[name], p.reviewDone[name])
 			allDone = false
 			break
 		}
 	}
 
 	if allDone {
+		log.Printf("[pipeline] checkAllReviewDone: ALL DONE, closing doneCh")
 		// 通知 supervisor 可以退出。
 		if p.hasReviewNodes() && p.hasSupervisor {
 			p.reviewSignal <- ReviewEvent{Done: true}
@@ -648,18 +785,31 @@ func (p *pipeline) newReviewTools() []NamedTool {
 					if node == nil {
 						return "", fmt.Errorf("未知节点: %s", in.NodeName)
 					}
-					if node.OnResult != nil {
-						node.OnResult(nil)
-					}
-					p.nodesMu.Lock()
-					nodeDone := p.nodesDone[in.NodeName]
-					p.nodesMu.Unlock()
+
+					// Commit 所有审核通过的事务。
 					p.pendingMu.Lock()
-					noPending := len(p.pendingResults[in.NodeName]) == 0
+					items := p.currentReviewItems[in.NodeName]
 					p.pendingMu.Unlock()
-					if nodeDone && noPending {
-						p.markReviewDone(in.NodeName)
+					for _, item := range items {
+						if item.tx != nil {
+							log.Printf("[pipeline] approve_result: node=%s committing transaction", in.NodeName)
+							item.tx.Commit()
+						}
 					}
+
+					if node.OnTaskResult != nil {
+						node.OnTaskResult(nil)
+					}
+					// 关闭 reviewApproved channel，让 worker 可以退出。
+					if node.reviewApproved != nil {
+						select {
+						case <-node.reviewApproved:
+							// 已关闭，忽略
+						default:
+							close(node.reviewApproved)
+						}
+					}
+					p.markReviewDone(in.NodeName)
 					return fmt.Sprintf("已批准 %s[%d]", in.NodeName, in.Index), nil
 				},
 			},
@@ -667,7 +817,7 @@ func (p *pipeline) newReviewTools() []NamedTool {
 		{
 			Name: "reject_result",
 			Def: ToolDef{
-				Description: "审核不通过（当前版本直接自动放行，重试机制待实现）。",
+				Description: "审核不通过，将任务退回给节点重新执行。如果超过最大重试次数则自动放行。",
 				Input:       rejectResultInput{},
 				Permission:  Normal,
 				Concurrent:  false,
@@ -677,19 +827,70 @@ func (p *pipeline) newReviewTools() []NamedTool {
 					if node == nil {
 						return "", fmt.Errorf("未知节点: %s", in.NodeName)
 					}
-					if node.OnResult != nil {
-						node.OnResult(nil)
-					}
-					p.nodesMu.Lock()
-					nodeDone := p.nodesDone[in.NodeName]
-					p.nodesMu.Unlock()
+
+					// 从 currentReviewItems 中取出被 reject 的 item。
 					p.pendingMu.Lock()
-					noPending := len(p.pendingResults[in.NodeName]) == 0
+					items := p.currentReviewItems[in.NodeName]
 					p.pendingMu.Unlock()
-					if nodeDone && noPending {
-						p.markReviewDone(in.NodeName)
+
+					if in.Index < 0 || in.Index >= len(items) {
+						return fmt.Sprintf("无效的索引 %d，当前批次共 %d 条", in.Index, len(items)), nil
 					}
-					return fmt.Sprintf("已拒绝 %s[%d]，自动放行（重试机制待实现）", in.NodeName, in.Index), nil
+					item := items[in.Index]
+
+					// 执行事务回滚（如果有）。
+					if item.tx != nil {
+						log.Printf("[pipeline] reject_result: node=%s index=%d rolling back transaction", in.NodeName, in.Index)
+						if err := item.tx.Rollback(context.Background()); err != nil {
+							log.Printf("[pipeline] reject_result: node=%s index=%d rollback error: %v", in.NodeName, in.Index, err)
+						}
+					}
+
+					// 检查重试次数。
+					if item.RetryCount >= node.MaxRetries {
+						log.Printf("[pipeline] reject_result: node=%s index=%d max_retries=%d reached, auto-approving", in.NodeName, in.Index, node.MaxRetries)
+						if node.OnTaskResult != nil {
+							node.OnTaskResult(item.rawResult)
+						}
+						// 关闭 reviewApproved channel，让 worker 可以退出。
+						if node.reviewApproved != nil {
+							select {
+							case <-node.reviewApproved:
+							default:
+								close(node.reviewApproved)
+							}
+						}
+						p.markReviewDone(in.NodeName)
+						return fmt.Sprintf("已达最大重试次数 (%d)，自动放行 %s[%d]", node.MaxRetries, in.NodeName, in.Index), nil
+					}
+
+					// 构造重试消息：原始 input + guidance 拼接。
+					var originalInput string
+					if s, ok := item.OriginalMessage.(string); ok {
+						originalInput = s
+					} else {
+						data, _ := json.Marshal(item.OriginalMessage)
+						originalInput = string(data)
+					}
+					// 如果节点有 Message 上下文，拼接到前面。
+					fullInput := originalInput
+					if node.Message != "" && originalInput != node.Message {
+						fullInput = node.Message + "\n" + originalInput
+					}
+					fullInput += "\n\n[审核反馈，请根据以下指导修正] " + in.Guidance
+
+					q := p.msgQueues[in.NodeName]
+					if q == nil {
+						return fmt.Sprintf("节点 %s 的队列不存在", in.NodeName), nil
+					}
+					q.Push(&retryMessage{
+						msg:        item.OriginalMessage,
+						input:      fullInput,
+						retryCount: item.RetryCount + 1,
+					})
+					log.Printf("[pipeline] reject_result: node=%s index=%d retry=%d rolled back and pushed to queue", in.NodeName, in.Index, item.RetryCount+1)
+
+					return fmt.Sprintf("已将 %s[%d] 回滚并退回重试（第 %d/%d 次）", in.NodeName, in.Index, item.RetryCount+1, node.MaxRetries), nil
 				},
 			},
 		},
@@ -702,7 +903,13 @@ func (p *pipeline) newReviewTools() []NamedTool {
 
 // Run 启动 pipeline DAG 调度。
 // 阻塞直到所有节点（含审核）完成或 context 被取消。
+// 如果某个节点的 LLM 返回空响应（provider 配置错误等），会中断整个 pipeline 并返回错误。
 func (p *pipeline) Run(ctx context.Context) error {
+	// 创建可取消的子 context，用于 recordNodeError 中断所有节点。
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	p.cancelFunc = cancel
+
 	// 拓扑排序。
 	order, err := p.topoSort()
 	if err != nil {
@@ -717,7 +924,7 @@ func (p *pipeline) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p.runSupervisor(ctx)
+			p.runSupervisor(runCtx)
 		}()
 	} else {
 		// 没有 supervisor，所有节点自动标记审核完成。
@@ -749,7 +956,7 @@ func (p *pipeline) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p.runNode(ctx, name, doneCh)
+			p.runNode(runCtx, name, doneCh)
 		}()
 	}
 
@@ -782,7 +989,7 @@ func (p *pipeline) Run(ctx context.Context) error {
 		}
 		for {
 			select {
-			case <-ctx.Done():
+			case <-runCtx.Done():
 				return
 			case <-p.doneCh:
 				return
@@ -803,15 +1010,29 @@ func (p *pipeline) Run(ctx context.Context) error {
 
 	// 等待 pipeline 完成或 context 取消。
 	select {
-	case <-ctx.Done():
+	case <-runCtx.Done():
 		// 关闭所有队列，通知 worker 退出。
 		for _, q := range p.msgQueues {
 			q.Close()
 		}
 		wg.Wait()
-		return ctx.Err()
+		// 如果是 recordNodeError 触发的取消，返回节点错误而非 context.Canceled
+		p.errMu.Lock()
+		nodeErr := p.firstError
+		p.errMu.Unlock()
+		if nodeErr != nil {
+			return nodeErr
+		}
+		return runCtx.Err()
 	case <-p.doneCh:
 		wg.Wait()
+		// 正常完成也要检查是否有节点错误（理论上 doneCh 触发前已 cancel，但保险起见）
+		p.errMu.Lock()
+		nodeErr := p.firstError
+		p.errMu.Unlock()
+		if nodeErr != nil {
+			return nodeErr
+		}
 		return nil
 	}
 }
@@ -820,26 +1041,49 @@ func (p *pipeline) Run(ctx context.Context) error {
 func (p *pipeline) runNode(ctx context.Context, nodeName string, doneCh chan<- string) {
 	node := p.nodes[nodeName]
 
+	nodeCtx := ctx
+
+	// 注入 SharedData 到 context。
+	if len(p.cfg.SharedData) > 0 {
+		nodeCtx = context.WithValue(nodeCtx, ctxKeySharedData, p.cfg.SharedData)
+	}
+
 	// 注入下游队列到 context。
-	nodeCtx := p.injectQueuesForNode(ctx, nodeName)
+	nodeCtx = p.injectQueuesForNode(nodeCtx, nodeName)
 
 	// 注入节点名到 context，供 Observer 使用（如 usage logging 的 step_group）。
 	nodeCtx = context.WithValue(nodeCtx, PipelineNodeNameKey, nodeName)
 
-	if node.Concurrency == 1 {
-		// 单 worker 直接执行。
-		log.Printf("[pipeline] runNode: %s starting single worker", nodeName)
-		result := p.runSingleWorker(nodeCtx, node)
-		log.Printf("[pipeline] runNode: %s single worker done, calling handleResult", nodeName)
-		p.handleResult(nodeName, result, node.Message, 0)
-		log.Printf("[pipeline] runNode: %s handleResult returned, calling markNodeDone", nodeName)
-	} else {
-		// 多 worker 并行消费 message 队列。
-		p.runMultiWorkers(nodeCtx, node)
+	// 保存 nodeCtx 供 reject 重试时复用。
+	node.nodeCtx = nodeCtx
+
+	// 如果有 Message，Push 到队列作为初始任务。
+	if node.Message != "" {
+		p.msgQueues[nodeName].Push(node.Message)
 	}
 
-	// 关闭此节点 Injects 的下游队列（上游完成 → 通知下游不再有新任务）。
-	for _, target := range node.Injects {
+	if node.Review && node.reviewApproved != nil {
+		// Review 节点：不立即 self-close 队列。
+		// 先 Push 初始任务，然后启动 workers。
+		// workers 在消费完当前任务后会阻塞等待新消息（reject 重推）。
+		// review 全部通过后 reviewApproved 被关闭，此时 self-close 队列让 workers 退出。
+		go func() {
+			select {
+			case <-node.reviewApproved:
+			case <-ctx.Done():
+			}
+			p.msgQueues[nodeName].Close()
+		}()
+	} else {
+		// 非 Review 节点：立即 self-close，workers 消费完即退出。
+		p.msgQueues[nodeName].Close()
+	}
+
+	// 统一走队列消费模式。
+	p.runMultiWorkers(nodeCtx, node)
+
+	// 关闭此节点声明的下游队列（引用计数 Close）。
+	for _, target := range node.CloseQueues {
 		if q, ok := p.msgQueues[target]; ok {
 			q.Close()
 		}
@@ -929,32 +1173,78 @@ func (p *pipeline) buildLightweightLoop(agentDef *PipelineAgentDef, nodeCtx cont
 }
 
 // runLightweight 运行精简 loop 并收集最终文本。
-func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDef, input string) string {
+// 如果 LLM 返回空响应（无工具调用、无文本、无错误），返回错误而非静默空字符串。
+func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDef, input string) (string, error) {
 	l := p.buildLightweightLoop(agentDef, ctx)
 
+	log.Printf("[pipeline] runLightweight: agent=%s tools=%d input_len=%d", agentDef.Name, len(agentDef.Tools), len(input))
+
 	var finalText string
+	var toolStartCount, toolDoneCount, errorCount int
+	var lastError error
 	for ev := range l.Run(ctx, input) {
-		if ev.Type == loop.EvtTextDelta {
+		switch ev.Type {
+		case loop.EvtTextDelta:
 			finalText += ev.Text
+		case loop.EvtToolStart:
+			toolStartCount++
+			log.Printf("[pipeline] runLightweight: agent=%s tool_start=%s", agentDef.Name, ev.ToolName)
+		case loop.EvtToolDone:
+			toolDoneCount++
+			resultPreview := ev.ToolResult
+			if len(resultPreview) > 200 {
+				resultPreview = resultPreview[:200] + "..."
+			}
+			log.Printf("[pipeline] runLightweight: agent=%s tool_done=%s result=%s", agentDef.Name, ev.ToolName, resultPreview)
+		case loop.EvtError:
+			errorCount++
+			lastError = ev.Error
+			log.Printf("[pipeline] runLightweight: agent=%s error=%v", agentDef.Name, ev.Error)
 		}
 	}
-	return finalText
-}
 
-// runSingleWorker 运行 Concurrency=1 的节点。
-func (p *pipeline) runSingleWorker(ctx context.Context, node *pipelineNodeState) string {
-	if node.Agent == nil {
-		return ""
+	log.Printf("[pipeline] runLightweight: agent=%s completed tools_started=%d tools_done=%d errors=%d text_len=%d",
+		agentDef.Name, toolStartCount, toolDoneCount, errorCount, len(finalText))
+	if len(finalText) > 0 {
+		preview := finalText
+		if len(preview) > 300 {
+			preview = preview[:300] + "..."
+		}
+		log.Printf("[pipeline] runLightweight: agent=%s text_preview=%s", agentDef.Name, preview)
 	}
-	return p.runLightweight(ctx, node.Agent, node.Message)
+
+	// 空响应检测：LLM 既没有调用工具、也没有输出文本、也没有返回错误。
+	// 这通常意味着 provider 配置有误（API Key 无效、模型名错误、BaseURL 不通等），
+	// LLM API 静默返回空内容。不应当作正常结果静默通过。
+	if toolStartCount == 0 && len(finalText) == 0 && errorCount == 0 {
+		log.Printf("[pipeline] runLightweight: agent=%s empty response detected (no tools, no text, no errors), likely provider misconfiguration", agentDef.Name)
+		return "", fmt.Errorf("agent %q: LLM returned empty response (0 tool calls, 0 text chars) — provider may be misconfigured (check API key, model name, base URL)", agentDef.Name)
+	}
+
+	// 如果有 LLM 错误但同时也无任何产出，也返回错误
+	if errorCount > 0 && toolStartCount == 0 && len(finalText) == 0 && lastError != nil {
+		return "", fmt.Errorf("agent %q: LLM error with no output: %w", agentDef.Name, lastError)
+	}
+
+	return finalText, nil
 }
 
-// runMultiWorkers 运行 Concurrency>1 的并行 worker。
+// retryMessage 包装重试的消息，携带重试计数。
+type retryMessage struct {
+	msg        any    // 原始消息内容（用于传给 runWorkerOnce 的 msg type 判断）
+	input      string // 拼接了 guidance 的实际输入
+	retryCount int    // 当前重试次数
+}
+
+// runMultiWorkers 运行并行 worker 消费 message 队列。
 func (p *pipeline) runMultiWorkers(ctx context.Context, node *pipelineNodeState) {
 	q := p.msgQueues[node.Name]
 	if q == nil {
 		return
 	}
+
+	// 判断是否需要为此节点创建应用层事务。
+	needTx := node.Review && p.cfg.TransactionFactory != nil
 
 	var workerWg sync.WaitGroup
 	for i := 0; i < node.Concurrency; i++ {
@@ -969,8 +1259,25 @@ func (p *pipeline) runMultiWorkers(ctx context.Context, node *pipelineNodeState)
 					if !ok {
 						return
 					}
-					result := p.runWorkerOnce(ctx, node, msg)
-					p.handleResult(node.Name, result, msg, 0)
+					// 检查是否是重试消息。
+					retryCount := 0
+					originalMsg := msg
+					if rm, ok := msg.(*retryMessage); ok {
+						retryCount = rm.retryCount
+						originalMsg = rm.msg
+						msg = rm // runWorkerOnce 会检查 retryMessage 类型
+					}
+
+					// 如果需要事务，创建并注入到 context。
+					var tx Transaction
+					workerCtx := ctx
+					if needTx {
+						tx = p.cfg.TransactionFactory(ctx)
+						workerCtx = WithTransaction(ctx, tx)
+					}
+
+					result := p.runWorkerOnce(workerCtx, node, msg)
+					p.handleResult(node.Name, result, originalMsg, retryCount, tx)
 				}
 			}
 		}()
@@ -979,12 +1286,77 @@ func (p *pipeline) runMultiWorkers(ctx context.Context, node *pipelineNodeState)
 }
 
 // runWorkerOnce 为单条 message 创建精简 agent 并执行。
+// 如果节点有 Message 且不是 Message 本身，拼接到任务前面作为上下文。
 func (p *pipeline) runWorkerOnce(ctx context.Context, node *pipelineNodeState, msg any) string {
 	if node.Agent == nil {
 		return ""
 	}
-	input := fmt.Sprintf("%v", msg)
-	return p.runLightweight(ctx, node.Agent, input)
+
+	// 处理重试消息：直接使用已拼接好的 input。
+	if rm, ok := msg.(*retryMessage); ok {
+		result, err := p.runLightweight(ctx, node.Agent, rm.input)
+		if err != nil {
+			p.recordNodeError(node.Name, err)
+			return ""
+		}
+		return result
+	}
+
+	var taskInput string
+	if s, ok := msg.(string); ok {
+		taskInput = s
+	} else {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			taskInput = fmt.Sprintf("%v", msg)
+		} else {
+			taskInput = string(data)
+		}
+	}
+
+	// 如果节点有 Message 且当前任务不是 Message 本身，拼接上下文
+	input := taskInput
+	if node.Message != "" && taskInput != node.Message {
+		input = node.Message + "\n" + taskInput
+	}
+
+	result, err := p.runLightweight(ctx, node.Agent, input)
+	if err != nil {
+		p.recordNodeError(node.Name, err)
+		return ""
+	}
+	return result
+}
+
+// recordNodeError 记录节点的致命错误并中断 pipeline。
+// 当 LLM 返回空响应（provider 配置错误等）时调用，取消 pipeline context，
+// 使所有正在运行的节点退出，最终 RunPipeline 返回该错误。
+func (p *pipeline) recordNodeError(nodeName string, err error) {
+	p.errMu.Lock()
+	defer p.errMu.Unlock()
+
+	if p.firstError != nil {
+		log.Printf("[pipeline] recordNodeError: node=%s error=%v, but firstError already set, skipping", nodeName, err)
+		return // 只记录第一个错误
+	}
+
+	p.firstError = fmt.Errorf("pipeline node %q failed: %w", nodeName, err)
+	log.Printf("[pipeline] FATAL: recordNodeError: node=%s, cancelling entire pipeline. error=%v", nodeName, err)
+
+	// 打印当前所有节点的状态
+	for name, node := range p.nodes {
+		log.Printf("[pipeline] recordNodeError: node=%s started=%v review=%v", name, node.started, node.Review)
+	}
+	p.nodesMu.Lock()
+	for name, done := range p.nodesDone {
+		log.Printf("[pipeline] recordNodeError: nodesDone[%s]=%v reviewDone[%s]=%v", name, done, name, p.reviewDone[name])
+	}
+	p.nodesMu.Unlock()
+
+	// 取消 pipeline context，通知所有节点退出
+	if p.cancelFunc != nil {
+		p.cancelFunc()
+	}
 }
 
 // runSupervisor 运行 supervisor 上帝节点。
@@ -994,6 +1366,11 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 	sup := p.cfg.Supervisor
 	if sup == nil {
 		return
+	}
+
+	// 注入 SharedData 到 supervisor context，让 supervisor 工具可以通过 GetPipelineData 获取数据。
+	if len(p.cfg.SharedData) > 0 {
+		ctx = context.WithValue(ctx, ctxKeySharedData, p.cfg.SharedData)
 	}
 
 	prov := sup.Provider
@@ -1018,7 +1395,8 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 		event := waitForEvent()
 		if event.Done {
 			log.Printf("[pipeline] supervisor: all nodes done, running finalization")
-			// 收尾：让 supervisor 调用 progress_update(enrichment_complete) + publish_all_assets
+			// 收尾：让 supervisor 调用 progress_update(enrichment_complete) 通知前端。
+			// publish 已由各节点的 OnNodeComplete 回调处理。
 			finalApp := New(
 				WithProvider(prov),
 				WithSystemPrompt(sup.Instruction),
@@ -1029,7 +1407,7 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 				finalApp.obsRegistry = p.parentApp.obsRegistry
 			}
 			finalApp.UseTools(sup.Tools...)
-			for ev := range finalApp.Run(ctx, "所有 DAG 节点已完成审核。请执行收尾操作：1) 调用 progress_update(event_type=\"enrichment_complete\") 通知前端；2) 调用 publish_all_assets 发布资产版本。") {
+			for ev := range finalApp.Run(ctx, "所有 DAG 节点已完成审核。请执行收尾操作：调用 progress_update(event_type=\"enrichment_complete\") 通知前端。") {
 				if ev.Type == EventToolDone {
 					log.Printf("[pipeline] supervisor: finalization tool=%s", ev.ToolName)
 				}
@@ -1039,6 +1417,11 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 		}
 
 		log.Printf("[pipeline] supervisor: reviewing node=%s, results=%d", event.NodeName, len(event.Results))
+
+		// 保存当前审核的 items，供 reject_result 读取。
+		p.pendingMu.Lock()
+		p.currentReviewItems[event.NodeName] = event.Results
+		p.pendingMu.Unlock()
 
 		// 把审核事件序列化为用户消息，让 LLM 审核并决定 approve/reject。
 		reviewData, _ := json.Marshal(event)
@@ -1073,9 +1456,26 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 			log.Printf("[pipeline] supervisor: no approve/reject for node=%s, auto-approving", event.NodeName)
 			// 兜底：LLM 没调 approve/reject，自动 approve
 			node := p.nodes[event.NodeName]
-			if node != nil && node.OnResult != nil {
+			if node != nil {
+				// Commit 所有事务。
 				for _, item := range event.Results {
-					node.OnResult(item.rawResult)
+					if item.tx != nil {
+						log.Printf("[pipeline] supervisor: auto-approve committing transaction for node=%s", event.NodeName)
+						item.tx.Commit()
+					}
+				}
+				if node.OnTaskResult != nil {
+					for _, item := range event.Results {
+						node.OnTaskResult(item.rawResult)
+					}
+				}
+				// 关闭 reviewApproved channel，让 worker 可以退出。
+				if node.reviewApproved != nil {
+					select {
+					case <-node.reviewApproved:
+					default:
+						close(node.reviewApproved)
+					}
 				}
 			}
 			p.markReviewDone(event.NodeName)

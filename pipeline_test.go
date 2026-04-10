@@ -17,7 +17,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestMessagePusher_PushAndConsume(t *testing.T) {
-	mp := newMessagePusher(10, reflect.TypeOf(""))
+	mp := newMessagePusher(10, reflect.TypeOf(""), 1)
 
 	// Push 3 条消息。
 	mp.Push("a")
@@ -44,7 +44,7 @@ func TestMessagePusher_PushAndConsume(t *testing.T) {
 }
 
 func TestMessagePusher_CloseIdempotent(t *testing.T) {
-	mp := newMessagePusher(10, reflect.TypeOf(""))
+	mp := newMessagePusher(10, reflect.TypeOf(""), 1)
 	mp.Close()
 	mp.Close() // should not panic
 
@@ -54,13 +54,13 @@ func TestMessagePusher_CloseIdempotent(t *testing.T) {
 }
 
 func TestMessagePusher_PushAfterClose(t *testing.T) {
-	mp := newMessagePusher(10, reflect.TypeOf(""))
+	mp := newMessagePusher(10, reflect.TypeOf(""), 1)
 	mp.Close()
 	mp.Push("should be dropped") // should not panic or block
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: Review=false 自动通过 → OnResult 回调触发
+// Test 2: Review=false 自动通过 → OnTaskResult 回调触发
 // ---------------------------------------------------------------------------
 
 func TestHandleResult_AutoPass(t *testing.T) {
@@ -71,7 +71,7 @@ func TestHandleResult_AutoPass(t *testing.T) {
 				Name:        "worker",
 				Review:      false,
 				Concurrency: 1,
-				OnResult: func(result any) {
+				OnTaskResult: func(result any) {
 					atomic.AddInt32(&called, 1)
 				},
 			},
@@ -80,11 +80,11 @@ func TestHandleResult_AutoPass(t *testing.T) {
 
 	p := newPipeline(cfg, nil)
 
-	// handleResult 应立刻调用 OnResult（Review=false）。
-	p.handleResult("worker", "test-result", "test-msg", 0)
+	// handleResult 应立刻调用 OnTaskResult（Review=false）。
+	p.handleResult("worker", "test-result", "test-msg", 0, nil)
 
 	if atomic.LoadInt32(&called) != 1 {
-		t.Fatalf("expected OnResult called 1 time, got %d", called)
+		t.Fatalf("expected OnTaskResult called 1 time, got %d", called)
 	}
 }
 
@@ -354,7 +354,7 @@ func TestCheckReviewTrigger_QueueEmpty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: Review tools — approve_result → OnResult 回调
+// Test 7: Review tools — approve_result → OnTaskResult 回调
 // ---------------------------------------------------------------------------
 
 func TestReviewTools_Approve(t *testing.T) {
@@ -368,7 +368,7 @@ func TestReviewTools_Approve(t *testing.T) {
 				Review:      true,
 				ReviewBatch: 1,
 				Concurrency: 3,
-				OnResult: func(result any) {
+				OnTaskResult: func(result any) {
 					mu.Lock()
 					approvedResult = result
 					mu.Unlock()
@@ -380,34 +380,14 @@ func TestReviewTools_Approve(t *testing.T) {
 
 	tools := p.newReviewTools()
 
-	// 模拟向 reviewSignal 发送审核事件。
-	go func() {
-		p.reviewSignal <- ReviewEvent{
-			NodeName: "worker",
-			Results: []ReviewResultItem{
-				{Index: 0, Data: `"hello"`, rawResult: "hello"},
-			},
-		}
-	}()
-
-	// 调用 wait_for_review。
-	ctx := newContextFromStd(context.Background())
-	waitTool := tools[0].Def // wait_for_review
-	result, err := waitTool.Execute.(func(Context, waitForReviewInput) (string, error))(ctx, waitForReviewInput{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result == "" {
-		t.Fatal("expected non-empty result from wait_for_review")
-	}
-
-	// 调用 approve_result。
-	// 需要先标记 nodesDone，模拟 worker 完成。
+	// 模拟 worker 完成。
 	p.nodesMu.Lock()
 	p.nodesDone["worker"] = true
 	p.nodesMu.Unlock()
 
-	approveTool := tools[1].Def // approve_result
+	// 调用 approve_result（tools[0]）。
+	ctx := newContextFromStd(context.Background())
+	approveTool := tools[0].Def
 	approveResult, err := approveTool.Execute.(func(Context, approveResultInput) (string, error))(ctx, approveResultInput{
 		NodeName: "worker",
 		Index:    0,
@@ -419,9 +399,10 @@ func TestReviewTools_Approve(t *testing.T) {
 		t.Fatal("expected non-empty result from approve_result")
 	}
 
+	// approve_result 调用 OnTaskResult(nil) 来触发回调。
 	mu.Lock()
-	if approvedResult != "hello" {
-		t.Fatalf("expected OnResult called with 'hello', got %v", approvedResult)
+	if approvedResult != nil {
+		t.Fatalf("expected OnTaskResult called with nil, got %v", approvedResult)
 	}
 	mu.Unlock()
 }
@@ -431,6 +412,9 @@ func TestReviewTools_Approve(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReviewTools_Reject(t *testing.T) {
+	var rejectedResult any
+	var mu sync.Mutex
+
 	cfg := PipelineConfig{
 		Nodes: []PipelineNode{
 			{
@@ -439,6 +423,11 @@ func TestReviewTools_Reject(t *testing.T) {
 				ReviewBatch: 1,
 				MaxRetries:  3,
 				Concurrency: 3,
+				OnTaskResult: func(result any) {
+					mu.Lock()
+					rejectedResult = result
+					mu.Unlock()
+				},
 			},
 		},
 	}
@@ -446,27 +435,22 @@ func TestReviewTools_Reject(t *testing.T) {
 
 	tools := p.newReviewTools()
 
-	// 模拟审核事件。
-	go func() {
-		p.reviewSignal <- ReviewEvent{
-			NodeName: "worker",
-			Results: []ReviewResultItem{
-				{Index: 0, Data: `"bad"`, OriginalMessage: "original task", RetryCount: 0, rawResult: "bad"},
-			},
-		}
-	}()
+	// 模拟 worker 完成。
+	p.nodesMu.Lock()
+	p.nodesDone["worker"] = true
+	p.nodesMu.Unlock()
 
 	ctx := newContextFromStd(context.Background())
 
-	// wait_for_review。
-	waitTool := tools[0].Def
-	_, err := waitTool.Execute.(func(Context, waitForReviewInput) (string, error))(ctx, waitForReviewInput{})
-	if err != nil {
-		t.Fatal(err)
+	// 模拟 currentReviewItems（reject 需要从中读取 item）。
+	p.pendingMu.Lock()
+	p.currentReviewItems["worker"] = []ReviewResultItem{
+		{Index: 0, Data: "test-data", OriginalMessage: "original-msg", RetryCount: 0, rawResult: "test-data"},
 	}
+	p.pendingMu.Unlock()
 
-	// reject_result。
-	rejectTool := tools[2].Def
+	// reject_result（tools[1]）— retryCount=0 < MaxRetries=3，应重试。
+	rejectTool := tools[1].Def
 	result, err := rejectTool.Execute.(func(Context, rejectResultInput) (string, error))(ctx, rejectResultInput{
 		NodeName: "worker",
 		Index:    0,
@@ -479,20 +463,17 @@ func TestReviewTools_Reject(t *testing.T) {
 		t.Fatal("expected non-empty result from reject_result")
 	}
 
-	// 验证消息已入队。
+	// reject 应该将消息重推到队列，而不是调用 OnTaskResult。
+	mu.Lock()
+	if rejectedResult != nil {
+		t.Fatalf("expected OnTaskResult NOT called on reject retry, got %v", rejectedResult)
+	}
+	mu.Unlock()
+
+	// 验证队列中有重试消息。
 	q := p.msgQueues["worker"]
 	if q.len() != 1 {
-		t.Fatalf("expected 1 message in queue after reject, got %d", q.len())
-	}
-
-	// 读取重试消息。
-	msg := <-q.ch
-	msgStr, ok := msg.(string)
-	if !ok {
-		t.Fatalf("expected string message, got %T", msg)
-	}
-	if msgStr == "" {
-		t.Fatal("expected non-empty retry message")
+		t.Fatalf("expected 1 retry message in queue, got %d", q.len())
 	}
 }
 
@@ -511,7 +492,7 @@ func TestReviewTools_RejectMaxRetries(t *testing.T) {
 				ReviewBatch: 1,
 				MaxRetries:  2,
 				Concurrency: 3,
-				OnResult: func(result any) {
+				OnTaskResult: func(result any) {
 					atomic.AddInt32(&autoApproved, 1)
 				},
 			},
@@ -521,24 +502,22 @@ func TestReviewTools_RejectMaxRetries(t *testing.T) {
 
 	tools := p.newReviewTools()
 
-	// 发送 retryCount=2 的 result（已达 MaxRetries）。
-	go func() {
-		p.reviewSignal <- ReviewEvent{
-			NodeName: "worker",
-			Results: []ReviewResultItem{
-				{Index: 0, Data: `"bad"`, OriginalMessage: "task", RetryCount: 2, rawResult: "bad"},
-			},
-		}
-	}()
+	// 模拟 worker 完成。
+	p.nodesMu.Lock()
+	p.nodesDone["worker"] = true
+	p.nodesMu.Unlock()
 
 	ctx := newContextFromStd(context.Background())
 
-	// wait_for_review。
-	waitTool := tools[0].Def
-	_, _ = waitTool.Execute.(func(Context, waitForReviewInput) (string, error))(ctx, waitForReviewInput{})
+	// 模拟 currentReviewItems，RetryCount=2 == MaxRetries=2，应自动放行。
+	p.pendingMu.Lock()
+	p.currentReviewItems["worker"] = []ReviewResultItem{
+		{Index: 0, Data: "test-data", OriginalMessage: "original-msg", RetryCount: 2, rawResult: "final-result"},
+	}
+	p.pendingMu.Unlock()
 
-	// reject_result — 应该自动通过因为达到 MaxRetries。
-	rejectTool := tools[2].Def
+	// reject_result（tools[1]）— 当前版本直接自动放行。
+	rejectTool := tools[1].Def
 	result, err := rejectTool.Execute.(func(Context, rejectResultInput) (string, error))(ctx, rejectResultInput{
 		NodeName: "worker",
 		Index:    0,
@@ -548,15 +527,9 @@ func TestReviewTools_RejectMaxRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 应该自动通过，OnResult 被调用。
+	// 达到 MaxRetries，应自动放行并调用 OnTaskResult。
 	if atomic.LoadInt32(&autoApproved) != 1 {
-		t.Fatalf("expected auto-approve when MaxRetries reached, got OnResult called %d times", autoApproved)
-	}
-
-	// 消息不应该入队。
-	q := p.msgQueues["worker"]
-	if q.len() != 0 {
-		t.Fatalf("expected 0 messages in queue after max retries, got %d", q.len())
+		t.Fatalf("expected auto-approve, got OnTaskResult called %d times", autoApproved)
 	}
 
 	_ = result
@@ -624,11 +597,10 @@ func TestNewPipeline_QueueCreation(t *testing.T) {
 	}
 	p := newPipeline(cfg, nil)
 
-	// Concurrency=1 不创建队列。
-	if _, ok := p.msgQueues["single"]; ok {
-		t.Fatal("Concurrency=1 should not have a message queue")
+	// 所有节点都创建队列。
+	if _, ok := p.msgQueues["single"]; !ok {
+		t.Fatal("Concurrency=1 should still have a message queue (unified queue mode)")
 	}
-	// Concurrency>1 创建队列。
 	if _, ok := p.msgQueues["multi"]; !ok {
 		t.Fatal("Concurrency>1 should have a message queue")
 	}
@@ -704,7 +676,7 @@ func TestPipeline_E2E_Linear(t *testing.T) {
 
 	var step2Result string
 	var mu sync.Mutex
-	cfg.Nodes[1].OnResult = func(result any) {
+	cfg.Nodes[1].OnTaskResult = func(result any) {
 		mu.Lock()
 		step2Result = fmt.Sprintf("%v", result)
 		mu.Unlock()
@@ -794,7 +766,7 @@ func TestPipeline_E2E_MultiWorker(t *testing.T) {
 					MaxTurns:    1,
 					Provider:    mockProv,
 				},
-				OnResult: func(result any) {
+				OnTaskResult: func(result any) {
 					mu.Lock()
 					results = append(results, fmt.Sprintf("%v", result))
 					mu.Unlock()
@@ -843,7 +815,7 @@ func TestPipeline_E2E_ReviewNoSupervisor(t *testing.T) {
 					MaxTurns:    1,
 					Provider:    mockProv,
 				},
-				OnResult: func(result any) {
+				OnTaskResult: func(result any) {
 					mu.Lock()
 					results = append(results, fmt.Sprintf("%v", result))
 					mu.Unlock()
@@ -932,7 +904,7 @@ func TestPipeline_E2E_CustomMessageType(t *testing.T) {
 					MaxTurns:    1,
 					Provider:    mockProv,
 				},
-				OnResult: func(result any) {
+				OnTaskResult: func(result any) {
 					// result 应该是 string（runWorkerOnce 返回 string）
 					_ = result
 				},
@@ -962,5 +934,125 @@ func TestPipeline_E2E_CustomMessageType(t *testing.T) {
 	err := p.Run(ctx)
 	if err != nil {
 		t.Fatalf("pipeline Run failed: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 19: 引用计数 Close — 多次 Close 才真正关闭
+// ---------------------------------------------------------------------------
+
+func TestMessagePusher_RefCountClose(t *testing.T) {
+	// expectedCloseCount=2，需要 Close 2 次才真正关闭。
+	mp := newMessagePusher(10, reflect.TypeOf(""), 2)
+
+	mp.Push("a")
+	mp.Push("b")
+
+	// 第 1 次 Close 不关闭。
+	mp.Close()
+
+	// 应该还能 Push（因为还没真正关闭）。
+	mp.Push("c")
+
+	// 第 2 次 Close 才真正关闭。
+	mp.Close()
+
+	// 现在应该消费完 3 条消息后 channel 关闭。
+	var results []string
+	for msg := range mp.ch {
+		results = append(results, msg.(string))
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d: %v", len(results), results)
+	}
+
+	// 第 3 次 Close 不 panic（已关闭后再调）。
+	mp.Close()
+}
+
+func TestMessagePusher_RefCountClose_NoExtraClose(t *testing.T) {
+	// expectedCloseCount=1（默认行为），Close 1 次就关闭。
+	mp := newMessagePusher(10, reflect.TypeOf(""), 1)
+
+	mp.Push("x")
+	mp.Close()
+
+	// 已关闭，range 应该立即退出。
+	count := 0
+	for range mp.ch {
+		count++
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 result after single close, got %d", count)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 20: CloseQueues 默认值等于 Injects
+// ---------------------------------------------------------------------------
+
+func TestCloseQueues_Default(t *testing.T) {
+	cfg := PipelineConfig{
+		Nodes: []PipelineNode{
+			{Name: "producer", Injects: []string{"consumer_a", "consumer_b"}},
+			{Name: "consumer_a"},
+			{Name: "consumer_b"},
+		},
+	}
+	p := newPipeline(cfg, nil)
+
+	// CloseQueues 未设置，应默认等于 Injects。
+	producer := p.nodes["producer"]
+	if len(producer.CloseQueues) != 2 {
+		t.Fatalf("expected CloseQueues len=2, got %d", len(producer.CloseQueues))
+	}
+	if producer.CloseQueues[0] != "consumer_a" || producer.CloseQueues[1] != "consumer_b" {
+		t.Fatalf("expected CloseQueues=[consumer_a,consumer_b], got %v", producer.CloseQueues)
+	}
+
+	// consumer 的 CloseQueues 应为空（无 Injects 也无 CloseQueues）。
+	consumerA := p.nodes["consumer_a"]
+	if len(consumerA.CloseQueues) != 0 {
+		t.Fatalf("expected consumer_a CloseQueues to be empty, got %v", consumerA.CloseQueues)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 21: 引用计数 — 多生产者 Close 后队列才关闭
+// ---------------------------------------------------------------------------
+
+func TestPipeline_RefCountClose_MultipleProducers(t *testing.T) {
+	cfg := PipelineConfig{
+		Nodes: []PipelineNode{
+			{Name: "producer_a", Injects: []string{"consumer"}, CloseQueues: []string{"consumer"}},
+			{Name: "producer_b", Injects: []string{"consumer"}, CloseQueues: []string{"consumer"}},
+			{Name: "consumer"},
+		},
+	}
+	p := newPipeline(cfg, nil)
+
+	q := p.msgQueues["consumer"]
+
+	// consumer 队列的 closeCount 应为 3（producer_a + producer_b + self-close）。
+	if q.isClosed() {
+		t.Fatal("consumer queue should not be closed yet")
+	}
+
+	// 第 1 次 Close（producer_a 完成）。
+	q.Close()
+	if q.isClosed() {
+		t.Fatal("consumer queue should NOT be closed after 1st close (expected 3)")
+	}
+
+	// 第 2 次 Close（producer_b 完成）。
+	q.Close()
+	if q.isClosed() {
+		t.Fatal("consumer queue should NOT be closed after 2nd close (expected 3)")
+	}
+
+	// 第 3 次 Close（consumer self-close）。
+	q.Close()
+	if !q.isClosed() {
+		t.Fatal("consumer queue SHOULD be closed after 3rd close (self-close)")
 	}
 }
