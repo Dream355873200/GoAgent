@@ -203,7 +203,12 @@ func New(opts ...Option) *App {
 func (a *App) Tool(name string, def ToolDef) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.registerToolLocked(name, def)
+}
 
+// registerToolLocked 注册单个工具的内部实现，调用方必须已持有 a.mu。
+// 抽出此函数是为了让 SetTools 在持锁状态下批量注册，避免重入 a.mu.Lock() 死锁。
+func (a *App) registerToolLocked(name string, def ToolDef) {
 	if _, exists := a.tools[name]; exists {
 		panic(fmt.Sprintf("goagent: tool %q already registered", name))
 	}
@@ -568,7 +573,7 @@ func (a *App) SetTools(tools ...NamedTool) {
 	a.tools = make(map[string]*registeredTool, len(tools))
 	a.toolOrder = a.toolOrder[:0]
 	for _, t := range tools {
-		a.Tool(t.Name, t.Def)
+		a.registerToolLocked(t.Name, t.Def)
 	}
 }
 

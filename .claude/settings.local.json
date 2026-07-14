@@ -38,7 +38,13 @@
       "Bash(xxd \"D:/AnimeCreater/internal/service/variant_generation_service.go\")",
       "Bash(xxd \"D:\\\\AnimeCreater\\\\internal\\\\service\\\\workflow_service.go\")",
       "Bash(python3:*)",
-      "Bash(xxd \"C:\\\\Users\\\\Yume\\\\Desktop\\\\wend.txt\")"
+      "Bash(xxd \"C:\\\\Users\\\\Yume\\\\Desktop\\\\wend.txt\")",
+      "Bash(ssh -T git@github.com)",
+      "Bash(git config:*)",
+      "Bash(python:*)",
+      "Bash(D:)",
+      "Bash(mount)",
+      "Bash(npx --prefix D:/AnimeCreater/frontend tsc --noEmit -p D:/AnimeCreater/frontend/tsconfig.app.json)"
     ]
   }
 }
