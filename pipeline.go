@@ -104,6 +104,10 @@ type PipelineNode struct {
 	// 仅 Review=true 时生效。
 	MaxRetries int
 
+	// RetryPolicy 审核打回时如何处置本轮已产出的数据（默认 RetryRollback）。
+	// 仅 Review=true 且配置了 TransactionFactory 时生效。
+	RetryPolicy RetryPolicy
+
 	// OnTaskResult 通过后的回调。
 	// Review=false 时，worker 完成后自动调用。
 	// Review=true 时，supervisor 批准后调用。
@@ -117,6 +121,28 @@ type PipelineNode struct {
 	// QueueSize 队列缓冲大小（默认 64）。
 	QueueSize int
 }
+
+// RetryPolicy 决定审核打回（reject_result）时如何处置该轮已产出的数据。
+//
+// 选哪个取决于**节点产出的性质**，不该全局一刀切：
+//   - 产出是「整体结构」、必须自洽的（如分集划分：边界是一个整体决策，补一集没有意义）
+//     → RetryRollback，撤销后整体重做。
+//   - 产出是「可累积集合」、条目互相独立的（如资产提取、世界观条目）
+//     → RetryAmend。审核意见通常是「漏了 X」，用整批销毁去补 X 是负期望重试：
+//     LLM 重跑不确定，这次补上 X 可能漏掉 Y，重试次数越多结果越可能更差。
+//     前提是节点的 tool 幂等（按业务键查重，已存在则复用/补齐）。
+type RetryPolicy int
+
+const (
+	// RetryRollback 打回时执行 Transaction.Rollback（补偿撤销本轮全部写操作），
+	// 然后用「原始输入 + guidance」从零重跑。默认值，保持历史行为。
+	RetryRollback RetryPolicy = iota
+
+	// RetryAmend 打回时执行 Transaction.Commit（保留本轮已产出），
+	// 只把 guidance 推回重试，让节点在已有数据上增量补齐。
+	// 要求节点的写操作幂等，否则重试会产生重复数据。
+	RetryAmend
+)
 
 // PipelineAgentDef 定义 pipeline 中的子 agent。
 type PipelineAgentDef struct {
@@ -838,17 +864,16 @@ func (p *pipeline) newReviewTools() []NamedTool {
 					}
 					item := items[in.Index]
 
-					// 执行事务回滚（如果有）。
-					if item.tx != nil {
-						log.Printf("[pipeline] reject_result: node=%s index=%d rolling back transaction", in.NodeName, in.Index)
-						if err := item.tx.Rollback(context.Background()); err != nil {
-							log.Printf("[pipeline] reject_result: node=%s index=%d rollback error: %v", in.NodeName, in.Index, err)
-						}
-					}
-
-					// 检查重试次数。
+					// 先判重试次数，再决定如何处置事务。
+					// 顺序很重要：原先是「无条件 Rollback → 再判上限」，于是最后一次打回会先把
+					// 本轮产出补偿撤销掉，然后「自动放行」一个数据已经不存在的结果 —— 表现为
+					// 重试用尽后一条数据都不剩。放行就必须 Commit。
 					if item.RetryCount >= node.MaxRetries {
 						log.Printf("[pipeline] reject_result: node=%s index=%d max_retries=%d reached, auto-approving", in.NodeName, in.Index, node.MaxRetries)
+						if item.tx != nil {
+							log.Printf("[pipeline] reject_result: node=%s index=%d committing transaction (auto-approve)", in.NodeName, in.Index)
+							item.tx.Commit()
+						}
 						if node.OnTaskResult != nil {
 							node.OnTaskResult(item.rawResult)
 						}
@@ -864,6 +889,20 @@ func (p *pipeline) newReviewTools() []NamedTool {
 						return fmt.Sprintf("已达最大重试次数 (%d)，自动放行 %s[%d]", node.MaxRetries, in.NodeName, in.Index), nil
 					}
 
+					// 决定重试：按节点的 RetryPolicy 处置本轮产出。
+					amend := node.RetryPolicy == RetryAmend
+					if item.tx != nil {
+						if amend {
+							log.Printf("[pipeline] reject_result: node=%s index=%d amend policy, committing transaction (keep produced data)", in.NodeName, in.Index)
+							item.tx.Commit()
+						} else {
+							log.Printf("[pipeline] reject_result: node=%s index=%d rolling back transaction", in.NodeName, in.Index)
+							if err := item.tx.Rollback(context.Background()); err != nil {
+								log.Printf("[pipeline] reject_result: node=%s index=%d rollback error: %v", in.NodeName, in.Index, err)
+							}
+						}
+					}
+
 					// 构造重试消息：原始 input + guidance 拼接。
 					var originalInput string
 					if s, ok := item.OriginalMessage.(string); ok {
@@ -877,6 +916,13 @@ func (p *pipeline) newReviewTools() []NamedTool {
 					if node.Message != "" && originalInput != node.Message {
 						fullInput = node.Message + "\n" + originalInput
 					}
+					// 必须告知 agent 上一轮产出的去向，否则它无法判断该「补齐」还是「重建」：
+					// amend 下以为数据没了会重复创建，rollback 下以为数据还在就只补缺失项。
+					if amend {
+						fullInput += "\n\n[重要] 你上一轮已创建的数据**已保留在数据库中**，请勿重复创建；只需针对下面的反馈补齐缺失或修正问题项。"
+					} else {
+						fullInput += "\n\n[重要] 你上一轮创建的数据**已全部撤销**，请按下面的反馈**从头完整重做**，不要只处理反馈中提到的项。"
+					}
 					fullInput += "\n\n[审核反馈，请根据以下指导修正] " + in.Guidance
 
 					q := p.msgQueues[in.NodeName]
@@ -888,9 +934,13 @@ func (p *pipeline) newReviewTools() []NamedTool {
 						input:      fullInput,
 						retryCount: item.RetryCount + 1,
 					})
-					log.Printf("[pipeline] reject_result: node=%s index=%d retry=%d rolled back and pushed to queue", in.NodeName, in.Index, item.RetryCount+1)
+					disposition := "回滚"
+					if amend {
+						disposition = "保留已产出"
+					}
+					log.Printf("[pipeline] reject_result: node=%s index=%d retry=%d %s and pushed to queue", in.NodeName, in.Index, item.RetryCount+1, disposition)
 
-					return fmt.Sprintf("已将 %s[%d] 回滚并退回重试（第 %d/%d 次）", in.NodeName, in.Index, item.RetryCount+1, node.MaxRetries), nil
+					return fmt.Sprintf("已将 %s[%d] %s并退回重试（第 %d/%d 次）", in.NodeName, in.Index, disposition, item.RetryCount+1, node.MaxRetries), nil
 				},
 			},
 		},
