@@ -11,6 +11,20 @@ import (
 	"github.com/Dream355873200/GoAgent/task"
 )
 
+// sseWriter 提供并发安全的 SSE 写入。
+type sseWriter struct {
+	mu      sync.Mutex
+	w       http.ResponseWriter
+	flusher http.Flusher
+}
+
+func (s *sseWriter) writeEvent(data []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.w.Write(data)
+	s.flusher.Flush()
+}
+
 // runHTTP 启动带 SSE 流式端点的 HTTP 服务器。
 func runHTTP(app *App, addr string) error {
 	// HTTP 模式下如果未配置审批者，使用自动审批。
@@ -51,6 +65,8 @@ func runHTTP(app *App, addr string) error {
 			return
 		}
 
+		sw := &sseWriter{w: w, flusher: flusher}
+
 		activeSessions.Add(1)
 		defer activeSessions.Done()
 
@@ -81,8 +97,7 @@ func runHTTP(app *App, addr string) error {
 						ToolInput:  req.ToolInput,
 						Permission: req.Permission,
 					})
-					fmt.Fprintf(w, "data: %s\n\n", data)
-					flusher.Flush()
+					sw.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", data)))
 				}
 			}()
 		}
@@ -104,8 +119,7 @@ func runHTTP(app *App, addr string) error {
 						SessionID: sessionID,
 						Question:  req.Question,
 					})
-					fmt.Fprintf(w, "data: %s\n\n", data)
-					flusher.Flush()
+					sw.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", data)))
 				}
 			}()
 		}
@@ -120,8 +134,7 @@ func runHTTP(app *App, addr string) error {
 						SessionID:   sessionID,
 						PlanContent: req.PlanContent,
 					})
-					fmt.Fprintf(w, "data: %s\n\n", data)
-					flusher.Flush()
+					sw.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", data)))
 				}
 			}()
 		}
@@ -137,8 +150,7 @@ func runHTTP(app *App, addr string) error {
 				Error:      errString(ev.Error),
 				Usage:      usageFromEvent(ev),
 			})
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
+			sw.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", data)))
 		}
 
 		// 发送完成元数据。
@@ -147,8 +159,7 @@ func runHTTP(app *App, addr string) error {
 			"type":       "metadata",
 			"elapsed_ms": elapsed.Milliseconds(),
 		})
-		fmt.Fprintf(w, "data: %s\n\n", meta)
-		flusher.Flush()
+		sw.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", meta)))
 	})
 
 	// POST /approve — 权限审批响应端点
@@ -315,7 +326,12 @@ func runHTTP(app *App, addr string) error {
 
 	// GET /tasks — 列出所有任务
 	mux.HandleFunc("GET /tasks", func(w http.ResponseWriter, r *http.Request) {
-		summaries := app.TaskSummaries()
+		store := app.TaskStore()
+		if store == nil {
+			http.Error(w, "task system not enabled", http.StatusServiceUnavailable)
+			return
+		}
+		summaries := store.ListSummaries()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(summaries)
 	})
@@ -336,7 +352,12 @@ func runHTTP(app *App, addr string) error {
 			http.Error(w, "subject 字段必填", http.StatusBadRequest)
 			return
 		}
-		t := app.TaskStore().Create(req.Subject, req.Description, req.ActiveForm, req.Metadata)
+		store := app.TaskStore()
+		if store == nil {
+			http.Error(w, "task system not enabled", http.StatusServiceUnavailable)
+			return
+		}
+		t := store.Create(req.Subject, req.Description, req.ActiveForm, req.Metadata)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(t)
@@ -345,7 +366,12 @@ func runHTTP(app *App, addr string) error {
 	// GET /tasks/{id} — 获取任务详情
 	mux.HandleFunc("GET /tasks/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		t := app.TaskStore().Get(id)
+		store := app.TaskStore()
+		if store == nil {
+			http.Error(w, "task system not enabled", http.StatusServiceUnavailable)
+			return
+		}
+		t := store.Get(id)
 		if t == nil {
 			http.Error(w, "任务未找到", http.StatusNotFound)
 			return
@@ -380,7 +406,12 @@ func runHTTP(app *App, addr string) error {
 		if patch.Status != nil {
 			taskPatch.Status = task.Status(*patch.Status)
 		}
-		updated, err := app.TaskStore().Update(id, taskPatch)
+		store := app.TaskStore()
+		if store == nil {
+			http.Error(w, "task system not enabled", http.StatusServiceUnavailable)
+			return
+		}
+		updated, err := store.Update(id, taskPatch)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -396,7 +427,12 @@ func runHTTP(app *App, addr string) error {
 	// DELETE /tasks/{id} — 删除任务
 	mux.HandleFunc("DELETE /tasks/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if err := app.TaskStore().Delete(id); err != nil {
+		store := app.TaskStore()
+		if store == nil {
+			http.Error(w, "task system not enabled", http.StatusServiceUnavailable)
+			return
+		}
+		if err := store.Delete(id); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -419,7 +455,12 @@ func runHTTP(app *App, addr string) error {
 
 	// POST /plan — 进入计划模式
 	mux.HandleFunc("POST /plan", func(w http.ResponseWriter, r *http.Request) {
-		filePath, err := app.PlanStore().Enter()
+		planStore := app.PlanStore()
+		if planStore == nil {
+			http.Error(w, "plan system not enabled", http.StatusServiceUnavailable)
+			return
+		}
+		filePath, err := planStore.Enter()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -431,7 +472,12 @@ func runHTTP(app *App, addr string) error {
 
 	// DELETE /plan — 退出计划模式
 	mux.HandleFunc("DELETE /plan", func(w http.ResponseWriter, r *http.Request) {
-		content, err := app.PlanStore().Exit()
+		planStore := app.PlanStore()
+		if planStore == nil {
+			http.Error(w, "plan system not enabled", http.StatusServiceUnavailable)
+			return
+		}
+		content, err := planStore.Exit()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -444,7 +490,12 @@ func runHTTP(app *App, addr string) error {
 
 	// GET /bgtasks — 列出所有后台任务
 	mux.HandleFunc("GET /bgtasks", func(w http.ResponseWriter, r *http.Request) {
-		tasks := app.BgTaskStore().List()
+		bgStore := app.BgTaskStore()
+		if bgStore == nil {
+			http.Error(w, "bgtask system not enabled", http.StatusServiceUnavailable)
+			return
+		}
+		tasks := bgStore.List()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(tasks)
 	})
@@ -452,7 +503,12 @@ func runHTTP(app *App, addr string) error {
 	// GET /bgtasks/{id} — 获取后台任务详情
 	mux.HandleFunc("GET /bgtasks/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		task := app.BgTaskStore().Get(id)
+		bgStore := app.BgTaskStore()
+		if bgStore == nil {
+			http.Error(w, "bgtask system not enabled", http.StatusServiceUnavailable)
+			return
+		}
+		task := bgStore.Get(id)
 		if task == nil {
 			http.Error(w, "任务未找到", http.StatusNotFound)
 			return
@@ -464,7 +520,12 @@ func runHTTP(app *App, addr string) error {
 	// POST /bgtasks/{id}/stop — 停止后台任务
 	mux.HandleFunc("POST /bgtasks/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if err := app.BgTaskStore().Kill(id); err != nil {
+		bgStore := app.BgTaskStore()
+		if bgStore == nil {
+			http.Error(w, "bgtask system not enabled", http.StatusServiceUnavailable)
+			return
+		}
+		if err := bgStore.Kill(id); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

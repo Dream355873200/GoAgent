@@ -168,6 +168,7 @@ type Loop struct {
 	cfg           Config
 	toolIndex     map[string]*ToolEntry
 	finalMessages []message.Message // 循环结束后的完整消息列表
+	state         *loopState        // 当前运行状态（用于 Pause/Resume）
 }
 
 // New 创建一个新的 Loop。
@@ -225,6 +226,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 		messages:       initialMessages,
 		toolStartTimes: make(map[string]time.Time),
 	}
+	l.state = state
 
 	// 通知 Observer 会话开始。
 	if l.cfg.Observer != nil {
@@ -233,6 +235,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 
 	// 循环结束时保存最终消息列表，并通知 Observer 会话结束。
 	defer func() {
+		l.state = nil
 		l.finalMessages = state.messages
 		if l.cfg.Observer != nil {
 			l.cfg.Observer.OnSessionEnd(ctx, l.cfg.SessionID, state.turnCount)
@@ -834,4 +837,14 @@ func cacheControlForSystemPrompt(supportsCaching bool, toolCount int) *provider.
 	}
 	// 无 tools 场景，system prompt 是唯一可缓存前缀。
 	return &provider.CacheControl{Type: "ephemeral"}
+}
+
+// CurrentState 返回当前运行状态（用于 Pause/Resume）。
+func (l *Loop) CurrentState() *loopState {
+	return l.state
+}
+
+// RestoreState 恢复循环状态（用于 Pause/Resume 的 Resume）。
+func (l *Loop) RestoreState(state *loopState) {
+	l.state = state
 }

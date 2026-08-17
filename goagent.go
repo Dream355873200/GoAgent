@@ -321,6 +321,12 @@ func (a *App) initMCP() {
 	}
 }
 
+// ===== 全局包级变量（依赖注入模式）=====
+// 以下全局变量用于打破 goagent → builtin → goagent 的 import cycle。
+// builtin 包通过 init() 调用 Register*Provider 注册工具提供函数。
+// 注意：多 App 实例共享这些全局变量，并发不安全。
+// 未来可考虑用 interface-based registry 替代。
+
 // builtinToolsProvider 是由 builtin 包注入的工具提供函数。
 // 通过 init() 注册，避免 goagent→builtin→goagent 的循环依赖。
 var builtinToolsProvider func() []NamedTool

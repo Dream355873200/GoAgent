@@ -31,7 +31,6 @@ var ErrSessionNotFound = errors.New("session not found")
 //	// 在 /interrupt handler 中
 //	handler.Interrupt(sessionID, "用户请求中断")
 type InterruptHandler struct {
-	mu       sync.RWMutex
 	sessions sync.Map // sessionID → context.CancelFunc
 }
 

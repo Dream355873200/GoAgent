@@ -549,7 +549,8 @@ func (p *pipeline) hasReviewNodes() bool {
 func serializeResult(result any) string {
 	data, err := json.Marshal(result)
 	if err != nil {
-		return fmt.Sprintf("%v", result)
+		log.Printf("[pipeline] WARN: serializeResult failed: %v", err)
+		return "{}"
 	}
 	return string(data)
 }

@@ -3,11 +3,18 @@ package message
 
 import (
 	"context"
+	"enco
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 )
+c/atomic"
+)
+
+var attIDCounter
+var attIDCounter atomic.Int64
 
 // AttachmentConfig 附件配置。
 type AttachmentConfig struct {
@@ -127,7 +134,7 @@ func (a *Attachment) ToContentBlock() (ContentBlock, error) {
 	case strings.HasPrefix(a.Type, "image/"):
 		return ContentBlock{
 			Type:      "image",
-			Data:      string(a.Content),
+			Data:      base64.StdEncoding.EncodeToString(a.Content),
 			MediaType: a.Type,
 		}, nil
 	case a.Type == "application/pdf":
@@ -210,7 +217,7 @@ func (m *AttachmentManager) ToMessages() []Message {
 
 // generateAttachmentID 生成唯一 ID。
 func generateAttachmentID() string {
-	return fmt.Sprintf("att_%d", len(os.Args))
+	return fmt.Sprintf("att_%d", attIDCounter.Add(1))
 }
 
 // extToMime 扩展名转 MIME 类型。

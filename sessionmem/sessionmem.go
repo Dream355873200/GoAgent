@@ -123,13 +123,15 @@ func (sm *SessionMemory) MaybeExtract(ctx context.Context, messages []message.Me
 	sm.mu.Unlock()
 
 	// 异步执行提取。
+	msgsCopy := make([]message.Message, len(messages))
+	copy(msgsCopy, messages)
 	go func() {
 		defer func() {
 			sm.mu.Lock()
 			sm.extractionInProgress = false
 			sm.mu.Unlock()
 		}()
-		_ = sm.extract(ctx, messages)
+		_ = sm.extract(ctx, msgsCopy)
 	}()
 }
 

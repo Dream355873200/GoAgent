@@ -88,7 +88,8 @@ type PermissionHandler struct {
 	requests chan *PermissionRequest
 	pending  sync.Map // requestID → *PermissionRequest
 	nextID   atomic.Int64
-	closed   atomic.Bool
+	mu       sync.Mutex
+	closed   bool
 }
 
 // NewPermissionHandler 创建异步权限处理器。
@@ -123,7 +124,10 @@ func (h *PermissionHandler) Resolve(requestID string, allow bool, alwaysAllow bo
 
 // Close 关闭请求 channel。在会话结束时调用。
 func (h *PermissionHandler) Close() {
-	if h.closed.CompareAndSwap(false, true) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.closed {
+		h.closed = true
 		close(h.requests)
 	}
 }
@@ -139,9 +143,12 @@ func (h *PermissionHandler) Approve(toolName string, input string, perm Permissi
 // ApproveWithContext 是带 context 的审批方法。
 // context 取消时自动拒绝。
 func (h *PermissionHandler) ApproveWithContext(ctx context.Context, toolName string, input string, perm Permission) (bool, bool) {
-	if h.closed.Load() {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
 		return false, false
 	}
+	h.mu.Unlock()
 
 	id := h.nextID.Add(1)
 	requestID := fmt.Sprintf("perm-%d", id)

@@ -131,17 +131,13 @@ func (rl *ResumableLoop) IsPaused() bool {
 }
 
 // currentState 返回当前循环状态（内部方法）。
-// 注意：这需要 loop.go 暴露此方法
 func (l *Loop) currentState() *loopState {
-	// 由于 loopState 是内部类型，我们需要通过其他方式访问
-	// 这里返回一个模拟值，实际实现需要修改 loop.go
-	return nil
+	return l.CurrentState()
 }
 
 // restoreState 恢复循环状态（内部方法）。
 func (l *Loop) restoreState(state *loopState) {
-	// 由于 loopState 是内部类型，我们需要通过其他方式访问
-	// 这里不做任何事，实际实现需要修改 loop.go
+	l.RestoreState(state)
 }
 
 // copyMessages 复制消息列表。

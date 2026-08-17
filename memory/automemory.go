@@ -11,10 +11,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // AutoMemory 管理自动记忆系统。
 type AutoMemory struct {
+	mu sync.RWMutex
+
 	// dir 是记忆文件目录。
 	dir string
 
@@ -42,6 +45,8 @@ type MemoryFile struct {
 
 // LoadAll 加载目录中所有 .md 记忆文件。
 func (am *AutoMemory) LoadAll() ([]MemoryFile, error) {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
 	if am.dir == "" {
 		return nil, nil
 	}
@@ -79,6 +84,8 @@ func (am *AutoMemory) LoadAll() ([]MemoryFile, error) {
 
 // LoadMain 加载 MEMORY.md 主文件，自动截断超长内容。
 func (am *AutoMemory) LoadMain() string {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
 	if am.dir == "" {
 		return ""
 	}
@@ -103,6 +110,8 @@ func (am *AutoMemory) LoadMain() string {
 
 // Save 将内容保存到指定的记忆文件。
 func (am *AutoMemory) Save(name, content string) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
 	if am.dir == "" {
 		return nil
 	}
@@ -117,12 +126,16 @@ func (am *AutoMemory) Save(name, content string) error {
 
 // SaveMain 保存 MEMORY.md 主文件。
 func (am *AutoMemory) SaveMain(content string) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
 	return am.Save("MEMORY", content)
 }
 
 // Search 按关键词搜索相关的记忆文件。
 // 返回内容包含任意关键词的文件列表。
 func (am *AutoMemory) Search(keywords []string) ([]MemoryFile, error) {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
 	all, err := am.LoadAll()
 	if err != nil {
 		return nil, err
@@ -144,6 +157,8 @@ func (am *AutoMemory) Search(keywords []string) ([]MemoryFile, error) {
 
 // FormatForInjection 将记忆内容格式化为可注入 system prompt 的文本。
 func (am *AutoMemory) FormatForInjection() string {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
 	main := am.LoadMain()
 	if main == "" {
 		return ""
@@ -192,6 +207,8 @@ func fingerprint(content string) string {
 
 // Exists 检查指定名称的记忆文件是否存在。
 func (am *AutoMemory) Exists(name string) bool {
+	am.mu.RLock()
+	defer am.mu.RUnlock()
 	if am.dir == "" {
 		return false
 	}
@@ -202,6 +219,8 @@ func (am *AutoMemory) Exists(name string) bool {
 
 // Delete 删除指定名称的记忆文件。
 func (am *AutoMemory) Delete(name string) error {
+	am.mu.Lock()
+	defer am.mu.Unlock()
 	if am.dir == "" {
 		return nil
 	}

@@ -60,7 +60,8 @@ type AskUserHandler struct {
 	requests chan *AskUserRequest
 	pending  sync.Map // requestID → *AskUserRequest
 	nextID   atomic.Int64
-	closed   atomic.Bool
+	mu       sync.Mutex
+	closed   bool
 }
 
 // NewAskUserHandler 创建异步提问处理器。
@@ -91,7 +92,10 @@ func (h *AskUserHandler) Resolve(requestID string, answer string) bool {
 
 // Close 关闭请求 channel。在会话结束时调用。
 func (h *AskUserHandler) Close() {
-	if h.closed.CompareAndSwap(false, true) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.closed {
+		h.closed = true
 		close(h.requests)
 	}
 }
@@ -100,9 +104,12 @@ func (h *AskUserHandler) Close() {
 // 当 builtin AskUser 工具被调用时，此方法被调用。
 // 它会创建一个 AskUserRequest 并通过 channel 发送给前端，然后阻塞等待回复。
 func (h *AskUserHandler) Ask(question string) (string, error) {
-	if h.closed.Load() {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
 		return "", fmt.Errorf("ask handler 已关闭")
 	}
+	h.mu.Unlock()
 
 	id := h.nextID.Add(1)
 	requestID := fmt.Sprintf("ask-%d", id)

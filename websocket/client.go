@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -22,6 +24,8 @@ type Client struct {
 	doneCh    chan struct{}
 	ctx       context.Context
 	cancel    context.CancelFunc
+	closed    atomic.Bool
+	closeOnce sync.Once
 }
 
 // NewClient 创建 WebSocket 客户端。
@@ -189,6 +193,9 @@ func (c *Client) handleResume(msg *Message) {
 
 // Send 发送消息。
 func (c *Client) Send(msg *Message) error {
+	if c.closed.Load() {
+		return ErrNotConnected
+	}
 	select {
 	case c.sendCh <- msg:
 		return nil
@@ -201,6 +208,9 @@ func (c *Client) Send(msg *Message) error {
 
 // send 内部发送方法。
 func (c *Client) send(msg *Message) {
+	if c.closed.Load() {
+		return
+	}
 	select {
 	case c.sendCh <- msg:
 	case <-c.doneCh:
@@ -220,8 +230,11 @@ func (c *Client) sendError(errMsg string) {
 
 // Close 关闭客户端。
 func (c *Client) Close() error {
-	c.cancel()
-	close(c.sendCh)
+	c.closeOnce.Do(func() {
+		c.closed.Store(true)
+		c.cancel()
+		close(c.sendCh)
+	})
 	return c.conn.Close()
 }
 

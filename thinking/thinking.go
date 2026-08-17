@@ -130,7 +130,7 @@ func AdjustBudget(baseBudget int, contextTokens int, contextWindow int) int {
 		// 上下文使用超过 80% 时，将 budget 减半。
 		return baseBudget / 2
 	}
-	if usageRatio > 0.9 {
+	if usageRatio > 0.8 {
 		// 超过 90% 时，将 budget 降到最低。
 		return 1000
 	}

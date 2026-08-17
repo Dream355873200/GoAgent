@@ -70,7 +70,8 @@ type PlanConfirmHandler struct {
 	requests chan *PlanConfirmRequest
 	pending  sync.Map // requestID → *PlanConfirmRequest
 	nextID   atomic.Int64
-	closed   atomic.Bool
+	mu       sync.Mutex
+	closed   bool
 }
 
 // NewPlanConfirmHandler 创建异步计划确认处理器。
@@ -106,7 +107,10 @@ func (h *PlanConfirmHandler) Resolve(requestID string, confirm bool) bool {
 
 // Close 关闭请求 channel。在会话结束时调用。
 func (h *PlanConfirmHandler) Close() {
-	if h.closed.CompareAndSwap(false, true) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.closed {
+		h.closed = true
 		close(h.requests)
 	}
 }

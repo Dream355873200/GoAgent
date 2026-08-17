@@ -97,6 +97,11 @@ func (m *Manager) Enter(name string) (*Worktree, error) {
 	}
 	m.current = wt
 
+	// 切换到 worktree 目录。
+	if err := os.Chdir(wtPath); err != nil {
+		return nil, fmt.Errorf("切换到 worktree 目录失败: %w", err)
+	}
+
 	return wt, nil
 }
 

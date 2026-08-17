@@ -83,7 +83,7 @@ func MatchToolCall(pattern ToolPattern, toolName, input string) bool {
 
 	// 匹配输入前缀。
 	if pattern.InputPrefix != "" {
-		if !strings.Contains(input, pattern.InputPrefix) {
+		if !strings.HasPrefix(input, pattern.InputPrefix) {
 			return false
 		}
 	}
