@@ -2208,6 +2208,13 @@
             </set>
           </value>
         </entry>
+        <entry key="sseWriter">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="stdinApprover">
           <value>
             <set>
@@ -2490,7 +2497,7 @@
         <entry key="file://$PROJECT_DIR$/askuser_handler.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240275" />
+              <option name="lastModified" value="1786964729837" />
               <option name="schema">
                 <list>
                   <option value="AskUserRequest" />
@@ -2608,7 +2615,7 @@
         <entry key="file://$PROJECT_DIR$/builtin/media.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240292" />
+              <option name="lastModified" value="1786966032941" />
               <option name="schema">
                 <list>
                   <option value="ImageInput" />
@@ -2954,7 +2961,7 @@
         <entry key="file://$PROJECT_DIR$/extractmem/extractmem.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240354" />
+              <option name="lastModified" value="1786965021634" />
               <option name="schema">
                 <list>
                   <option value="Extractor" />
@@ -2982,7 +2989,7 @@
         <entry key="file://$PROJECT_DIR$/goagent.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1782142547261" />
+              <option name="lastModified" value="1786965982624" />
               <option name="schema">
                 <list>
                   <option value="App" />
@@ -3044,9 +3051,10 @@
         <entry key="file://$PROJECT_DIR$/http.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240367" />
+              <option name="lastModified" value="1786965901417" />
               <option name="schema">
                 <list>
+                  <option value="sseWriter" />
                   <option value="chatRequest" />
                   <option value="sseEvent" />
                   <option value="ssePermissionRequest" />
@@ -3075,7 +3083,7 @@
         <entry key="file://$PROJECT_DIR$/internal/loop/loop.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775486592244" />
+              <option name="lastModified" value="1786965729746" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -3092,7 +3100,7 @@
         <entry key="file://$PROJECT_DIR$/internal/loop/pause.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240372" />
+              <option name="lastModified" value="1786965291367" />
               <option name="schema">
                 <list>
                   <option value="ToolState" />
@@ -3146,7 +3154,7 @@
         <entry key="file://$PROJECT_DIR$/interrupt_handler.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240379" />
+              <option name="lastModified" value="1786964807242" />
               <option name="schema">
                 <list>
                   <option value="InterruptHandler" />
@@ -3217,7 +3225,7 @@
         <entry key="file://$PROJECT_DIR$/memory/automemory.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240388" />
+              <option name="lastModified" value="1786964948118" />
               <option name="schema">
                 <list>
                   <option value="AutoMemory" />
@@ -3256,7 +3264,7 @@
         <entry key="file://$PROJECT_DIR$/message/attachment.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240393" />
+              <option name="lastModified" value="1786966273623" />
               <option name="schema">
                 <list>
                   <option value="AttachmentConfig" />
@@ -3321,7 +3329,7 @@
         <entry key="file://$PROJECT_DIR$/options.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775479318821" />
+              <option name="lastModified" value="1786965982539" />
               <option name="schema">
                 <list>
                   <option value="appConfig" />
@@ -3359,7 +3367,7 @@
         <entry key="file://$PROJECT_DIR$/permission/matcher.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240404" />
+              <option name="lastModified" value="1786965021512" />
               <option name="schema">
                 <list>
                   <option value="ToolPattern" />
@@ -3371,7 +3379,7 @@
         <entry key="file://$PROJECT_DIR$/permission/permission.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775470608035" />
+              <option name="lastModified" value="1786965158582" />
               <option name="schema">
                 <list>
                   <option value="PermissionResult" />
@@ -3418,7 +3426,7 @@
         <entry key="file://$PROJECT_DIR$/permission_handler.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240409" />
+              <option name="lastModified" value="1786964729787" />
               <option name="schema">
                 <list>
                   <option value="PermissionRequest" />
@@ -3432,7 +3440,7 @@
         <entry key="file://$PROJECT_DIR$/pipeline.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1785250082807" />
+              <option name="lastModified" value="1786965982495" />
               <option name="schema">
                 <list>
                   <option value="pipelineNodeNameKey" />
@@ -3491,7 +3499,7 @@
         <entry key="file://$PROJECT_DIR$/planconfirm_handler.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240414" />
+              <option name="lastModified" value="1786964729808" />
               <option name="schema">
                 <list>
                   <option value="PlanConfirmRequest" />
@@ -3513,7 +3521,7 @@
         <entry key="file://$PROJECT_DIR$/provider/anthropic/anthropic.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240417" />
+              <option name="lastModified" value="1786965079595" />
               <option name="schema">
                 <list>
                   <option value="Provider" />
@@ -3639,7 +3647,7 @@
         <entry key="file://$PROJECT_DIR$/schema/reflect.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240428" />
+              <option name="lastModified" value="1786965021665" />
             </ScannedPath>
           </value>
         </entry>
@@ -3705,7 +3713,7 @@
         <entry key="file://$PROJECT_DIR$/sessionmem/sessionmem.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240438" />
+              <option name="lastModified" value="1786964893741" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -3745,7 +3753,7 @@
         <entry key="file://$PROJECT_DIR$/sysprompt/sysprompt.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240441" />
+              <option name="lastModified" value="1786965535757" />
               <option name="schema">
                 <list>
                   <option value="Section" />
@@ -3781,7 +3789,7 @@
         <entry key="file://$PROJECT_DIR$/thinking/thinking.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240446" />
+              <option name="lastModified" value="1786965021472" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -3962,7 +3970,7 @@
         <entry key="file://$PROJECT_DIR$/websocket/client.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240469" />
+              <option name="lastModified" value="1786964485743" />
               <option name="schema">
                 <list>
                   <option value="Client" />
@@ -3988,7 +3996,7 @@
         <entry key="file://$PROJECT_DIR$/worktree/worktree.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240473" />
+              <option name="lastModified" value="1786965535964" />
               <option name="schema">
                 <list>
                   <option value="Worktree" />
@@ -4023,7 +4031,7 @@
         <entry key="ask_user_handler" value="AskUserHandler" />
         <entry key="ask_user_http_request" value="AskUserHTTPRequest" />
         <entry key="ask_user_input" value="AskUserInput" />
-        <entry key="ask_user_request" value="AskUserRequest" />
+        <entry key="ask_user_request" value="askUserRequest" />
         <entry key="ask_user_response" value="AskUserResponse" />
         <entry key="attachment" value="Attachment" />
         <entry key="attachment_config" value="AttachmentConfig" />
@@ -4176,7 +4184,7 @@
         <entry key="plan_checker_adapter" value="planCheckerAdapter" />
         <entry key="plan_confirm_handler" value="PlanConfirmHandler" />
         <entry key="plan_confirm_http_request" value="PlanConfirmHTTPRequest" />
-        <entry key="plan_confirm_request" value="PlanConfirmRequest" />
+        <entry key="plan_confirm_request" value="planConfirmRequest" />
         <entry key="post_compact_cleanup_runner" value="PostCompactCleanupRunner" />
         <entry key="pre_compact_hook_runner" value="PreCompactHookRunner" />
         <entry key="pre_compact_result" value="PreCompactResult" />
@@ -4235,6 +4243,7 @@
         <entry key="sse_permission_request" value="ssePermissionRequest" />
         <entry key="sse_plan_confirm_request" value="ssePlanConfirmRequest" />
         <entry key="sse_usage" value="sseUsage" />
+        <entry key="sse_writer" value="sseWriter" />
         <entry key="stdin_approver" value="stdinApprover" />
         <entry key="stdio_transport" value="StdioTransport" />
         <entry key="stop_hook_result" value="StopHookResult" />
@@ -4330,6 +4339,6 @@
         <entry key="yolo_result" value="YoloResult" />
       </map>
     </option>
-    <option name="lastTimeChecked" value="1785250067130" />
+    <option name="lastTimeChecked" value="1786966266299" />
   </component>
 </project>

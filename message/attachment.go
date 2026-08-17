@@ -3,17 +3,14 @@ package message
 
 import (
 	"context"
-	"enco
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 )
-c/atomic"
-)
 
-var attIDCounter
 var attIDCounter atomic.Int64
 
 // AttachmentConfig 附件配置。
