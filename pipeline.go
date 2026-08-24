@@ -358,6 +358,17 @@ type pipeline struct {
 	reviewSignal       chan ReviewEvent              // supervisor 的审核事件 channel
 	pendingMu          sync.Mutex                    // 保护 pendingResults
 	currentReviewItems map[string][]ReviewResultItem // 当前正在审核的 items（供 reject_result 读取）
+	// reviewSettled 标记本轮审核是否**真的产生了有效处置**（approve / 有效 reject 重推 /
+	// 重试用尽自动放行）。
+	//
+	// runSupervisor 原先靠「LLM 调过 approve_result 或 reject_result」判断本轮有结论，
+	// 但 EventToolDone 在 tool **执行失败时也会发出**：index 越界、node_name 拼错、
+	// 队列不存在这几条错误分支里 tool 直接 return，既没 markReviewDone 也没往队列重推，
+	// 而 supervisor 已认定「有结论」从而跳过兜底 auto-approve。结果该 Review 节点永久挂在
+	// reviewApproved 上 —— 下游 DependsOn 它的节点永不启动，RunPipeline 永不返回。
+	// 这是间歇性的（取决于 LLM 有没有把参数填对），表现为「流水线莫名其妙停住」。
+	// 改为由 tool 显式上报处置结果，supervisor 只信这个标记。
+	reviewSettled map[string]bool
 
 	// DAG 状态
 	doneCh       chan struct{} // pipeline 完成信号
@@ -408,6 +419,7 @@ func newPipeline(cfg PipelineConfig, parent *App) *pipeline {
 		msgQueues:          make(map[string]*messagePusher),
 		pendingResults:     make(map[string][]ReviewResultItem),
 		currentReviewItems: make(map[string][]ReviewResultItem),
+		reviewSettled:      make(map[string]bool),
 		reviewSignal:       make(chan ReviewEvent, 64),
 		doneCh:             make(chan struct{}),
 		nodesDone:          make(map[string]bool),
@@ -751,6 +763,25 @@ func (p *pipeline) markReviewDone(nodeName string) {
 	p.checkAllReviewDone()
 }
 
+// markReviewSettled 由 approve_result / reject_result 在**处置真的生效后**调用，
+// 告诉 runSupervisor 本轮不需要兜底 auto-approve。
+// 有效处置有三种：approve 放行、reject 成功重推队列、重试用尽自动放行。
+// 参数校验失败的错误分支**不得**调用它 —— 那正是需要兜底的场景。
+func (p *pipeline) markReviewSettled(nodeName string) {
+	p.pendingMu.Lock()
+	p.reviewSettled[nodeName] = true
+	p.pendingMu.Unlock()
+}
+
+// takeReviewSettled 读取并清空某节点的处置标记（一轮审核只判一次）。
+func (p *pipeline) takeReviewSettled(nodeName string) bool {
+	p.pendingMu.Lock()
+	settled := p.reviewSettled[nodeName]
+	delete(p.reviewSettled, nodeName)
+	p.pendingMu.Unlock()
+	return settled
+}
+
 // checkAllReviewDone 检查是否所有节点（含审核）都已完成。
 func (p *pipeline) checkAllReviewDone() {
 	p.nodesMu.Lock()
@@ -837,6 +868,7 @@ func (p *pipeline) newReviewTools() []NamedTool {
 						}
 					}
 					p.markReviewDone(in.NodeName)
+					p.markReviewSettled(in.NodeName)
 					return fmt.Sprintf("已批准 %s[%d]", in.NodeName, in.Index), nil
 				},
 			},
@@ -861,7 +893,9 @@ func (p *pipeline) newReviewTools() []NamedTool {
 					p.pendingMu.Unlock()
 
 					if in.Index < 0 || in.Index >= len(items) {
-						return fmt.Sprintf("无效的索引 %d，当前批次共 %d 条", in.Index, len(items)), nil
+						// 不标 settled：本轮什么也没处置，交给 runSupervisor 兜底放行，
+						// 否则节点会永久挂在 reviewApproved 上。
+						return fmt.Sprintf("无效的索引 %d，当前批次共 %d 条（有效范围 0..%d）。请用正确的 index 重新调用 reject_result，或调用 approve_result 放行。", in.Index, len(items), len(items)-1), nil
 					}
 					item := items[in.Index]
 
@@ -887,6 +921,7 @@ func (p *pipeline) newReviewTools() []NamedTool {
 							}
 						}
 						p.markReviewDone(in.NodeName)
+						p.markReviewSettled(in.NodeName)
 						return fmt.Sprintf("已达最大重试次数 (%d)，自动放行 %s[%d]", node.MaxRetries, in.NodeName, in.Index), nil
 					}
 
@@ -935,6 +970,8 @@ func (p *pipeline) newReviewTools() []NamedTool {
 						input:      fullInput,
 						retryCount: item.RetryCount + 1,
 					})
+					// 重推成功才算处置生效：worker 会重跑并再次提交审核，本轮无需兜底放行。
+					p.markReviewSettled(in.NodeName)
 					disposition := "回滚"
 					if amend {
 						disposition = "保留已产出"
@@ -1472,6 +1509,8 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 		// 保存当前审核的 items，供 reject_result 读取。
 		p.pendingMu.Lock()
 		p.currentReviewItems[event.NodeName] = event.Results
+		// 清掉上一轮的处置标记（同一节点会被 reject 后重跑、再次进审）。
+		delete(p.reviewSettled, event.NodeName)
 		p.pendingMu.Unlock()
 
 		// 把审核事件序列化为用户消息，让 LLM 审核并决定 approve/reject。
@@ -1479,7 +1518,6 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 		userMsg := fmt.Sprintf("节点 %s 提交了结果供你审核。请用 get_* 工具抽查验证质量，然后调用 approve_result 或 reject_result。\n\n审核数据：%s", event.NodeName, string(reviewData))
 
 		// 每轮审核用独立的 App.Run()（单轮对话）。
-		approved := false
 		subApp := New(
 			WithProvider(prov),
 			WithSystemPrompt(sup.Instruction),
@@ -1493,19 +1531,22 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 		subApp.UseTools(reviewTools...)
 
 		for ev := range subApp.Run(ctx, userMsg) {
-			if ev.Type == EventToolDone && ev.ToolName == "approve_result" {
-				log.Printf("[pipeline] supervisor: approved node=%s", event.NodeName)
-				approved = true
-			}
-			if ev.Type == EventToolDone && ev.ToolName == "reject_result" {
-				log.Printf("[pipeline] supervisor: rejected node=%s", event.NodeName)
-				approved = true // reject 也是有结论的
+			if ev.Type == EventToolDone && (ev.ToolName == "approve_result" || ev.ToolName == "reject_result") {
+				log.Printf("[pipeline] supervisor: tool=%s returned for node=%s", ev.ToolName, event.NodeName)
 			}
 		}
 
-		if !approved {
-			log.Printf("[pipeline] supervisor: no approve/reject for node=%s, auto-approving", event.NodeName)
-			// 兜底：LLM 没调 approve/reject，自动 approve
+		// 是否需要兜底，只看「处置有没有真的生效」，不看「LLM 有没有调过工具」。
+		//
+		// EventToolDone 在 tool 执行失败时同样会发出：node_name 拼错、index 越界、
+		// 队列不存在这几条分支里 tool 直接 return，既没 markReviewDone 也没重推队列。
+		// 原先据 EventToolDone 置 approved=true 会跳过下面的兜底，节点就永久挂在
+		// reviewApproved 上 —— 下游 DependsOn 它的节点永不启动、RunPipeline 永不返回，
+		// 表现为流水线间歇性「莫名其妙停住」。改看 reviewSettled 后，只要 LLM 把参数
+		// 填错、或压根没调工具、或 LLM 调用本身报错，都会走到兜底放行。
+		if !p.takeReviewSettled(event.NodeName) {
+			log.Printf("[pipeline] supervisor: node=%s not settled (LLM 未给出有效处置), auto-approving", event.NodeName)
+			// 兜底：自动 approve
 			node := p.nodes[event.NodeName]
 			if node != nil {
 				// Commit 所有事务。
