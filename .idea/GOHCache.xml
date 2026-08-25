@@ -2497,7 +2497,7 @@
         <entry key="file://$PROJECT_DIR$/askuser_handler.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786964729837" />
+              <option name="lastModified" value="1786966273154" />
               <option name="schema">
                 <list>
                   <option value="AskUserRequest" />
@@ -3051,7 +3051,7 @@
         <entry key="file://$PROJECT_DIR$/http.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786965901417" />
+              <option name="lastModified" value="1786966273156" />
               <option name="schema">
                 <list>
                   <option value="sseWriter" />
@@ -3083,7 +3083,7 @@
         <entry key="file://$PROJECT_DIR$/internal/loop/loop.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786965729746" />
+              <option name="lastModified" value="1786966274941" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -3100,7 +3100,7 @@
         <entry key="file://$PROJECT_DIR$/internal/loop/pause.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786965291367" />
+              <option name="lastModified" value="1786966274942" />
               <option name="schema">
                 <list>
                   <option value="ToolState" />
@@ -3225,7 +3225,7 @@
         <entry key="file://$PROJECT_DIR$/memory/automemory.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786964948118" />
+              <option name="lastModified" value="1786966273985" />
               <option name="schema">
                 <list>
                   <option value="AutoMemory" />
@@ -3264,7 +3264,7 @@
         <entry key="file://$PROJECT_DIR$/message/attachment.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786966273623" />
+              <option name="lastModified" value="1786966472216" />
               <option name="schema">
                 <list>
                   <option value="AttachmentConfig" />
@@ -3426,7 +3426,7 @@
         <entry key="file://$PROJECT_DIR$/permission_handler.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786964729787" />
+              <option name="lastModified" value="1786966273157" />
               <option name="schema">
                 <list>
                   <option value="PermissionRequest" />
@@ -3440,7 +3440,7 @@
         <entry key="file://$PROJECT_DIR$/pipeline.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786965982495" />
+              <option name="lastModified" value="1787583667103" />
               <option name="schema">
                 <list>
                   <option value="pipelineNodeNameKey" />
@@ -3499,7 +3499,7 @@
         <entry key="file://$PROJECT_DIR$/planconfirm_handler.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786964729808" />
+              <option name="lastModified" value="1786966273158" />
               <option name="schema">
                 <list>
                   <option value="PlanConfirmRequest" />
@@ -3996,7 +3996,7 @@
         <entry key="file://$PROJECT_DIR$/worktree/worktree.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786965535964" />
+              <option name="lastModified" value="1786966276345" />
               <option name="schema">
                 <list>
                   <option value="Worktree" />
@@ -4031,7 +4031,7 @@
         <entry key="ask_user_handler" value="AskUserHandler" />
         <entry key="ask_user_http_request" value="AskUserHTTPRequest" />
         <entry key="ask_user_input" value="AskUserInput" />
-        <entry key="ask_user_request" value="askUserRequest" />
+        <entry key="ask_user_request" value="AskUserRequest" />
         <entry key="ask_user_response" value="AskUserResponse" />
         <entry key="attachment" value="Attachment" />
         <entry key="attachment_config" value="AttachmentConfig" />
@@ -4184,7 +4184,7 @@
         <entry key="plan_checker_adapter" value="planCheckerAdapter" />
         <entry key="plan_confirm_handler" value="PlanConfirmHandler" />
         <entry key="plan_confirm_http_request" value="PlanConfirmHTTPRequest" />
-        <entry key="plan_confirm_request" value="planConfirmRequest" />
+        <entry key="plan_confirm_request" value="PlanConfirmRequest" />
         <entry key="post_compact_cleanup_runner" value="PostCompactCleanupRunner" />
         <entry key="pre_compact_hook_runner" value="PreCompactHookRunner" />
         <entry key="pre_compact_result" value="PreCompactResult" />
@@ -4339,6 +4339,6 @@
         <entry key="yolo_result" value="YoloResult" />
       </map>
     </option>
-    <option name="lastTimeChecked" value="1786966266299" />
+    <option name="lastTimeChecked" value="1787583876469" />
   </component>
 </project>

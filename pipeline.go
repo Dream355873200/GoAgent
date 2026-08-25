@@ -74,8 +74,27 @@ type PipelineNode struct {
 	DependsOn []string
 
 	// Message 节点上下文消息。作为每个 worker 的 user message 前缀。
-	// 非空时自动 Push 到队列作为初始任务。
+	//
+	// **只有没有上游生产者的节点，才会把 Message 自动 Push 成初始任务。**
+	// 若有其他节点的 Injects 指向本节点（即真实任务由上游推入队列），Message 就纯粹是
+	// 公共前缀，不会单独成为一条任务 —— 否则 worker 会多消费一条「只有上下文、没有
+	// 任务数据」的伪任务并白跑一次 LLM（实测 enricher 因此回「我还没收到具体的
+	// 任务数据」，storyboard 则拿着 16k 剧本上下文空转一轮去试探自己该做什么）。
 	Message string
+
+	// MessageFunc 惰性求值的 Message。非 nil 时在**节点真正被调度那一刻**
+	// （DependsOn 全部满足、worker 启动之前）调用，返回值覆盖 Message。
+	//
+	// 为什么需要它：Message 是在构造 PipelineConfig 时就固化的字符串，而它的内容
+	// 往往依赖上游节点的产出。DependsOn 只推迟节点的**执行**，不推迟 Message 的
+	// **求值** —— 典型翻车场景：下游节点的 Message 里注入「当前已有的资产清单」，
+	// 可构造 pipeline 时上游还没跑，注入进去的是一份空清单，于是下游只能在 prompt 里
+	// 被告知「注入的列表可能是空的，你自己去调 list_* 重查」，每个 worker 白花一轮
+	// LLM 调用去拿本该直接给它的数据。
+	//
+	// MessageFunc 求值发生在依赖满足之后，拿到的就是上游产出后的真实状态。
+	// 每个节点只求值一次（不是每条任务一次），因此可以放心做数据库查询。
+	MessageFunc func(ctx context.Context) string
 
 	// Injects 声明此 node 的 agent tool 可以往哪些下游 node 的队列推送。
 	// 框架在运行此 node 时，将指定队列注入到 context。
@@ -549,6 +568,29 @@ func (p *pipeline) hasReviewNodes() bool {
 	for _, node := range p.nodes {
 		if node.Review {
 			return true
+		}
+	}
+	return false
+}
+
+// hasUpstreamProducer 判断是否有别的节点声明往 nodeName 的 message 队列推任务
+// （即 nodeName 是队列驱动的 worker 节点，而非自带唯一任务的单任务节点）。
+//
+// 用途见 runNode 里的 Message Push 判断：队列驱动节点的 Message 只是每条任务的
+// 公共前缀，不该自己成为一条任务。
+//
+// 注意这里判断的是**声明**而非实际推送：上游声明了 Injects 但一条都没推时（如剧本
+// 没拆出分集），本节点队列为空、worker 空转退出，这是正确行为 —— 没有任务就是没活干，
+// 不该拿 Message 硬凑一条。
+func (p *pipeline) hasUpstreamProducer(nodeName string) bool {
+	for name, node := range p.nodes {
+		if name == nodeName {
+			continue // 自己 Injects 自己不算上游
+		}
+		for _, target := range node.Injects {
+			if target == nodeName {
+				return true
+			}
 		}
 	}
 	return false
@@ -1145,8 +1187,19 @@ func (p *pipeline) runNode(ctx context.Context, nodeName string, doneCh chan<- s
 	// 保存 nodeCtx 供 reject 重试时复用。
 	node.nodeCtx = nodeCtx
 
+	// Message 惰性求值：此刻 DependsOn 已全部满足，上游产出已落地，
+	// 拿到的是真实状态而非构造 pipeline 时的空快照。详见 MessageFunc 字段注释。
+	if node.MessageFunc != nil {
+		node.Message = node.MessageFunc(nodeCtx)
+	}
+
 	// 如果有 Message，Push 到队列作为初始任务。
-	if node.Message != "" {
+	//
+	// 仅限**没有上游生产者**的节点：没人往它队列推任务，Message 就是它的唯一任务。
+	// 有上游 Injects 指向本节点时，真实任务由上游推入，Message 只在 runWorkerOnce 里
+	// 当作每条任务的前缀 —— 若这里也 Push 一次，worker 就会多消费一条「只有上下文、
+	// 没有任务数据」的伪任务，白跑一次 LLM。
+	if node.Message != "" && !p.hasUpstreamProducer(nodeName) {
 		p.msgQueues[nodeName].Push(node.Message)
 	}
 

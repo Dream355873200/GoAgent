@@ -1056,3 +1056,162 @@ func TestPipeline_RefCountClose_MultipleProducers(t *testing.T) {
 		t.Fatal("consumer queue SHOULD be closed after 3rd close (self-close)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Test 22: 队列驱动节点的 Message 只作前缀，不额外 Push 成一条伪任务
+// ---------------------------------------------------------------------------
+
+func TestPipeline_QueueDrivenNode_MessageNotPushedAsTask(t *testing.T) {
+	var inputs []string
+	var mu sync.Mutex
+
+	type sendTaskInput struct {
+		Task string `json:"task" desc:"任务内容" required:"true"`
+	}
+	sendTaskTool := NamedTool{
+		Name: "send_task",
+		Def: ToolDef{
+			Description: "向 worker 队列推送任务",
+			Input:       sendTaskInput{},
+			Permission:  ReadOnly,
+			Execute: func(ctx Context, in sendTaskInput) (string, error) {
+				q := GetMessageQueue(ctx.Context, "worker")
+				if q == nil {
+					return "", fmt.Errorf("worker queue not found")
+				}
+				q.Push(in.Task)
+				return "已推送", nil
+			},
+		},
+	}
+
+	mockProv := &provider.MockProvider{
+		Responses: []provider.MockResponse{
+			{
+				ToolCalls: []provider.MockToolCall{
+					provider.NewMockToolCall("call-1", "send_task", sendTaskInput{Task: "task-1"}),
+					provider.NewMockToolCall("call-2", "send_task", sendTaskInput{Task: "task-2"}),
+				},
+			},
+			{Text: "done"},
+		},
+	}
+
+	cfg := PipelineConfig{
+		Nodes: []PipelineNode{
+			{
+				Name:        "producer",
+				Concurrency: 1,
+				Message:     "推 2 个任务",
+				Injects:     []string{"worker"},
+				Agent: &PipelineAgentDef{
+					Name:        "producer",
+					Instruction: "调用 send_task 推送任务",
+					MaxTurns:    5,
+					Provider:    mockProv,
+					Tools:       []NamedTool{sendTaskTool},
+				},
+			},
+			{
+				Name:        "worker",
+				Concurrency: 1,
+				DependsOn:   []string{"producer"},
+				// 队列驱动节点：任务由 producer 推入，Message 只是公共上下文前缀。
+				Message: "公共上下文",
+				Agent: &PipelineAgentDef{
+					Name:        "worker",
+					Instruction: "直接输出：done",
+					MaxTurns:    1,
+					Provider:    mockProv,
+				},
+				OnTaskResult: func(result any) {
+					mu.Lock()
+					inputs = append(inputs, fmt.Sprintf("%v", result))
+					mu.Unlock()
+				},
+			},
+		},
+	}
+
+	p := newPipeline(cfg, &App{provider: mockProv})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := p.Run(ctx); err != nil {
+		t.Fatalf("pipeline Run failed: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// 只该消费 producer 推的 2 条。若 Message 也被 Push 成任务就会变成 3 条
+	// （那第 3 条是「只有上下文、没有任务数据」的伪任务，白跑一次 LLM）。
+	if len(inputs) != 2 {
+		t.Fatalf("expected exactly 2 consumed tasks (Message must not become a task), got %d: %v",
+			len(inputs), inputs)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 23: MessageFunc 在依赖满足后才求值（拿得到上游产出）
+// ---------------------------------------------------------------------------
+
+func TestPipeline_MessageFunc_EvaluatedAfterDependencies(t *testing.T) {
+	mockProv := provider.NewMockProvider("ok")
+
+	// upstreamDone 模拟上游节点的产出：构造 pipeline 时为空，upstream 跑完才有值。
+	var upstreamDone string
+	var mu sync.Mutex
+
+	cfg := PipelineConfig{
+		Nodes: []PipelineNode{
+			{
+				Name:        "upstream",
+				Concurrency: 1,
+				Message:     "上游干活",
+				Agent: &PipelineAgentDef{
+					Name:        "upstream",
+					Instruction: "直接输出：ok",
+					MaxTurns:    1,
+					Provider:    mockProv,
+				},
+				OnNodeComplete: func() {
+					mu.Lock()
+					upstreamDone = "上游产出的资产清单"
+					mu.Unlock()
+				},
+			},
+			{
+				Name:        "downstream",
+				Concurrency: 1,
+				DependsOn:   []string{"upstream"},
+				// 静态 Message 会在构造 pipeline 时固化（那时 upstreamDone 还是空的）；
+				// MessageFunc 推迟到节点被调度时求值，因此拿得到上游产出。
+				MessageFunc: func(ctx context.Context) string {
+					mu.Lock()
+					defer mu.Unlock()
+					return upstreamDone
+				},
+				Agent: &PipelineAgentDef{
+					Name:        "downstream",
+					Instruction: "直接输出：ok",
+					MaxTurns:    1,
+					Provider:    mockProv,
+				},
+			},
+		},
+	}
+
+	p := newPipeline(cfg, &App{provider: mockProv})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := p.Run(ctx); err != nil {
+		t.Fatalf("pipeline Run failed: %v", err)
+	}
+
+	if got := p.nodes["downstream"].Message; got != "上游产出的资产清单" {
+		t.Fatalf("MessageFunc should be evaluated after DependsOn satisfied; Message=%q", got)
+	}
+}
