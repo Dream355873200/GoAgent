@@ -446,6 +446,16 @@ func runHTTP(app *App, addr string) error {
 	mux.HandleFunc("GET /plan", func(w http.ResponseWriter, r *http.Request) {
 		store := app.PlanStore()
 		w.Header().Set("Content-Type", "application/json")
+		if store == nil {
+			// Plan 系统未启用：返回未激活状态而非 panic（与 POST /plan 的 nil 检查对齐）
+			json.NewEncoder(w).Encode(map[string]any{
+				"active":    false,
+				"state":     "disabled",
+				"file_path": "",
+				"content":   "",
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{
 			"active":    store.IsActive(),
 			"state":     store.GetState().String(),
