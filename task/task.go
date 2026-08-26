@@ -9,6 +9,7 @@ package task
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 )
@@ -258,7 +259,9 @@ type ListSummary struct {
 	BlockedBy []string `json:"blockedBy,omitempty"`
 }
 
-// ListSummaries 返回所有非删除任务的摘要。
+// ListSummaries 返回所有非删除任务的摘要，按 ID 升序（即创建顺序）。
+// tasks 是 map，遍历顺序随机 —— 不排序的话轮询方每次拿到的顺序都会变，
+// UI 上表现为任务条目来回跳动。
 func (s *Store) ListSummaries() []ListSummary {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -283,5 +286,6 @@ func (s *Store) ListSummaries() []ListSummary {
 			BlockedBy: openBlocked,
 		})
 	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result
 }
