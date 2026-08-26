@@ -117,6 +117,25 @@ func runHTTP(app *App, addr string) error {
 		ctx := r.Context()
 		startTime := time.Now()
 
+		// 任务生命周期与 HTTP 连接解耦：后台 ctx 取消仅停止 SSE 转发
+		// （前端刷新/离开项目页），agent 任务本身继续跑完并落盘 —— 消息
+		// 逐条即时持久化，前端重新进入时从 /sessions/{id}/messages 回放。
+		// 中断只能经 POST /interrupt（用户点终止按钮），此时用后台 ctx 的
+		// cancel 精确终止任务。
+		bgCtx, bgCancel := context.WithCancel(context.WithoutCancel(ctx))
+		defer bgCancel() // 请求 handler 退出不杀任务：仅在无人消费时兜底回收
+		go func() {
+			<-ctx.Done()
+			// 前端连接断开：不 cancel bgCtx（任务继续）。
+			// 仅当任务尚未开始（RunSession 尚未 Acquire）时由 bgCancel 兜底。
+		}()
+
+		// 注册中断链路：/interrupt 按会话路由到本任务的 cancel。
+		if app.interruptHandler != nil {
+			app.interruptHandler.RegisterSession(sessionID, bgCancel)
+			defer app.interruptHandler.UnregisterSession(sessionID)
+		}
+
 		// 获取 App 级别的 handler 引用
 		askUserHandler := app.askUserHandler
 		planConfirmHandler := app.planConfirmHandler
@@ -153,13 +172,22 @@ func runHTTP(app *App, addr string) error {
 
 		// 多轮对话：session_id 命中已有会话则自动加载历史并在结束后持久化；
 		// 未传 session_id 或未配置会话管理器时退化为无状态单轮（旧行为）。
+		// 用 bgCtx（与连接解耦）：SSE 断开不取消任务，/interrupt 才取消。
 		var events <-chan Event
 		if req.SessionID != "" && app.config.sessionManager != nil {
-			events = app.RunSession(ctx, req.SessionID, req.Message)
+			events = app.RunSession(bgCtx, req.SessionID, req.Message)
 		} else {
-			events = app.Run(ctx, req.Message)
+			events = app.Run(bgCtx, req.Message)
 		}
 		for ev := range events {
+			// 连接已断（前端离开）则停止转发，任务在后台继续；
+			// 但必须排空事件 channel，否则 channel 缓冲填满后 agent 循环
+			// 会阻塞在 out <- 上，任务永远跑不完。
+			if ctx.Err() != nil {
+				for range events {
+				}
+				break
+			}
 			data, _ := json.Marshal(sseEvent{
 				Type:       ev.Type.String(),
 				Text:       ev.Text,
