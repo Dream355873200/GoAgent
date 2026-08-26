@@ -57,6 +57,13 @@ type Config struct {
 	// 默认值：50000
 	MaxResultSize int
 
+	// MicroStripThreshold 是允许 L2 micro 层剥离"已消费工具结果"的
+	// 上下文窗口比例（0.0-1.0）。只有当估算 token 超过
+	// contextWindow * MicroStripThreshold 时才执行剥离；
+	// 未达阈值时不剥离（避免每轮剥离导致模型失忆、反复读取同一批
+	// 文件原地打转）。默认值：0.5；设为负数可完全禁用剥离。
+	MicroStripThreshold float64
+
 	// Layers 指定启用的压缩层（可选）。
 	// nil 或空 = 启用全部层（向后兼容）。
 	// 例如：[]Layer{LayerBudget, LayerMicro, LayerAuto} 只启用 L0+L2+L4。
@@ -137,6 +144,9 @@ func NewManager(cfg Config) *Manager {
 	if cfg.MaxResultSize == 0 {
 		cfg.MaxResultSize = 50_000
 	}
+	if cfg.MicroStripThreshold == 0 {
+		cfg.MicroStripThreshold = 0.5
+	}
 
 	// 构建启用层映射。nil/空 = 全部启用（向后兼容）。
 	enabled := make(map[Layer]bool)
@@ -210,9 +220,11 @@ func (m *Manager) Apply(ctx context.Context, messages []message.Message, context
 		totalFreed += freed
 	}
 
-	// Layer 2: Micro — 移除已消费的工具结果。
+	// Layer 2: Micro — 截断超长工具结果；仅在上下文达到压力阈值时
+	// 剥离已消费的工具结果（对齐 Claude Code：接近窗口上限才剥离，
+	// 而非每轮剥离，否则模型会因失忆反复读取同一批文件原地打转）。
 	if m.enabledLayers[LayerMicro] {
-		messages, freed = m.micro.apply(messages)
+		messages, freed = m.micro.apply(messages, contextWindow, m.config.MicroStripThreshold)
 		totalFreed += freed
 	}
 
@@ -334,7 +346,7 @@ const MaxToolResultChars = 50_000
 
 type microCompressor struct{}
 
-func (mc *microCompressor) apply(messages []message.Message) ([]message.Message, int) {
+func (mc *microCompressor) apply(messages []message.Message, contextWindow int, stripThreshold float64) ([]message.Message, int) {
 	freed := 0
 
 	result := make([]message.Message, len(messages))
@@ -358,6 +370,12 @@ func (mc *microCompressor) apply(messages []message.Message) ([]message.Message,
 	}
 
 	// Pass 2: 移除已被助手处理过的工具结果内容。
+	// 仅在上下文压力达到阈值时执行（threshold<=0 表示禁用剥离）；
+	// 无压力时保留完整工具结果，模型跨轮仍能引用先前读到的内容。
+	if stripThreshold <= 0 || estimateMessagesTokens(messages) < int(float64(contextWindow)*stripThreshold) {
+		return result, freed
+	}
+
 	// 追踪哪些 tool_use ID 已被"消费"（后续有助手响应）。
 	consumed := make(map[string]bool)
 
