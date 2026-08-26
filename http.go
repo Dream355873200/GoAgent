@@ -146,6 +146,7 @@ func runHTTP(app *App, addr string) error {
 				Thinking:   ev.Thinking,
 				ToolName:   ev.ToolName,
 				ToolUseID:  ev.ToolUseID,
+				ToolInput:  ev.ToolInput,
 				ToolResult: ev.ToolResult,
 				Error:      errString(ev.Error),
 				Usage:      usageFromEvent(ev),
@@ -583,14 +584,15 @@ type chatRequest struct {
 }
 
 type sseEvent struct {
-	Type       string    `json:"type"`
-	Text       string    `json:"text,omitempty"`
-	Thinking   string    `json:"thinking,omitempty"`
-	ToolName   string    `json:"tool_name,omitempty"`
-	ToolUseID  string    `json:"tool_use_id,omitempty"`
-	ToolResult string    `json:"tool_result,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	Usage      *sseUsage `json:"usage,omitempty"`
+	Type       string          `json:"type"`
+	Text       string          `json:"text,omitempty"`
+	Thinking   string          `json:"thinking,omitempty"`
+	ToolName   string          `json:"tool_name,omitempty"`
+	ToolUseID  string          `json:"tool_use_id,omitempty"`
+	ToolInput  json.RawMessage `json:"tool_input,omitempty"` // tool_start 携带调用参数（Read 的文件路径 / Bash 的命令等）
+	ToolResult string          `json:"tool_result,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Usage      *sseUsage       `json:"usage,omitempty"`
 }
 
 type ssePermissionRequest struct {
