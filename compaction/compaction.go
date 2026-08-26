@@ -310,6 +310,13 @@ func (s *snipCompressor) apply(messages []message.Message, contextWindow int) ([
 		return messages, 0 // 消息太少，不需要截断
 	}
 
+	// 仅在上下文压力达到阈值时才截断旧文本（与 L2 micro 的
+	// MicroStripThreshold 一致）；无压力时保留完整文本，
+	// 避免每轮截断导致模型丢失先前推理内容、原地打转。
+	if estimateMessagesTokens(messages) < int(float64(contextWindow)*0.5) {
+		return messages, 0
+	}
+
 	freed := 0
 	// 保护最后 4 条消息（近期上下文）。
 	protectedTail := 4
@@ -415,6 +422,13 @@ type collapseCompressor struct{}
 
 func (c *collapseCompressor) apply(messages []message.Message, contextWindow int) ([]message.Message, int) {
 	if len(messages) <= 6 {
+		return messages, 0
+	}
+
+	// 仅在上下文压力达到阈值时才折叠（与 L1/L2 一致，0.5 门槛）；
+	// 注意 drain()（413 溢出恢复）以 contextWindow=0 调用本函数，
+	// 此时跳过门槛强制折叠。
+	if contextWindow > 0 && estimateMessagesTokens(messages) < int(float64(contextWindow)*0.5) {
 		return messages, 0
 	}
 
