@@ -566,6 +566,46 @@ func runHTTP(app *App, addr string) error {
 
 	// --- 可观测性端点 ---
 
+	// --- Session 端点 ---
+	// GET /sessions — 列出所有会话摘要（不含消息体）。
+	// 前端据此恢复「最近对话」；session_id 由前端在 /chat 时自行指定。
+	mux.HandleFunc("GET /sessions", func(w http.ResponseWriter, r *http.Request) {
+		mgr := app.Sessions()
+		if mgr == nil {
+			http.Error(w, "session system not enabled", http.StatusServiceUnavailable)
+			return
+		}
+		summaries, err := mgr.List(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(summaries)
+	})
+
+	// GET /sessions/{id}/messages — 返回会话的完整消息历史。
+	// 用于前端重开项目时回放对话流：只含 user/assistant 两种角色的
+	// 消息（按时间序），thinking 块保留在 assistant 消息内供前端折叠展示。
+	mux.HandleFunc("GET /sessions/{id}/messages", func(w http.ResponseWriter, r *http.Request) {
+		mgr := app.Sessions()
+		if mgr == nil {
+			http.Error(w, "session system not enabled", http.StatusServiceUnavailable)
+			return
+		}
+		sess, err := mgr.Get(r.Context(), r.PathValue("id"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if sess == nil {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(sess.Messages)
+	})
+
 	// GET /usage — 获取 token 使用成本统计
 	mux.HandleFunc("GET /usage", func(w http.ResponseWriter, r *http.Request) {
 		summary := app.Usage()
@@ -587,6 +627,8 @@ func runHTTP(app *App, addr string) error {
 
 	fmt.Printf("GoAgent HTTP 服务器监听 %s\n", addr)
 	fmt.Printf("  POST /chat      — SSE 流式传输\n")
+	fmt.Printf("  GET  /sessions  — 会话列表\n")
+	fmt.Printf("  GET  /sessions/{id}/messages — 会话历史消息\n")
 	fmt.Printf("  POST /execute   — 同步执行\n")
 	fmt.Printf("  POST /approve   — 权限审批响应\n")
 	fmt.Printf("  GET  /health    — 健康检查\n")
