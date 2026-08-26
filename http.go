@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/Dream355873200/GoAgent/session"
 	"github.com/Dream355873200/GoAgent/task"
 )
 
@@ -31,6 +33,16 @@ func runHTTP(app *App, addr string) error {
 	// 开发者可以传入 PermissionHandler 实现异步审批。
 	if app.config.approver == nil {
 		app.config.approver = AutoApprover()
+	}
+
+	// HTTP 模式下如果未配置会话管理器，自动创建基于文件系统的持久化
+	// （对齐 RunCLI 的行为；会话存储在 .yume/sessions/ 目录下）。
+	// 没有它，/chat 只能走无状态的 App.Run —— 每条消息都是全新会话，
+	// 前端传的 session_id 形同虚设，模型每轮都失忆从头探索。
+	if app.config.sessionManager == nil {
+		sessDir := filepath.Join(".yume", "sessions")
+		store := session.NewFileStore(sessDir)
+		app.config.sessionManager = session.NewManager(store)
 	}
 
 	mux := http.NewServeMux()
@@ -139,7 +151,15 @@ func runHTTP(app *App, addr string) error {
 			}()
 		}
 
-		for ev := range app.Run(ctx, req.Message) {
+		// 多轮对话：session_id 命中已有会话则自动加载历史并在结束后持久化；
+		// 未传 session_id 或未配置会话管理器时退化为无状态单轮（旧行为）。
+		var events <-chan Event
+		if req.SessionID != "" && app.config.sessionManager != nil {
+			events = app.RunSession(ctx, req.SessionID, req.Message)
+		} else {
+			events = app.Run(ctx, req.Message)
+		}
+		for ev := range events {
 			data, _ := json.Marshal(sseEvent{
 				Type:       ev.Type.String(),
 				Text:       ev.Text,
