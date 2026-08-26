@@ -159,6 +159,10 @@ type streamDelta struct {
 	Role      string           `json:"role,omitempty"`
 	Content   *string          `json:"content,omitempty"`
 	ToolCalls []streamToolCall `json:"tool_calls,omitempty"`
+	// ReasoningContent 是推理型模型（DeepSeek-R1/V4、Qwen3 等）的思考增量，
+	// 经 delta.reasoning_content 下发、与 content 并行。缺失则被静默丢弃，
+	// 表现为「模型整段思考、正文为空」。
+	ReasoningContent *string `json:"reasoning_content,omitempty"`
 }
 
 // streamToolCall 是流式工具调用增量。
@@ -425,6 +429,16 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, out c
 			out <- provider.StreamEvent{
 				Type: provider.EventTextDelta,
 				Text: text,
+			}
+		}
+
+		// 处理推理增量（DeepSeek-R1/V4 等经 delta.reasoning_content 下发）。
+		// 只作展示流转发（loop 层会累积为 thinking block 并在下一轮以
+		// <thinking> 标签回填历史），不拼进 assistantText。
+		if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
+			out <- provider.StreamEvent{
+				Type:     provider.EventThinkingDelta,
+				Thinking: *choice.Delta.ReasoningContent,
 			}
 		}
 

@@ -142,6 +142,7 @@ const (
 	TransReactiveCompactRetry                      // 413 后的响应式压缩
 	TransMaxOutputEscalate                         // 8k → 64k 重试
 	TransMaxOutputRecovery                         // 注入继续提示
+	TransThinkingOnlyRecovery                      // 推理模型整段回复只进思考通道，注入提示要求正文重述
 	TransStopHookBlocking                          // stop hook 需要修正
 	TransTokenBudgetContinuation                   // token 预算未耗尽
 )
@@ -152,6 +153,7 @@ type loopState struct {
 	turnCount                   int
 	transition                  *Transition
 	maxOutputRecoveryCount      int
+	thinkingOnlyRecoveryCount   int
 	maxOutputTokensOverride     int
 	hasAttemptedReactiveCompact bool
 	usingFallback               bool
@@ -605,6 +607,26 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 					t := TransMaxOutputRecovery
 					state.transition = &t
 					out <- Event{Type: EvtProgress, Text: fmt.Sprintf("输出被截断，恢复尝试 %d/3", state.maxOutputRecoveryCount)}
+					continue
+				}
+			}
+
+			// 推理型模型（DeepSeek-R1/V4 等）可能整段回复只进思考通道：
+			// content 为空、无工具调用。此时历史里是一条只有 thinking 块的
+			// 助手消息，用户侧表现为「什么都不输出直接停止」。注入恢复提示，
+			// 要求模型在正文通道重新给出回复（最多 2 次，避免死循环）。
+			if assistantText == "" && thinkingText != "" {
+				if state.thinkingOnlyRecoveryCount < 2 {
+					state.thinkingOnlyRecoveryCount++
+					recoveryMsg := message.NewMetaMessage(
+						"Your previous reply contained only internal reasoning with no visible response. " +
+							"Re-state your answer in the main response channel as regular text " +
+							"(do not use the thinking channel alone).",
+					)
+					state.messages = append(state.messages, recoveryMsg)
+					t := TransThinkingOnlyRecovery
+					state.transition = &t
+					out <- Event{Type: EvtProgress, Text: "回复只有思考无正文，要求正文重述"}
 					continue
 				}
 			}
