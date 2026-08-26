@@ -569,6 +569,8 @@ func runHTTP(app *App, addr string) error {
 	// --- Session 端点 ---
 	// GET /sessions — 列出所有会话摘要（不含消息体）。
 	// 前端据此恢复「最近对话」；session_id 由前端在 /chat 时自行指定。
+	// 磁盘上遗留 running 状态的会话（进程被杀时未及收尾）修正为 interrupted：
+	// 当前进程内存中并无活跃会话，running 只可能是上个进程留下的。
 	mux.HandleFunc("GET /sessions", func(w http.ResponseWriter, r *http.Request) {
 		mgr := app.Sessions()
 		if mgr == nil {
@@ -579,6 +581,11 @@ func runHTTP(app *App, addr string) error {
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		for _, s := range summaries {
+			if s.State == "running" {
+				s.State = "interrupted"
+			}
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(summaries)

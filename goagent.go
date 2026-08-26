@@ -810,15 +810,36 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	}
 
 	// 运行 agent 循环。
+	// 持久化策略：逐条即时落盘（而非整轮结束才写）。loop 的 FinalMessages
+	// 随事件流增长，每次出现新消息立刻 AppendMessage —— 进程被杀（用户
+	// 关闭应用）时已完成的步骤全部保留，重开可从断点恢复对话与执行进度。
 	agentLoop := loop.New(loopCfg)
+	persistedCount := 0 // 已落盘的最终消息数（本轮新增部分）
+	persistMsgs := func() {
+		if sess == nil || cfg.sessionManager == nil {
+			return
+		}
+		autoPersist := cfg.autoPersist == nil || *cfg.autoPersist
+		if !autoPersist {
+			return
+		}
+		finalMsgs := agentLoop.FinalMessages()
+		for i := len(sess.Messages) + persistedCount; i < len(finalMsgs); i++ {
+			if err := cfg.sessionManager.AppendMessage(ctx, sess.ID, finalMsgs[i]); err == nil {
+				persistedCount++
+			}
+		}
+	}
 	for ev := range agentLoop.Run(ctx, input) {
 		pubEv := toPublicEvent(ev)
 		// EventDone 时附带完整消息列表，供业务层持久化。
 		if pubEv.Type == EventDone {
 			pubEv.Messages = agentLoop.FinalMessages()
 		}
+		persistMsgs()
 		out <- pubEv
 	}
+	persistMsgs() // 循环结束（含 error 退出）时兜底补齐
 
 	// 如果有 session 且启用了自动持久化，保存本轮新增的消息。
 	// 默认开启自动持久化；WithAutoPersist(false) 可禁用。

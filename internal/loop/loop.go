@@ -236,6 +236,8 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 	}
 
 	// 循环结束时保存最终消息列表，并通知 Observer 会话结束。
+	// 运行期间每轮迭代末尾也同步到 finalMessages（见 run 循环体），
+	// 供外部在事件流消费中途调用 FinalMessages() 做逐条即时持久化。
 	defer func() {
 		l.state = nil
 		l.finalMessages = state.messages
@@ -730,6 +732,10 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 		state.hasAttemptedReactiveCompact = false
 		t := TransNextTurn
 		state.transition = &t
+
+		// 同步到 finalMessages：外部（goagent.run）在事件流消费中途调用
+		// FinalMessages() 做逐条即时持久化，进程被杀时已完成的轮次全保留。
+		l.finalMessages = state.messages
 
 		// 增加压缩管理器的轮次计数。
 		if l.cfg.Compaction != nil {
