@@ -110,6 +110,7 @@ func CoreTools() []goagent.NamedTool {
 		{Name: "Glob", Def: GlobTool()},
 		{Name: "Grep", Def: GrepTool()},
 		{Name: "Bash", Def: BashTool()},
+		{Name: "GitCommit", Def: GitCommitTool()},
 		{Name: "WebSearch", Def: WebSearchTool()},
 		{Name: "WebFetch", Def: WebFetchTool()},
 	}
@@ -118,6 +119,35 @@ func CoreTools() []goagent.NamedTool {
 // AllTools 是 CoreTools 的别名，向后兼容。
 // Deprecated: 请使用 CoreTools()。
 func AllTools() []goagent.NamedTool { return CoreTools() }
+
+// resolvePath 把相对路径解析到会话工作目录（WithSessionWorkDir 注入）。
+// 绝对路径原样返回；未注入工作目录时保持相对路径，由 OS 按进程 cwd 解析（旧行为）。
+func resolvePath(ctx context.Context, p string) string {
+	wd := workDirOf(ctx)
+	if p == "" || wd == "" || filepath.IsAbs(p) {
+		return p
+	}
+	return filepath.Join(wd, p)
+}
+
+// resolveRoot 返回搜索根目录：显式 path > 会话工作目录 > 进程 cwd。
+func resolveRoot(ctx context.Context, explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	if wd := workDirOf(ctx); wd != "" {
+		return wd, nil
+	}
+	return os.Getwd()
+}
+
+// workDirOf nil 安全的会话工作目录提取。
+func workDirOf(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	return goagent.WorkDirFromContext(ctx)
+}
 
 // ---------- Read ----------
 
@@ -131,27 +161,48 @@ type ReadInput struct {
 // ReadTool 返回文件读取工具定义。
 func ReadTool() goagent.ToolDef {
 	return goagent.ToolDef{
-		Description: "读取本地文件内容。返回带行号的文本。支持 offset/limit 分段读取大文件。",
-		Input:       ReadInput{},
-		Permission:  goagent.ReadOnly,
-		Concurrent:  true,
+		Description: "读取本地文件内容。返回带行号的文本。支持 offset/limit 分段读取大文件。" +
+			"超长行（>2000 字符）会中间截断；二进制文件返回类型提示而不是乱码。" +
+			"同一会话内重复读取未修改的文件会短路返回（自上次读取无变化）——需要重读时说明原因。",
+		Input:      ReadInput{},
+		Permission: goagent.ReadOnly,
+		Concurrent: true,
 		Execute: func(ctx goagent.Context, in ReadInput) (string, error) {
-			return executeRead(in)
+			in.FilePath = resolvePath(ctx, in.FilePath)
+			return executeRead(ctx, in)
 		},
 	}
 }
 
-func executeRead(in ReadInput) (string, error) {
+// 单行截断阈值（对齐 Claude Code）：超长行挖空中间，防 minified JS /
+// 嵌入数据把上下文撑爆。
+const maxLineLen = 2000
+
+// 二进制检测采样字节数。
+const binarySniffLen = 8000
+
+func executeRead(ctx goagent.Context, in ReadInput) (string, error) {
 	if in.FilePath == "" {
 		return "", fmt.Errorf("file_path 不能为空")
 	}
 
-	f, err := os.Open(in.FilePath)
+	raw, err := os.ReadFile(in.FilePath)
 	if err != nil {
 		return "", fmt.Errorf("无法打开文件: %w", err)
 	}
-	defer f.Close()
 
+	// 二进制检测：采样段里 NUL 比例高或不可打印控制字符多 → 不当文本读。
+	if isBinary(raw[:min(len(raw), binarySniffLen)]) {
+		return fmt.Sprintf("(%s 是二进制文件, %d 字节 — 无法作为文本读取)", filepath.Base(in.FilePath), len(raw)), nil
+	}
+
+	// 未修改短路：同会话内指纹一致时直接告知，防模型反复重读同一文件。
+	if unchangedSinceRead(ctx.SessionID, in.FilePath, string(raw)) {
+		return "(文件自上次读取后未修改 — 无需重读)", nil
+	}
+	markRead(ctx.SessionID, in.FilePath, string(raw))
+
+	content := string(raw)
 	limit := in.Limit
 	if limit <= 0 {
 		limit = 2000
@@ -161,9 +212,9 @@ func executeRead(in ReadInput) (string, error) {
 		offset = 1
 	}
 
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(strings.NewReader(content))
 	// 增大缓冲区以处理长行。
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 
 	var lines []string
 	lineNum := 0
@@ -175,7 +226,14 @@ func executeRead(in ReadInput) (string, error) {
 		if lineNum >= offset+limit {
 			break
 		}
-		lines = append(lines, fmt.Sprintf("%6d\t%s", lineNum, scanner.Text()))
+		line := scanner.Text()
+		if len(line) > maxLineLen {
+			// 中间挖空：保住行首尾（缩进/结尾语义），截掉中间大块
+			head := line[:maxLineLen/2]
+			tail := line[len(line)-maxLineLen/4:]
+			line = head + fmt.Sprintf(" [...truncated %d chars...] ", len(line)-maxLineLen/2-maxLineLen/4) + tail
+		}
+		lines = append(lines, fmt.Sprintf("%6d\t%s", lineNum, line))
 	}
 	if err := scanner.Err(); err != nil {
 		return "", fmt.Errorf("读取文件出错: %w", err)
@@ -191,6 +249,32 @@ func executeRead(in ReadInput) (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
+// isBinary 粗判二进制：NUL 字节出现或不可打印控制字符占比过高。
+func isBinary(sample []byte) bool {
+	if len(sample) == 0 {
+		return false
+	}
+	nul, ctrl := 0, 0
+	for _, b := range sample {
+		if b == 0 {
+			nul++
+			if nul > 1 {
+				return true // 文本里 NUL 几乎不会出现一次以上
+			}
+		} else if b < 0x09 || (b > 0x0d && b < 0x20) {
+			ctrl++
+		}
+	}
+	return float64(ctrl)/float64(len(sample)) > 0.30
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // ---------- Write ----------
 
 // WriteInput 是 Write 工具的输入。
@@ -202,18 +286,26 @@ type WriteInput struct {
 // WriteTool 返回文件写入工具定义。
 func WriteTool() goagent.ToolDef {
 	return goagent.ToolDef{
-		Description: "创建或覆盖文件。将 content 写入指定路径。如果父目录不存在会自动创建。",
-		Input:       WriteInput{},
-		Permission:  goagent.Normal,
+		Description: "创建或覆盖文件。将 content 写入指定路径。如果父目录不存在会自动创建。" +
+			"覆盖已存在的文件前必须先 Read 它（防止凭旧印象覆盖丢改动）；新建文件无需先读。",
+		Input:      WriteInput{},
+		Permission: goagent.Normal,
 		Execute: func(ctx goagent.Context, in WriteInput) (string, error) {
-			return executeWrite(in)
+			in.FilePath = resolvePath(ctx, in.FilePath)
+			return executeWrite(ctx, in)
 		},
 	}
 }
 
-func executeWrite(in WriteInput) (string, error) {
+func executeWrite(ctx goagent.Context, in WriteInput) (string, error) {
 	if in.FilePath == "" {
 		return "", fmt.Errorf("file_path 不能为空")
+	}
+
+	// 覆盖保护：目标文件已存在但本会话没读过 → 拒绝并指路。
+	// 模型有最新视图时才允许覆盖（对齐 Claude Code 的安全语义）。
+	if _, err := os.Stat(in.FilePath); err == nil && !hasRead(ctx.SessionID, in.FilePath) {
+		return "", fmt.Errorf("%s 已存在但本会话未读取过——先 Read 它确认当前内容，再决定覆盖（防止凭印象覆盖丢失现有内容）", in.FilePath)
 	}
 
 	// 确保父目录存在。
@@ -225,6 +317,7 @@ func executeWrite(in WriteInput) (string, error) {
 	if err := os.WriteFile(in.FilePath, []byte(in.Content), 0644); err != nil {
 		return "", fmt.Errorf("写入文件失败: %w", err)
 	}
+	invalidate(ctx.SessionID, in.FilePath)
 
 	lines := strings.Count(in.Content, "\n") + 1
 	return fmt.Sprintf("已写入 %s (%d 行, %d 字节)", in.FilePath, lines, len(in.Content)), nil
@@ -243,22 +336,31 @@ type EditInput struct {
 // EditTool 返回精确字符串替换工具定义。
 func EditTool() goagent.ToolDef {
 	return goagent.ToolDef{
-		Description: "在文件中执行精确字符串替换。old_string 必须在文件中存在。" +
-			"默认要求 old_string 唯一（只出现一次），设置 replace_all=true 可替换所有匹配。",
+		Description: "在文件中执行精确字符串替换。old_string 必须在文件中存在且唯一" +
+			"（不唯一时提供更多上下文行使其唯一，或 replace_all=true 替换全部）。" +
+			"编辑前必须先 Read 该文件（本会话内）——Edit 匹配的是文件的最新内容，" +
+			"凭记忆编辑会匹配失败。多处修改尽量合并成一次大块替换而不是多次小改。",
 		Input:      EditInput{},
 		Permission: goagent.Normal,
 		Execute: func(ctx goagent.Context, in EditInput) (string, error) {
-			return executeEdit(in)
+			in.FilePath = resolvePath(ctx, in.FilePath)
+			return executeEdit(ctx, in)
 		},
 	}
 }
 
-func executeEdit(in EditInput) (string, error) {
+func executeEdit(ctx goagent.Context, in EditInput) (string, error) {
 	if in.FilePath == "" {
 		return "", fmt.Errorf("file_path 不能为空")
 	}
 	if in.OldString == in.NewString {
 		return "", fmt.Errorf("old_string 和 new_string 相同，无需替换")
+	}
+
+	// 前置校验：本会话未读过该文件 → 拒绝（对齐 Claude Code）。
+	// 模型没建立文件最新视图就编辑，old_string 大概率失配。
+	if !hasRead(ctx.SessionID, in.FilePath) {
+		return "", fmt.Errorf("%s 本会话尚未读取——先 Read 再 Edit（old_string 必须匹配文件最新内容，凭记忆编辑会失败）", in.FilePath)
 	}
 
 	content, err := os.ReadFile(in.FilePath)
@@ -270,7 +372,10 @@ func executeEdit(in EditInput) (string, error) {
 	count := strings.Count(text, in.OldString)
 
 	if count == 0 {
-		return "", fmt.Errorf("old_string 在文件中未找到")
+		// 给出定位线索（对齐 Claude Code 的诊断式报错）：
+		// 找最相似的行帮模型快速修正，而不是裸报「未找到」。
+		return "", fmt.Errorf("old_string 在文件中未找到。常见原因：%s。重新 Read 文件核对最新内容后再试",
+			editMissReason(text, in.OldString))
 	}
 
 	if !in.ReplaceAll && count > 1 {
@@ -287,8 +392,29 @@ func executeEdit(in EditInput) (string, error) {
 	if err := os.WriteFile(in.FilePath, []byte(newText), 0644); err != nil {
 		return "", fmt.Errorf("写入文件失败: %w", err)
 	}
+	invalidate(ctx.SessionID, in.FilePath)
 
 	return fmt.Sprintf("已替换 %d 处匹配 (%s)", count, in.FilePath), nil
+}
+
+// editMissReason old_string 未命中时的快速诊断。
+func editMissReason(text, old string) string {
+	// 空白差异（缩进/行尾）：最常见的失配原因
+	normalizedOld := strings.Join(strings.Fields(old), " ")
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Join(strings.Fields(line), " ") == normalizedOld && normalizedOld != "" {
+			return "内容存在但空白/缩进不同（逐字符复制目标行，不要手敲）"
+		}
+	}
+	// 部分命中：old 的某一行出现在文件里 → 大概率行号漂移或上下文行不对
+	if oldLines := strings.Split(old, "\n"); len(oldLines) > 1 {
+		for _, ol := range oldLines {
+			if strings.TrimSpace(ol) != "" && strings.Contains(text, ol) {
+				return "部分行存在——上下文行与文件当前内容不一致（文件可能已被修改，重新 Read）"
+			}
+		}
+	}
+	return "目标文本不在当前文件中（文件可能已被修改——重新 Read 核对）"
 }
 
 // ---------- Glob ----------
@@ -308,23 +434,19 @@ func GlobTool() goagent.ToolDef {
 		Concurrent:         true,
 		MaxResultSizeChars: 50000,
 		Execute: func(ctx goagent.Context, in GlobInput) (string, error) {
-			return executeGlob(in)
+			return executeGlob(ctx, in)
 		},
 	}
 }
 
-func executeGlob(in GlobInput) (string, error) {
+func executeGlob(ctx goagent.Context, in GlobInput) (string, error) {
 	if in.Pattern == "" {
 		return "", fmt.Errorf("pattern 不能为空")
 	}
 
-	root := in.Path
-	if root == "" {
-		var err error
-		root, err = os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("无法获取当前目录: %w", err)
-		}
+	root, err := resolveRoot(ctx, in.Path)
+	if err != nil {
+		return "", fmt.Errorf("无法获取当前目录: %w", err)
 	}
 
 	// 处理 ** 递归模式。
@@ -464,13 +586,9 @@ func executeGrep(ctx context.Context, in GrepInput) (string, error) {
 		return "", fmt.Errorf("pattern 不能为空")
 	}
 
-	searchPath := in.Path
-	if searchPath == "" {
-		var err error
-		searchPath, err = os.Getwd()
-		if err != nil {
-			return "", fmt.Errorf("无法获取当前目录: %w", err)
-		}
+	searchPath, err := resolveRoot(ctx, in.Path)
+	if err != nil {
+		return "", fmt.Errorf("无法获取当前目录: %w", err)
 	}
 
 	// 构建 grep/rg 命令参数。优先用 rg（如果可用）。

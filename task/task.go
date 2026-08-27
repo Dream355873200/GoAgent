@@ -252,11 +252,12 @@ func (t *Task) OpenBlockedBy(store *Store) []string {
 
 // ListSummary 返回所有任务的摘要信息。
 type ListSummary struct {
-	ID        string   `json:"id"`
-	Subject   string   `json:"subject"`
-	Status    Status   `json:"status"`
-	Owner     string   `json:"owner,omitempty"`
-	BlockedBy []string `json:"blockedBy,omitempty"`
+	ID        string         `json:"id"`
+	Subject   string         `json:"subject"`
+	Status    Status         `json:"status"`
+	Owner     string         `json:"owner,omitempty"`
+	BlockedBy []string       `json:"blockedBy,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"` // kind=issue 等自定义标记（前端分流展示）
 }
 
 // ListSummaries 返回所有非删除任务的摘要，按 ID 升序（即创建顺序）。
@@ -284,6 +285,7 @@ func (s *Store) ListSummaries() []ListSummary {
 			Status:    t.Status,
 			Owner:     t.Owner,
 			BlockedBy: openBlocked,
+			Metadata:  t.Metadata,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })

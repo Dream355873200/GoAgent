@@ -351,7 +351,10 @@ func (p *Provider) handleHTTPError(resp *http.Response) error {
 			Message: fmt.Sprintf("请求过大 (HTTP 413): %s", string(body)),
 		}
 	case 429:
-		return &provider.OverloadError{
+		// 429 = 速率限制（TPM/RPM 配额），等待后重试必然可行。
+		// 与 529 过载区分：OverloadError 会触发后备模型切换，
+		// 而速率限制切模型无济于事（同一账号同限额）——必须等待。
+		return &provider.RateLimitError{
 			Message: fmt.Sprintf("速率限制 (HTTP 429): %s", string(body)),
 		}
 	case 529:

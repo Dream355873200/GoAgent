@@ -23,7 +23,10 @@ type BashInput struct {
 func BashTool() goagent.ToolDef {
 	return goagent.ToolDef{
 		Description: "执行 shell 命令并返回输出。支持 timeout 和工作目录配置。" +
-			"用于运行构建、测试、git 操作、文件管理等系统命令。",
+			"用于运行构建、测试、git 操作、文件管理等系统命令。" +
+			"注意：优先用专用工具而不是 Bash 拼凑——找文件用 Glob/Grep（不是 dir/findstr）、" +
+			"对比文件用专用对比工具、跑项目命令用项目专用工具。" +
+			"Bash 是兜底手段，不是首选。",
 		Input:              BashInput{},
 		Permission:         goagent.Normal,
 		MaxResultSizeChars: 50000,
@@ -58,6 +61,10 @@ func executeBash(ctx context.Context, in BashInput) (string, error) {
 	}
 
 	cmd := exec.CommandContext(childCtx, shell, flag, in.Command)
+	// 会话工作目录：单进程多会话各自扎根不同目录（WithSessionWorkDir 注入）。
+	if wd := goagent.WorkDirFromContext(ctx); wd != "" {
+		cmd.Dir = wd
+	}
 	output, err := cmd.CombinedOutput()
 	result := strings.TrimRight(string(output), "\n\r ")
 

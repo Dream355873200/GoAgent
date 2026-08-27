@@ -45,6 +45,39 @@ func runHTTP(app *App, addr string) error {
 		app.config.sessionManager = session.NewManager(store)
 	}
 
+	mux := newHTTPMux(app)
+
+	fmt.Printf("GoAgent HTTP 服务器监听 %s\n", addr)
+	fmt.Printf("  POST /chat      — SSE 流式传输\n")
+	fmt.Printf("  GET  /sessions  — 会话列表\n")
+	fmt.Printf("  GET  /sessions/{id}/messages — 会话历史消息\n")
+	fmt.Printf("  POST /execute   — 同步执行\n")
+	fmt.Printf("  POST /approve   — 权限审批响应\n")
+	fmt.Printf("  GET  /health    — 健康检查\n")
+	fmt.Printf("  GET  /tools     — 工具列表\n")
+	fmt.Printf("  GET  /tasks     — 任务列表\n")
+	fmt.Printf("  POST /tasks     — 创建任务\n")
+	fmt.Printf("  GET  /tasks/{id} — 获取任务\n")
+	fmt.Printf("  PUT  /tasks/{id} — 更新任务\n")
+	fmt.Printf("  DELETE /tasks/{id} — 删除任务\n")
+	fmt.Printf("  GET  /plan      — 计划状态\n")
+	fmt.Printf("  POST /plan      — 进入计划模式\n")
+	fmt.Printf("  DELETE /plan    — 退出计划模式\n")
+	fmt.Printf("  GET  /bgtasks   — 后台任务列表\n")
+	fmt.Printf("  GET  /bgtasks/{id} — 后台任务详情\n")
+	fmt.Printf("  POST /bgtasks/{id}/stop — 停止后台任务\n")
+	fmt.Printf("  GET  /usage     — Token 使用统计\n")
+	fmt.Printf("  GET  /audit     — 工具执行分析\n")
+
+	return http.ListenAndServe(addr, mux)
+}
+
+// newHTTPMux 构建 HTTP API 的路由表（/chat /approve /tasks /plan ...）。
+// 与监听逻辑解耦：测试可用 httptest.NewServer(newHTTPMux(app)) 直接挂载，
+// 无需占用真实端口。所有 handler 按会话（session_id）隔离——不同会话的
+// /chat 并发执行互不阻塞（同一会话仍互斥，见 session.Manager.Acquire）。
+func newHTTPMux(app *App) *http.ServeMux {
+
 	mux := http.NewServeMux()
 
 	// 活跃会话计数。
@@ -190,7 +223,9 @@ func runHTTP(app *App, addr string) error {
 			}
 			data, _ := json.Marshal(sseEvent{
 				Type:       ev.Type.String(),
+				SessionID:  sessionID,
 				Text:       ev.Text,
+				StatusKey:  ev.StatusKey, // 非空=状态行原地更新（429 重试倒计时等）
 				Thinking:   ev.Thinking,
 				ToolName:   ev.ToolName,
 				ToolUseID:  ev.ToolUseID,
@@ -373,13 +408,16 @@ func runHTTP(app *App, addr string) error {
 
 	// --- Task 端点 ---
 
-	// GET /tasks — 列出所有任务
+	// GET /tasks — 列出所有任务。
+	// ?session_id= 路由到该会话的任务分区（存储为 SessionStore 时）；
+	// 不带参数且存储为会话隔离时返回空（各会话互不可见）。
 	mux.HandleFunc("GET /tasks", func(w http.ResponseWriter, r *http.Request) {
 		store := app.TaskStore()
 		if store == nil {
 			http.Error(w, "task system not enabled", http.StatusServiceUnavailable)
 			return
 		}
+		store = routeTaskStore(store, r.URL.Query().Get("session_id"))
 		summaries := store.ListSummaries()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(summaries)
@@ -406,6 +444,7 @@ func runHTTP(app *App, addr string) error {
 			http.Error(w, "task system not enabled", http.StatusServiceUnavailable)
 			return
 		}
+		store = routeTaskStore(store, r.URL.Query().Get("session_id"))
 		t := store.Create(req.Subject, req.Description, req.ActiveForm, req.Metadata)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -420,6 +459,7 @@ func runHTTP(app *App, addr string) error {
 			http.Error(w, "task system not enabled", http.StatusServiceUnavailable)
 			return
 		}
+		store = routeTaskStore(store, r.URL.Query().Get("session_id"))
 		t := store.Get(id)
 		if t == nil {
 			http.Error(w, "任务未找到", http.StatusNotFound)
@@ -460,6 +500,7 @@ func runHTTP(app *App, addr string) error {
 			http.Error(w, "task system not enabled", http.StatusServiceUnavailable)
 			return
 		}
+		store = routeTaskStore(store, r.URL.Query().Get("session_id"))
 		updated, err := store.Update(id, taskPatch)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -660,29 +701,7 @@ func runHTTP(app *App, addr string) error {
 		json.NewEncoder(w).Encode(summary)
 	})
 
-	fmt.Printf("GoAgent HTTP 服务器监听 %s\n", addr)
-	fmt.Printf("  POST /chat      — SSE 流式传输\n")
-	fmt.Printf("  GET  /sessions  — 会话列表\n")
-	fmt.Printf("  GET  /sessions/{id}/messages — 会话历史消息\n")
-	fmt.Printf("  POST /execute   — 同步执行\n")
-	fmt.Printf("  POST /approve   — 权限审批响应\n")
-	fmt.Printf("  GET  /health    — 健康检查\n")
-	fmt.Printf("  GET  /tools     — 工具列表\n")
-	fmt.Printf("  GET  /tasks     — 任务列表\n")
-	fmt.Printf("  POST /tasks     — 创建任务\n")
-	fmt.Printf("  GET  /tasks/{id} — 获取任务\n")
-	fmt.Printf("  PUT  /tasks/{id} — 更新任务\n")
-	fmt.Printf("  DELETE /tasks/{id} — 删除任务\n")
-	fmt.Printf("  GET  /plan      — 计划状态\n")
-	fmt.Printf("  POST /plan      — 进入计划模式\n")
-	fmt.Printf("  DELETE /plan    — 退出计划模式\n")
-	fmt.Printf("  GET  /bgtasks   — 后台任务列表\n")
-	fmt.Printf("  GET  /bgtasks/{id} — 后台任务详情\n")
-	fmt.Printf("  POST /bgtasks/{id}/stop — 停止后台任务\n")
-	fmt.Printf("  GET  /usage     — Token 使用统计\n")
-	fmt.Printf("  GET  /audit     — 工具执行分析\n")
-
-	return http.ListenAndServe(addr, mux)
+	return mux
 }
 
 type chatRequest struct {
@@ -691,7 +710,13 @@ type chatRequest struct {
 }
 
 type sseEvent struct {
-	Type       string          `json:"type"`
+	Type string `json:"type"`
+	// SessionID 本事件归属的会话——多会话并行时客户端按它路由事件到
+	// 对应的 UI（否则两个会话的流无法区分归属）。
+	SessionID string `json:"session_id,omitempty"`
+	// StatusKey 非空时本事件是「状态行更新」而非追加消息：客户端按 Key
+	// 原地替换显示（429 重试倒计时）；Text 空 = 清除该状态行。
+	StatusKey  string          `json:"status_key,omitempty"`
 	Text       string          `json:"text,omitempty"`
 	Thinking   string          `json:"thinking,omitempty"`
 	ToolName   string          `json:"tool_name,omitempty"`
@@ -777,6 +802,19 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// routeTaskStore 按 session_id 路由任务存储：存储实现了 SessionRouter
+// （如 task.SessionStore）且请求带 session_id 时返回该会话的分区；
+// 否则原样返回（全局共享存储，旧行为）。
+func routeTaskStore(store task.StoreInterface, sessionID string) task.StoreInterface {
+	if sessionID == "" {
+		return store
+	}
+	if r, ok := store.(task.SessionRouter); ok {
+		return r.ForSession(sessionID)
+	}
+	return store
 }
 
 func usageFromEvent(ev Event) *sseUsage {

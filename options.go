@@ -38,8 +38,9 @@ type appConfig struct {
 	builtinTools        bool
 	toolKits            []ToolKit
 	sessionManager      *session.Manager
-	autoPersist         *bool                      // nil 表示使用默认（true）
-	permissionMode      *permission.PermissionMode // nil 表示使用默认
+	sessionWorkDirFn    func(sessionID string) string // 会话 → 工作目录解析（多会话多根目录）
+	autoPersist         *bool                         // nil 表示使用默认（true）
+	permissionMode      *permission.PermissionMode    // nil 表示使用默认
 	permissionRules     *permission.RuleSet
 	hooks               []hooks.Hook       // 用户注册的 hooks
 	subAgentDefs        []agent.Definition // 子 agent 定义
@@ -194,6 +195,17 @@ func WithMaxTurns(n int) Option {
 func WithMaxConcurrency(n int) Option {
 	return optionFunc(func(c *appConfig) {
 		c.maxConcurrency = n
+	})
+}
+
+// WithSessionWorkDir sets a resolver that maps a session ID to its working
+// directory. The resolved directory is propagated to every tool's
+// Context.WorkDir (Bash sets cmd.Dir; Read/Write/Edit/Glob/Grep resolve
+// relative paths against it), letting one process serve multiple sessions
+// rooted at different directories. Returning "" falls back to the process cwd.
+func WithSessionWorkDir(fn func(sessionID string) string) Option {
+	return optionFunc(func(c *appConfig) {
+		c.sessionWorkDirFn = fn
 	})
 }
 

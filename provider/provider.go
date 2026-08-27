@@ -173,3 +173,15 @@ type OverloadError struct {
 func (e *OverloadError) Error() string {
 	return e.Message
 }
+
+// RateLimitError is returned when the API rejects a request due to rate
+// limits (HTTP 429: TPM/RPM quota). Unlike overload, fallback providers
+// won't help (same account, same quota) — the caller should wait and
+// retry the same provider.
+type RateLimitError struct {
+	Message string
+}
+
+func (e *RateLimitError) Error() string {
+	return e.Message
+}

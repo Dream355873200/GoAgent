@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"sync"
 
 	"github.com/Dream355873200/GoAgent/message"
 )
@@ -124,7 +125,9 @@ func (fs *FileStore) UpdateState(ctx context.Context, sessionID string, state St
 // MemoryStore 是基于内存的 SessionStore 实现。
 // 不做持久化，进程重启后数据丢失。
 // 适用于测试和临时场景。
+// 并发安全：HTTP 层多会话并行时会并发读写，全部方法持锁。
 type MemoryStore struct {
+	mu       sync.Mutex
 	sessions map[string]*Session
 }
 
@@ -134,11 +137,15 @@ func NewMemoryStore() *MemoryStore {
 }
 
 func (ms *MemoryStore) Create(ctx context.Context, sess *Session) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 	ms.sessions[sess.ID] = sess
 	return nil
 }
 
 func (ms *MemoryStore) Get(ctx context.Context, sessionID string) (*Session, error) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 	sess, ok := ms.sessions[sessionID]
 	if !ok {
 		return nil, nil
@@ -147,6 +154,8 @@ func (ms *MemoryStore) Get(ctx context.Context, sessionID string) (*Session, err
 }
 
 func (ms *MemoryStore) List(ctx context.Context) ([]*SessionSummary, error) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 	summaries := make([]*SessionSummary, 0, len(ms.sessions))
 	for _, sess := range ms.sessions {
 		firstMsg := ""
@@ -170,11 +179,15 @@ func (ms *MemoryStore) List(ctx context.Context) ([]*SessionSummary, error) {
 }
 
 func (ms *MemoryStore) Delete(ctx context.Context, sessionID string) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 	delete(ms.sessions, sessionID)
 	return nil
 }
 
 func (ms *MemoryStore) AppendMessage(ctx context.Context, sessionID string, msg message.Message) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 	sess, ok := ms.sessions[sessionID]
 	if !ok {
 		return nil
@@ -184,6 +197,8 @@ func (ms *MemoryStore) AppendMessage(ctx context.Context, sessionID string, msg 
 }
 
 func (ms *MemoryStore) UpdateState(ctx context.Context, sessionID string, state State) error {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
 	sess, ok := ms.sessions[sessionID]
 	if !ok {
 		return nil

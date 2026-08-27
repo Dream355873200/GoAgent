@@ -583,6 +583,23 @@ func (a *App) SetTools(tools ...NamedTool) {
 	}
 }
 
+// ReplaceTool 覆盖注册单个工具（不存在则注册）。
+// 典型用途：包装内置工具加应用层策略——例如在 Execute 外再包一层
+// 输入拦截（领域禁令、审计、沙箱校验），保留原工具的描述与 Schema。
+// 线程安全，可在运行时调用（下次 Run 时生效）。
+func (a *App) ReplaceTool(name string, def ToolDef) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, exists := a.tools[name]; exists {
+		a.tools[name] = &registeredTool{
+			def:         def,
+			inputSchema: schema.Generate(def.Input),
+		}
+		return
+	}
+	a.registerToolLocked(name, def)
+}
+
 // ToolNames 返回已注册工具的名称列表（按注册顺序）。
 func (a *App) ToolNames() []string {
 	a.mu.RLock()
@@ -775,6 +792,17 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	if sess != nil {
 		sessionID = sess.ID
 	}
+
+	// 会话上下文注入：SessionID + 工作目录经 context value 流经整个
+	// 执行链（loop → executor → 工具的 goagent.Context 字段）。
+	// 工作目录由 WithSessionWorkDir 的解析函数按会话提供——单进程多会话
+	// 各自扎根不同目录（Bash 的 cmd.Dir、相对路径解析均以此为基准），
+	// 未配置时为空 = 沿用进程 cwd（旧行为）。
+	workDir := ""
+	if cfg.sessionWorkDirFn != nil && sessionID != "" {
+		workDir = cfg.sessionWorkDirFn(sessionID)
+	}
+	ctx = WithSessionContext(ctx, sessionID, workDir)
 
 	// 构建 loop 配置。
 	loopCfg := loop.Config{
@@ -997,6 +1025,7 @@ func toPublicEvent(ev loop.Event) Event {
 		ToolInput:  ev.ToolInput,
 		ToolUseID:  ev.ToolUseID,
 		ToolResult: ev.ToolResult,
+		StatusKey:  ev.StatusKey,
 		Usage:      ev.Usage,
 		Error:      ev.Error,
 	}

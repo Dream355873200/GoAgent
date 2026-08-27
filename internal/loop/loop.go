@@ -116,6 +116,9 @@ type Event struct {
 	ToolResult string
 	Usage      *provider.Usage
 	Error      error
+	// StatusKey 非空时本事件是「状态行更新」而非追加消息：前端按 Key
+	// 原地替换显示（如 429 重试的倒计时行）。Text 为空 = 清除该状态行。
+	StatusKey string
 }
 
 // 事件类型（匹配公共 EventType）。
@@ -367,6 +370,50 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 
 		stream, err := activeProvider.Stream(ctx, req)
 
+		// 速率限制重试：429（TPM/RPM 配额）等待后重试同一模型必然可行。
+		// 对齐 Claude Code 的体验：状态行原地更新（事件带 StatusKey），
+		// 等待期间每秒推送倒计时，attempt 递增，恢复后清除状态行。
+		if err != nil {
+			var rateLimitErr *provider.RateLimitError
+			if errors.As(err, &rateLimitErr) {
+				const statusKey = "rate-limit"
+				const maxRateRetries = 10
+				brief := truncateErr(rateLimitErr.Error(), 60)
+				for attempt := 1; attempt <= maxRateRetries; attempt++ {
+					// TPM 窗口 60s：等到下一个窗口边界。首次 15s 起步（部分配额
+					// 可能已释放），逐次递增至 60s，覆盖 RPM/TPM 两种窗口。
+					wait := time.Duration(15*attempt) * time.Second
+					if wait > 60*time.Second {
+						wait = 60 * time.Second
+					}
+					// 每秒推送倒计时状态行（前端原地更新 + 闪烁动画）
+					deadline := time.Now().Add(wait)
+					for time.Now().Before(deadline) {
+						remain := int(time.Until(deadline).Seconds()) + 1
+						out <- Event{Type: EvtProgress, StatusKey: statusKey, Text: fmt.Sprintf(
+							"✻ 429 %s · Retrying in %ds · attempt %d/%d",
+							brief, remain, attempt, maxRateRetries)}
+						select {
+						case <-ctx.Done():
+							out <- Event{Type: EvtError, Error: fmt.Errorf("API 错误: %w", err)}
+							return
+						case <-time.After(time.Until(deadline)):
+						}
+					}
+					stream, err = activeProvider.Stream(ctx, req)
+					if err == nil {
+						break
+					}
+					if !errors.As(err, &rateLimitErr) {
+						break // 变成别的错误了（过载/断网）：走下面的常规处理
+					}
+				}
+				if err == nil {
+					out <- Event{Type: EvtProgress, StatusKey: statusKey, Text: ""} // 清除状态行
+				}
+			}
+		}
+
 		if err != nil {
 			// 处理过载 → 后备。
 			var overloadErr *provider.OverloadError
@@ -585,6 +632,11 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 			})
 		}
 		state.messages = append(state.messages, assistantMsg)
+
+		// 同步到 finalMessages：assistant 消息（思考+工具调用）一完成就落盘，
+		// 不等工具执行完——工具跑几十秒（analyze/build）期间前端重连/重开
+		// 项目就能看到本轮的思考和正在执行的工具调用。
+		l.finalMessages = state.messages
 
 		// ⑦ 无工具调用 → 退出判断。
 		if len(toolCalls) == 0 {
@@ -865,6 +917,18 @@ func cacheControlForSystemPrompt(supportsCaching bool, toolCount int) *provider.
 	}
 	// 无 tools 场景，system prompt 是唯一可缓存前缀。
 	return &provider.CacheControl{Type: "ephemeral"}
+}
+
+// truncateErr 截断错误信息用于进度展示（429 的 message 带 request id 很长）。
+func truncateErr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	// 找个 UTF-8 安全的截断点
+	for n > 0 && (s[n]&0xC0) == 0x80 {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 // CurrentState 返回当前运行状态（用于 Pause/Resume）。

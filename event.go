@@ -88,6 +88,12 @@ type Event struct {
 	// ToolResult is set for EventToolDone.
 	ToolResult string
 
+	// StatusKey 非空时本事件是「状态行更新」而非追加消息：客户端按 Key
+	// 原地替换显示（如 429 重试的倒计时行「✻ 429 … Retrying in Xs ·
+	// attempt N/10」）。Text 为空 = 清除该状态行。
+	// 对齐 Claude Code 的 spinner/status 行为。
+	StatusKey string
+
 	// Usage is set for EventUsageUpdate.
 	Usage *provider.Usage
 
