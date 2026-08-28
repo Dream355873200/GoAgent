@@ -1,6 +1,8 @@
 package goagent
 
 import (
+	"log/slog"
+
 	"github.com/Dream355873200/GoAgent/agent"
 	"github.com/Dream355873200/GoAgent/bgtask"
 	"github.com/Dream355873200/GoAgent/hooks"
@@ -39,6 +41,8 @@ type appConfig struct {
 	toolKits            []ToolKit
 	sessionManager      *session.Manager
 	sessionWorkDirFn    func(sessionID string) string // 会话 → 工作目录解析（多会话多根目录）
+	sandbox             Sandbox                       // 沙箱工厂（nil = 无沙箱，默认）
+	sandboxPolicy       Policy                        // 沙箱默认策略（WithSandbox 时生效）
 	autoPersist         *bool                         // nil 表示使用默认（true）
 	permissionMode      *permission.PermissionMode    // nil 表示使用默认
 	permissionRules     *permission.RuleSet
@@ -63,6 +67,7 @@ type appConfig struct {
 	enablePlanTools   bool
 	enableAskTools    bool
 	enableBgTaskTools bool
+	enableIssueTools  bool
 
 	// 动态注入开关
 	enableGitStatus bool // 是否在 system prompt 中注入 Git 状态（默认不启用）
@@ -70,6 +75,9 @@ type appConfig struct {
 	// 外部 prompt 目录（优先从此目录加载，找不到则 fallback 到嵌入默认值）
 	promptDir      string
 	yoloPromptFile string // YOLO 分类 prompt 外部文件路径
+
+	// 库内日志（WithLogger 注入；nil = slog.Default()）
+	logger *slog.Logger
 }
 
 // ProviderConfig 是 LLM Provider 的配置，可直接传给 New()。
@@ -206,6 +214,23 @@ func WithMaxConcurrency(n int) Option {
 func WithSessionWorkDir(fn func(sessionID string) string) Option {
 	return optionFunc(func(c *appConfig) {
 		c.sessionWorkDirFn = fn
+	})
+}
+
+// WithSandbox 启用工具执行沙箱。每次 App.Run / RunPipeline 创建一个
+// SandboxSession（策略 defaultPolicy，policy 为零值时由沙箱归一化为
+// 「沙箱根读写」）；pipeline 节点可用 PipelineNode.Sandbox 覆盖策略。
+//
+// 沙箱在场且根非空时，有效工作目录 = 沙箱根（覆盖 WithSessionWorkDir
+// 解析的目录）——Bash/GitCommit/相对路径解析全部落到沙箱内。
+// 默认不配置 = 无沙箱，行为与历史版本完全一致。
+//
+// Tier 1（DirSandbox/WorktreeSandbox）防意外不防恶意；进程级隔离是
+// 宿主部署者的责任。详见 sandbox.go 头注释与 README「沙箱层」。
+func WithSandbox(sb Sandbox, defaultPolicy Policy) Option {
+	return optionFunc(func(c *appConfig) {
+		c.sandbox = sb
+		c.sandboxPolicy = defaultPolicy
 	})
 }
 
@@ -749,6 +774,44 @@ func WithAskTools() Option {
 func WithBgTaskTools() Option {
 	return optionFunc(func(c *appConfig) {
 		c.enableBgTaskTools = true
+	})
+}
+
+// WithIssueTools 启用问题记录工具（IssueReport/IssueResolve）。
+// 默认不启用。面向测试驱动场景：agent 边测边记缺陷（与 task 同存储，
+// metadata.kind=issue 区分），修复后关闭、历史保留。
+//
+// 与 WithTaskTools 同时启用时复用同一个 store（含会话分区）；
+// 单独启用时自建内存 store。
+//
+// 示例：
+//
+//	app := goagent.New(
+//	    goagent.WithProvider(provider),
+//	    goagent.WithTaskTools(),
+//	    goagent.WithIssueTools(),
+//	)
+func WithIssueTools() Option {
+	return optionFunc(func(c *appConfig) {
+		c.enableIssueTools = true
+	})
+}
+
+// WithLogger 注入库内日志（pipeline 运行轨迹、节点错误现场等）。
+// 默认 slog.Default()——宿主可通过 slog.SetDefault 全局接管，或用本 Option
+// 按 App 实例注入。库此前直写 stdlib log（stderr），与宿主日志体系不通。
+//
+// 示例：
+//
+//	import "log/slog"
+//
+//	app := goagent.New(
+//	    goagent.WithProvider(provider),
+//	    goagent.WithLogger(slog.New(myHandler)),
+//	)
+func WithLogger(l *slog.Logger) Option {
+	return optionFunc(func(c *appConfig) {
+		c.logger = l
 	})
 }
 

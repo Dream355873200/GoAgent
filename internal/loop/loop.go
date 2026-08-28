@@ -251,6 +251,13 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 
 	activeProvider := l.cfg.Provider
 
+	// nil provider 守卫：此前直接在 Capabilities() 上 panic（nil pointer），
+	// 且发生在 goroutine 里无人 recover——整个进程崩掉。给出可诊断的错误事件。
+	if activeProvider == nil {
+		out <- Event{Type: EvtError, Error: fmt.Errorf("loop: provider 未配置（WithProvider / ProviderConfig 均未设置）")}
+		return
+	}
+
 	// P1a: 工具定义缓存 — 一次性构建，跨迭代复用。
 	// 对齐 Claude Code 的 toolUseContext.options.tools（不在循环内重建）。
 	caps := activeProvider.Capabilities()

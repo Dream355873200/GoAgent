@@ -21,6 +21,7 @@ package goagent
 
 import (
 	"context"
+	"log/slog"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -57,6 +58,7 @@ type App struct {
 	mu          sync.RWMutex
 	provider    provider.Provider
 	fallback    provider.Provider
+	logger      *slog.Logger // 库内日志（WithLogger 注入；默认 slog.Default()）
 	tools       map[string]*registeredTool
 	toolOrder   []string // insertion order
 	middlewares []MiddlewareWithFilter
@@ -101,6 +103,12 @@ func New(opts ...Option) *App {
 	}
 	app.provider = app.config.provider
 	app.fallback = app.config.fallback
+
+	// 库内日志：WithLogger 注入，默认 slog.Default()（宿主 slog.SetDefault 可全局接管）。
+	app.logger = app.config.logger
+	if app.logger == nil {
+		app.logger = slog.Default()
+	}
 
 	// 从 ProviderConfig 自动创建 provider（如果未直接设置 provider）。
 	if app.provider == nil && app.config.providerConfig != nil {
@@ -154,6 +162,23 @@ func New(opts ...Option) *App {
 		}
 		if taskToolsProvider != nil {
 			app.UseTools(taskToolsProvider(app.taskStore)...)
+		}
+	}
+
+	// Issue 工具（WithIssueTools 启用时才注册）。
+	// 与 task 同存储：WithTaskTools 同时启用时复用同一个 store（含会话分区），
+	// 单独启用时自建。不复用则两个工具各写各的存储，issue 记录和任务列表对不上。
+	if app.config.enableIssueTools {
+		store := app.taskStore
+		if store == nil {
+			if app.config.taskStore != nil {
+				store = app.config.taskStore
+			} else {
+				store = task.NewStore()
+			}
+		}
+		if issueToolsProvider != nil {
+			app.UseTools(issueToolsProvider(store)...)
 		}
 	}
 
@@ -340,6 +365,9 @@ func RegisterBuiltinToolsProvider(fn func() []NamedTool) {
 // taskToolsProvider 是由 builtin 包注入的 Task 工具提供函数。
 var taskToolsProvider func(store task.StoreInterface) []NamedTool
 
+// issueToolsProvider 是由 builtin 包注入的 Issue 工具提供函数。
+var issueToolsProvider func(store task.StoreInterface) []NamedTool
+
 // planToolsProvider 是由 builtin 包注入的 Plan 工具提供函数。
 var planToolsProvider func(store plan.StoreInterface) []NamedTool
 
@@ -351,6 +379,12 @@ var bgTaskToolsProvider func(store bgtask.StoreInterface) []NamedTool
 
 // askToolsProvider 是由 builtin 包注入的 AskUser 工具提供函数。
 var askToolsProvider func() []NamedTool
+
+// RegisterIssueToolsProvider 由 builtin 包调用以注册 Issue 工具提供函数。
+// 延迟注入避免 import cycle（builtin import goagent）。
+func RegisterIssueToolsProvider(fn func(store task.StoreInterface) []NamedTool) {
+	issueToolsProvider = fn
+}
 
 // RegisterTaskToolsProvider 由 builtin 包调用以注册 Task 工具提供函数。
 func RegisterTaskToolsProvider(fn func(store task.StoreInterface) []NamedTool) {
@@ -793,15 +827,39 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		sessionID = sess.ID
 	}
 
-	// 会话上下文注入：SessionID + 工作目录经 context value 流经整个
-	// 执行链（loop → executor → 工具的 goagent.Context 字段）。
-	// 工作目录由 WithSessionWorkDir 的解析函数按会话提供——单进程多会话
+	// 会话工作目录由 WithSessionWorkDir 的解析函数按会话提供——单进程多会话
 	// 各自扎根不同目录（Bash 的 cmd.Dir、相对路径解析均以此为基准），
 	// 未配置时为空 = 沿用进程 cwd（旧行为）。
 	workDir := ""
 	if cfg.sessionWorkDirFn != nil && sessionID != "" {
 		workDir = cfg.sessionWorkDirFn(sessionID)
 	}
+
+	// 沙箱：WithSandbox 配置时每次 run 创建独立会话（Enter 失败发错误事件
+	// 干净返回，防 BaseDir 配错崩宿主）。沙箱根非空时覆盖会话工作目录——
+	// 内置工具（Bash/文件读写/git）全部落到沙箱内。见 sandbox.go 优先级规则。
+	if cfg.sandbox != nil {
+		sbSess, err := cfg.sandbox.Enter(ctx, sessionID, cfg.sandboxPolicy)
+		if err != nil {
+			out <- Event{Type: EventError, Error: fmt.Errorf("goagent: 沙箱初始化失败: %w", err)}
+			return
+		}
+		defer func() {
+			if err := sbSess.Close(); err != nil {
+				a.logger.Warn("sandbox: 关闭沙箱会话失败", "error", err)
+			}
+		}()
+		ctx = WithSandboxSession(ctx, sbSess)
+		if r := sbSess.Root(); r != "" {
+			workDir = r
+		}
+	}
+
+	// 会话上下文注入：SessionID + 工作目录经 context value 流经整个
+	// 执行链（loop → executor → 工具的 goagent.Context 字段）。
+	// 工作目录由 WithSessionWorkDir 的解析函数按会话提供——单进程多会话
+	// 各自扎根不同目录（Bash 的 cmd.Dir、相对路径解析均以此为基准），
+	// 未配置时为空 = 沿用进程 cwd（旧行为）。
 	ctx = WithSessionContext(ctx, sessionID, workDir)
 
 	// 构建 loop 配置。

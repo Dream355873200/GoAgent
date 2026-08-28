@@ -11,9 +11,9 @@ package goagent
 
 import (
 	"context"
+	"log/slog"
 	"encoding/json"
 	"fmt"
-	"log"
 	"reflect"
 	"sync"
 
@@ -56,6 +56,36 @@ type PipelineConfig struct {
 	// 如果设置，Review=true 的节点每次 worker 执行前会创建事务，
 	// approve 时 Commit，reject 时 Rollback 后重试。
 	TransactionFactory TransactionFactory
+
+	// OnEvent 节点运行事件的透出回调（可选）。
+	// pipeline 内部原本只消费 TextDelta/ToolStart/ToolDone/Error，
+	// Progress（含 429 状态行的 StatusKey）/Thinking 等事件被静默丢弃——
+	// 嵌入方无法把节点的限流等待/思考过程展示给用户。设置本回调后，
+	// 每个节点 worker 的 loop 事件（转换后的 PipelineEvent）都会透出。
+	OnEvent func(ev PipelineEvent)
+
+	// SessionID 会话标识（可选）。设置后 RunPipeline 会像 App.run 一样
+	// 注入会话上下文（SessionID + WithSessionWorkDir 解析的工作目录）——
+	// 此前 pipeline 节点工具的 Context.WorkDir/SessionID 恒为空，文件/Bash
+	// 工具只能落在进程 cwd。业务层按会话隔离 pipeline 工作目录时设置。
+	SessionID string
+}
+
+// PipelineEvent 是 OnEvent 回调透出的节点运行事件。
+type PipelineEvent struct {
+	// Node 事件来源节点名。
+	Node string
+
+	// Type 事件类型："progress" / "thinking" / "error"。
+	// progress: StatusKey 非空时是状态行原地更新语义（429 倒计时等），Text 空 = 清除。
+	// thinking: 思考模型的推理过程增量（delta.reasoning_content）。
+	// error:    LLM/工具错误（已在内部处理，此为透出供宿主记录）。
+	Type string
+
+	// Text progress/thinking 的内容。
+	Text string
+	// StatusKey 仅 progress：状态行键（非空 = 原地更新语义）。
+	StatusKey string
 }
 
 // PipelineNode 定义一个 agent 节点。
@@ -139,6 +169,12 @@ type PipelineNode struct {
 
 	// QueueSize 队列缓冲大小（默认 64）。
 	QueueSize int
+
+	// Sandbox 节点级沙箱策略覆盖（可选）。
+	// 非 nil 时本节点 runNode 期间单独 Enter 一个沙箱会话（策略为本字段值），
+	// 覆盖 run 级会话；nil = 继承 RunPipeline 创建的 run 级会话。
+	// 注意：App 未配置 WithSandbox 时本字段无效（无沙箱工厂可用）。
+	Sandbox *Policy
 }
 
 // RetryPolicy 决定审核打回（reject_result）时如何处置该轮已产出的数据。
@@ -408,6 +444,10 @@ type pipeline struct {
 	// 父 App（用于创建子 agent）
 	parentApp *App
 
+	// 库内日志：来自 parentApp（WithLogger 注入），无 parent 时 slog.Default()。
+	// 此前 37 处 log.Printf 直写 stderr，与宿主日志体系不通。
+	logger *slog.Logger
+
 	// hasSupervisor 缓存 Supervisor 是否存在（初始化后不变，避免并发读 cfg.Supervisor）。
 	hasSupervisor bool
 }
@@ -446,6 +486,7 @@ func newPipeline(cfg PipelineConfig, parent *App) *pipeline {
 		reviewDoneCh:       make(chan string, len(cfg.Nodes)),
 		parentApp:          parent,
 		hasSupervisor:      cfg.Supervisor != nil,
+		logger:             parentLogger(parent),
 	}
 
 	// 统计每个队列被多少个节点声明 Close（引用计数）。
@@ -603,7 +644,7 @@ func (p *pipeline) hasUpstreamProducer(nodeName string) bool {
 func serializeResult(result any) string {
 	data, err := json.Marshal(result)
 	if err != nil {
-		log.Printf("[pipeline] WARN: serializeResult failed: %v", err)
+		slog.Warn(fmt.Sprintf("serializeResult failed: %v", err))
 		return "{}"
 	}
 	return string(data)
@@ -649,7 +690,7 @@ func (p *pipeline) handleResult(nodeName string, result any, originalMsg any, re
 	if !ok {
 		return
 	}
-	log.Printf("[pipeline] handleResult: node=%s review=%v retry=%d result_type=%T has_tx=%v", nodeName, node.Review, retryCount, result, tx != nil)
+	p.logger.Info(fmt.Sprintf("handleResult: node=%s review=%v retry=%d result_type=%T has_tx=%v", nodeName, node.Review, retryCount, result, tx != nil))
 
 	if !node.Review {
 		// 自动通过，直接调用 OnTaskResult 回调。
@@ -660,7 +701,7 @@ func (p *pipeline) handleResult(nodeName string, result any, originalMsg any, re
 	}
 
 	// 进入待审队列。
-	log.Printf("[pipeline] handleResult: acquiring pendingMu lock for node=%s", nodeName)
+	p.logger.Info(fmt.Sprintf("handleResult: acquiring pendingMu lock for node=%s", nodeName))
 	item := ReviewResultItem{
 		Data:            serializeResult(result),
 		OriginalMessage: originalMsg,
@@ -670,7 +711,7 @@ func (p *pipeline) handleResult(nodeName string, result any, originalMsg any, re
 	}
 
 	p.pendingMu.Lock()
-	log.Printf("[pipeline] handleResult: pendingMu lock acquired for node=%s", nodeName)
+	p.logger.Info(fmt.Sprintf("handleResult: pendingMu lock acquired for node=%s", nodeName))
 	p.pendingResults[nodeName] = append(p.pendingResults[nodeName], item)
 	pending := p.pendingResults[nodeName]
 
@@ -695,7 +736,7 @@ func (p *pipeline) checkReviewTrigger(nodeName string, pendingCount int) {
 		msgQueueEmpty = q.isClosed() || q.len() == 0
 	}
 
-	log.Printf("[pipeline] checkReviewTrigger: node=%s pending=%d batch=%d queueEmpty=%v", nodeName, pendingCount, node.ReviewBatch, msgQueueEmpty)
+	p.logger.Info(fmt.Sprintf("checkReviewTrigger: node=%s pending=%d batch=%d queueEmpty=%v", nodeName, pendingCount, node.ReviewBatch, msgQueueEmpty))
 
 	if pendingCount >= node.ReviewBatch || (pendingCount > 0 && msgQueueEmpty) {
 		p.pendingMu.Lock()
@@ -737,7 +778,7 @@ func (p *pipeline) checkReviewTrigger(nodeName string, pendingCount int) {
 // 如果节点有 Review=true，还需要刷新剩余的待审 result。
 // 当所有节点完成后，发送 done 信号给 supervisor。
 func (p *pipeline) markNodeDone(nodeName string) {
-	log.Printf("[pipeline] markNodeDone: node=%s", nodeName)
+	p.logger.Info(fmt.Sprintf("markNodeDone: node=%s", nodeName))
 	p.nodesMu.Lock()
 	p.nodesDone[nodeName] = true
 	p.nodesMu.Unlock()
@@ -797,7 +838,7 @@ func (p *pipeline) markNodeDone(nodeName string) {
 
 // markReviewDone 标记某个 Review 节点的审核全部完成。
 func (p *pipeline) markReviewDone(nodeName string) {
-	log.Printf("[pipeline] markReviewDone: node=%s", nodeName)
+	p.logger.Info(fmt.Sprintf("markReviewDone: node=%s", nodeName))
 	p.nodesMu.Lock()
 	p.reviewDone[nodeName] = true
 	p.nodesMu.Unlock()
@@ -832,14 +873,14 @@ func (p *pipeline) checkAllReviewDone() {
 	allDone := true
 	for name := range p.nodes {
 		if !p.nodesDone[name] || !p.reviewDone[name] {
-			log.Printf("[pipeline] checkAllReviewDone: node=%s nodesDone=%v reviewDone=%v (blocking)", name, p.nodesDone[name], p.reviewDone[name])
+			p.logger.Info(fmt.Sprintf("checkAllReviewDone: node=%s nodesDone=%v reviewDone=%v (blocking)", name, p.nodesDone[name], p.reviewDone[name]))
 			allDone = false
 			break
 		}
 	}
 
 	if allDone {
-		log.Printf("[pipeline] checkAllReviewDone: ALL DONE, closing doneCh")
+		p.logger.Info(fmt.Sprintf("checkAllReviewDone: ALL DONE, closing doneCh"))
 		// 通知 supervisor 可以退出。
 		if p.hasReviewNodes() && p.hasSupervisor {
 			p.reviewSignal <- ReviewEvent{Done: true}
@@ -880,7 +921,7 @@ func (p *pipeline) newReviewTools() []NamedTool {
 				Permission:  Normal,
 				Concurrent:  false,
 				Execute: func(ctx Context, in approveResultInput) (string, error) {
-					log.Printf("[pipeline] approve_result: node=%s index=%d", in.NodeName, in.Index)
+					p.logger.Info(fmt.Sprintf("approve_result: node=%s index=%d", in.NodeName, in.Index))
 					node := p.nodes[in.NodeName]
 					if node == nil {
 						return "", fmt.Errorf("未知节点: %s", in.NodeName)
@@ -892,7 +933,7 @@ func (p *pipeline) newReviewTools() []NamedTool {
 					p.pendingMu.Unlock()
 					for _, item := range items {
 						if item.tx != nil {
-							log.Printf("[pipeline] approve_result: node=%s committing transaction", in.NodeName)
+							p.logger.Info(fmt.Sprintf("approve_result: node=%s committing transaction", in.NodeName))
 							item.tx.Commit()
 						}
 					}
@@ -923,7 +964,7 @@ func (p *pipeline) newReviewTools() []NamedTool {
 				Permission:  Normal,
 				Concurrent:  false,
 				Execute: func(ctx Context, in rejectResultInput) (string, error) {
-					log.Printf("[pipeline] reject_result: node=%s index=%d guidance=%s", in.NodeName, in.Index, in.Guidance)
+					p.logger.Info(fmt.Sprintf("reject_result: node=%s index=%d guidance=%s", in.NodeName, in.Index, in.Guidance))
 					node := p.nodes[in.NodeName]
 					if node == nil {
 						return "", fmt.Errorf("未知节点: %s", in.NodeName)
@@ -946,9 +987,9 @@ func (p *pipeline) newReviewTools() []NamedTool {
 					// 本轮产出补偿撤销掉，然后「自动放行」一个数据已经不存在的结果 —— 表现为
 					// 重试用尽后一条数据都不剩。放行就必须 Commit。
 					if item.RetryCount >= node.MaxRetries {
-						log.Printf("[pipeline] reject_result: node=%s index=%d max_retries=%d reached, auto-approving", in.NodeName, in.Index, node.MaxRetries)
+						p.logger.Info(fmt.Sprintf("reject_result: node=%s index=%d max_retries=%d reached, auto-approving", in.NodeName, in.Index, node.MaxRetries))
 						if item.tx != nil {
-							log.Printf("[pipeline] reject_result: node=%s index=%d committing transaction (auto-approve)", in.NodeName, in.Index)
+							p.logger.Info(fmt.Sprintf("reject_result: node=%s index=%d committing transaction (auto-approve)", in.NodeName, in.Index))
 							item.tx.Commit()
 						}
 						if node.OnTaskResult != nil {
@@ -971,12 +1012,12 @@ func (p *pipeline) newReviewTools() []NamedTool {
 					amend := node.RetryPolicy == RetryAmend
 					if item.tx != nil {
 						if amend {
-							log.Printf("[pipeline] reject_result: node=%s index=%d amend policy, committing transaction (keep produced data)", in.NodeName, in.Index)
+							p.logger.Info(fmt.Sprintf("reject_result: node=%s index=%d amend policy, committing transaction (keep produced data)", in.NodeName, in.Index))
 							item.tx.Commit()
 						} else {
-							log.Printf("[pipeline] reject_result: node=%s index=%d rolling back transaction", in.NodeName, in.Index)
+							p.logger.Info(fmt.Sprintf("reject_result: node=%s index=%d rolling back transaction", in.NodeName, in.Index))
 							if err := item.tx.Rollback(context.Background()); err != nil {
-								log.Printf("[pipeline] reject_result: node=%s index=%d rollback error: %v", in.NodeName, in.Index, err)
+								p.logger.Warn(fmt.Sprintf("reject_result: node=%s index=%d rollback error: %v", in.NodeName, in.Index, err))
 							}
 						}
 					}
@@ -1018,7 +1059,7 @@ func (p *pipeline) newReviewTools() []NamedTool {
 					if amend {
 						disposition = "保留已产出"
 					}
-					log.Printf("[pipeline] reject_result: node=%s index=%d retry=%d %s and pushed to queue", in.NodeName, in.Index, item.RetryCount+1, disposition)
+					p.logger.Info(fmt.Sprintf("reject_result: node=%s index=%d retry=%d %s and pushed to queue", in.NodeName, in.Index, item.RetryCount+1, disposition))
 
 					return fmt.Sprintf("已将 %s[%d] %s并退回重试（第 %d/%d 次）", in.NodeName, in.Index, disposition, item.RetryCount+1, node.MaxRetries), nil
 				},
@@ -1112,7 +1153,7 @@ func (p *pipeline) Run(ctx context.Context) error {
 				}
 				if allDepsDone {
 					started[candidate] = true
-					log.Printf("[pipeline] starting downstream node: %s", candidate)
+					p.logger.Info(fmt.Sprintf("starting downstream node: %s", candidate))
 					startNode(candidate)
 				}
 			}
@@ -1183,6 +1224,31 @@ func (p *pipeline) runNode(ctx context.Context, nodeName string, doneCh chan<- s
 
 	// 注入节点名到 context，供 Observer 使用（如 usage logging 的 step_group）。
 	nodeCtx = context.WithValue(nodeCtx, PipelineNodeNameKey, nodeName)
+
+	// 节点级沙箱覆盖：node.Sandbox 非 nil 且 App 配了沙箱工厂时，本节点
+	// 单独 Enter 一个会话（生命周期 = 整个 runNode，横跨全部 reject 重试）。
+	if node.Sandbox != nil && p.parentApp != nil {
+		var sb Sandbox
+		p.parentApp.mu.RLock()
+		sb = p.parentApp.config.sandbox
+		p.parentApp.mu.RUnlock()
+		if sb != nil {
+			sbSess, err := sb.Enter(nodeCtx, nodeName, *node.Sandbox)
+			if err != nil {
+				p.recordNodeError(nodeName, fmt.Errorf("节点沙箱初始化失败: %w", err))
+				return
+			}
+			defer func() {
+				if err := sbSess.Close(); err != nil {
+					p.logger.Warn("sandbox: 关闭节点沙箱会话失败", "node", nodeName, "error", err)
+				}
+			}()
+			nodeCtx = WithSandboxSession(nodeCtx, sbSess)
+			if r := sbSess.Root(); r != "" {
+				nodeCtx = WithSessionContext(nodeCtx, SessionIDFromContext(nodeCtx), r)
+			}
+		}
+	}
 
 	// 保存 nodeCtx 供 reject 重试时复用。
 	node.nodeCtx = nodeCtx
@@ -1318,7 +1384,7 @@ func (p *pipeline) buildLightweightLoop(agentDef *PipelineAgentDef, nodeCtx cont
 func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDef, input string) (string, error) {
 	l := p.buildLightweightLoop(agentDef, ctx)
 
-	log.Printf("[pipeline] runLightweight: agent=%s tools=%d input_len=%d", agentDef.Name, len(agentDef.Tools), len(input))
+	p.logger.Info(fmt.Sprintf("runLightweight: agent=%s tools=%d input_len=%d", agentDef.Name, len(agentDef.Tools), len(input)))
 
 	var finalText string
 	var toolStartCount, toolDoneCount, errorCount int
@@ -1329,42 +1395,58 @@ func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDe
 			finalText += ev.Text
 		case loop.EvtToolStart:
 			toolStartCount++
-			log.Printf("[pipeline] runLightweight: agent=%s tool_start=%s", agentDef.Name, ev.ToolName)
+			p.logger.Info(fmt.Sprintf("runLightweight: agent=%s tool_start=%s", agentDef.Name, ev.ToolName))
 		case loop.EvtToolDone:
 			toolDoneCount++
 			resultPreview := ev.ToolResult
 			if len(resultPreview) > 200 {
 				resultPreview = resultPreview[:200] + "..."
 			}
-			log.Printf("[pipeline] runLightweight: agent=%s tool_done=%s result=%s", agentDef.Name, ev.ToolName, resultPreview)
+			p.logger.Info(fmt.Sprintf("runLightweight: agent=%s tool_done=%s result=%s", agentDef.Name, ev.ToolName, resultPreview))
 		case loop.EvtError:
 			errorCount++
 			lastError = ev.Error
-			log.Printf("[pipeline] runLightweight: agent=%s error=%v", agentDef.Name, ev.Error)
+			p.logger.Warn(fmt.Sprintf("runLightweight: agent=%s error=%v", agentDef.Name, ev.Error))
+			p.emitEvent(agentDef.Name, "error", ev.Error.Error(), "")
+		case loop.EvtProgress:
+			// 429 状态行等：StatusKey 非空 = 原地更新语义，Text 空 = 清除。
+			// 此前被静默丢弃——嵌入方无法把节点的限流等待展示给用户。
+			p.emitEvent(agentDef.Name, "progress", ev.Text, ev.StatusKey)
+		case loop.EvtThinking:
+			// 思考模型推理过程（delta.reasoning_content）。此前被静默丢弃。
+			p.emitEvent(agentDef.Name, "thinking", ev.Thinking, "")
 		}
 	}
 
-	log.Printf("[pipeline] runLightweight: agent=%s completed tools_started=%d tools_done=%d errors=%d text_len=%d",
-		agentDef.Name, toolStartCount, toolDoneCount, errorCount, len(finalText))
+	p.logger.Info(fmt.Sprintf("runLightweight: agent=%s completed tools_started=%d tools_done=%d errors=%d text_len=%d",
+		agentDef.Name, toolStartCount, toolDoneCount, errorCount, len(finalText)))
 	if len(finalText) > 0 {
 		preview := finalText
 		if len(preview) > 300 {
 			preview = preview[:300] + "..."
 		}
-		log.Printf("[pipeline] runLightweight: agent=%s text_preview=%s", agentDef.Name, preview)
+		p.logger.Info(fmt.Sprintf("runLightweight: agent=%s text_preview=%s", agentDef.Name, preview))
 	}
 
 	// 空响应检测：LLM 既没有调用工具、也没有输出文本、也没有返回错误。
 	// 这通常意味着 provider 配置有误（API Key 无效、模型名错误、BaseURL 不通等），
 	// LLM API 静默返回空内容。不应当作正常结果静默通过。
 	if toolStartCount == 0 && len(finalText) == 0 && errorCount == 0 {
-		log.Printf("[pipeline] runLightweight: agent=%s empty response detected (no tools, no text, no errors), likely provider misconfiguration", agentDef.Name)
+		p.logger.Warn(fmt.Sprintf("runLightweight: agent=%s empty response detected (no tools, no text, no errors), likely provider misconfiguration", agentDef.Name))
 		return "", fmt.Errorf("agent %q: LLM returned empty response (0 tool calls, 0 text chars) — provider may be misconfigured (check API key, model name, base URL)", agentDef.Name)
 	}
 
-	// 如果有 LLM 错误但同时也无任何产出，也返回错误
-	if errorCount > 0 && toolStartCount == 0 && len(finalText) == 0 && lastError != nil {
-		return "", fmt.Errorf("agent %q: LLM error with no output: %w", agentDef.Name, lastError)
+	// LLM 错误一律传播（此前仅在零产出时才算失败）。
+	//
+	// 旧行为的坑：LLM 中途报错但已有部分工具产出时（toolStartCount > 0），错误被
+	// 静默吞掉、节点当成功返回——残缺产出继续流向下游（DB/队列），比直接失败更糟：
+	// 流水线"跑完了"但结果不完整，且无任何日志可查。
+	//
+	// 传播语义：调 recordNodeError → 取消整个 pipeline → RunPipeline 返回错误。
+	// 部分产出的上下文（工具计数/文本长度）带进错误信息，方便定位。
+	if errorCount > 0 && lastError != nil {
+		return "", fmt.Errorf("agent %q: LLM error after %d tool calls, %d text chars: %w",
+			agentDef.Name, toolDoneCount, len(finalText), lastError)
 	}
 
 	return finalText, nil
@@ -1477,20 +1559,20 @@ func (p *pipeline) recordNodeError(nodeName string, err error) {
 	defer p.errMu.Unlock()
 
 	if p.firstError != nil {
-		log.Printf("[pipeline] recordNodeError: node=%s error=%v, but firstError already set, skipping", nodeName, err)
+		p.logger.Error(fmt.Sprintf("recordNodeError: node=%s error=%v, but firstError already set, skipping", nodeName, err))
 		return // 只记录第一个错误
 	}
 
 	p.firstError = fmt.Errorf("pipeline node %q failed: %w", nodeName, err)
-	log.Printf("[pipeline] FATAL: recordNodeError: node=%s, cancelling entire pipeline. error=%v", nodeName, err)
+	p.logger.Error(fmt.Sprintf("recordNodeError: node=%s, cancelling entire pipeline. error=%v", nodeName, err))
 
 	// 打印当前所有节点的状态
 	for name, node := range p.nodes {
-		log.Printf("[pipeline] recordNodeError: node=%s started=%v review=%v", name, node.started, node.Review)
+		p.logger.Error(fmt.Sprintf("recordNodeError: node=%s started=%v review=%v", name, node.started, node.Review))
 	}
 	p.nodesMu.Lock()
 	for name, done := range p.nodesDone {
-		log.Printf("[pipeline] recordNodeError: nodesDone[%s]=%v reviewDone[%s]=%v", name, done, name, p.reviewDone[name])
+		p.logger.Error(fmt.Sprintf("recordNodeError: nodesDone[%s]=%v reviewDone[%s]=%v", name, done, name, p.reviewDone[name]))
 	}
 	p.nodesMu.Unlock()
 
@@ -1535,7 +1617,7 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 	for {
 		event := waitForEvent()
 		if event.Done {
-			log.Printf("[pipeline] supervisor: all nodes done, running finalization")
+			p.logger.Info(fmt.Sprintf("supervisor: all nodes done, running finalization"))
 			// 收尾：让 supervisor 调用 progress_update(enrichment_complete) 通知前端。
 			// publish 已由各节点的 OnNodeComplete 回调处理。
 			finalApp := New(
@@ -1550,14 +1632,14 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 			finalApp.UseTools(sup.Tools...)
 			for ev := range finalApp.Run(ctx, "所有 DAG 节点已完成审核。请执行收尾操作：调用 progress_update(event_type=\"enrichment_complete\") 通知前端。") {
 				if ev.Type == EventToolDone {
-					log.Printf("[pipeline] supervisor: finalization tool=%s", ev.ToolName)
+					p.logger.Info(fmt.Sprintf("supervisor: finalization tool=%s", ev.ToolName))
 				}
 			}
-			log.Printf("[pipeline] supervisor: finalization complete, exiting")
+			p.logger.Info(fmt.Sprintf("supervisor: finalization complete, exiting"))
 			return
 		}
 
-		log.Printf("[pipeline] supervisor: reviewing node=%s, results=%d", event.NodeName, len(event.Results))
+		p.logger.Info(fmt.Sprintf("supervisor: reviewing node=%s, results=%d", event.NodeName, len(event.Results)))
 
 		// 保存当前审核的 items，供 reject_result 读取。
 		p.pendingMu.Lock()
@@ -1585,7 +1667,7 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 
 		for ev := range subApp.Run(ctx, userMsg) {
 			if ev.Type == EventToolDone && (ev.ToolName == "approve_result" || ev.ToolName == "reject_result") {
-				log.Printf("[pipeline] supervisor: tool=%s returned for node=%s", ev.ToolName, event.NodeName)
+				p.logger.Info(fmt.Sprintf("supervisor: tool=%s returned for node=%s", ev.ToolName, event.NodeName))
 			}
 		}
 
@@ -1598,14 +1680,14 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 		// 表现为流水线间歇性「莫名其妙停住」。改看 reviewSettled 后，只要 LLM 把参数
 		// 填错、或压根没调工具、或 LLM 调用本身报错，都会走到兜底放行。
 		if !p.takeReviewSettled(event.NodeName) {
-			log.Printf("[pipeline] supervisor: node=%s not settled (LLM 未给出有效处置), auto-approving", event.NodeName)
+			p.logger.Info(fmt.Sprintf("supervisor: node=%s not settled (LLM 未给出有效处置), auto-approving", event.NodeName))
 			// 兜底：自动 approve
 			node := p.nodes[event.NodeName]
 			if node != nil {
 				// Commit 所有事务。
 				for _, item := range event.Results {
 					if item.tx != nil {
-						log.Printf("[pipeline] supervisor: auto-approve committing transaction for node=%s", event.NodeName)
+						p.logger.Info(fmt.Sprintf("supervisor: auto-approve committing transaction for node=%s", event.NodeName))
 						item.tx.Commit()
 					}
 				}
@@ -1644,10 +1726,57 @@ func (a *App) UsePipeline(cfg PipelineConfig) {
 func (a *App) RunPipeline(ctx context.Context) error {
 	a.mu.RLock()
 	pl := a.pipeline
+	cfg := a.config
 	a.mu.RUnlock()
 
 	if pl == nil {
 		return fmt.Errorf("goagent: 未配置 pipeline，请先调用 UsePipeline()")
 	}
+
+	// 会话上下文注入（修复缺口：此前 pipeline 节点工具的
+	// Context.WorkDir/SessionID 恒为空）。workDir 经 WithSessionWorkDir
+	// 解析——未配置或 SessionID 为空时保持空串（旧行为，落进程 cwd）。
+	workDir := ""
+	if cfg.sessionWorkDirFn != nil && pl.cfg.SessionID != "" {
+		workDir = cfg.sessionWorkDirFn(pl.cfg.SessionID)
+	}
+	ctx = WithSessionContext(ctx, pl.cfg.SessionID, workDir)
+
+	// run 级沙箱会话：覆盖 supervisor + 全部节点 + 审核工具（都从
+	// runCtx 派生）。沙箱根非空时覆盖 workDir（优先级规则见 sandbox.go）。
+	if cfg.sandbox != nil {
+		sbSess, err := cfg.sandbox.Enter(ctx, pl.cfg.SessionID, cfg.sandboxPolicy)
+		if err != nil {
+			return fmt.Errorf("goagent: pipeline 沙箱初始化失败: %w", err)
+		}
+		defer func() {
+			if err := sbSess.Close(); err != nil {
+				a.logger.Warn("sandbox: 关闭 pipeline 沙箱会话失败", "error", err)
+			}
+		}()
+		ctx = WithSandboxSession(ctx, sbSess)
+		if r := sbSess.Root(); r != "" {
+			ctx = WithSessionContext(ctx, pl.cfg.SessionID, r)
+		}
+	}
+
 	return pl.Run(ctx)
+}
+
+// parentLogger 取 parent App 的 logger；无 parent（独立构造 pipeline）时用 slog.Default()。
+func parentLogger(parent *App) *slog.Logger {
+	if parent != nil && parent.logger != nil {
+		return parent.logger
+	}
+	return slog.Default()
+}
+
+// emitEvent 透出节点运行事件到 PipelineConfig.OnEvent（未设置时 no-op）。
+// 回调 panic 不应打断流水线（事件透出是旁路观测，不是主流程）。
+func (p *pipeline) emitEvent(node, typ, text, statusKey string) {
+	if p.cfg.OnEvent == nil {
+		return
+	}
+	defer func() { recover() }()
+	p.cfg.OnEvent(PipelineEvent{Node: node, Type: typ, Text: text, StatusKey: statusKey})
 }

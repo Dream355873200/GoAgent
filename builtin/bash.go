@@ -42,10 +42,15 @@ func executeBash(ctx context.Context, in BashInput) (string, error) {
 		return "", fmt.Errorf("command 不能为空")
 	}
 
-	// 设置超时。
+	// 设置超时。沙箱在场时策略 Timeout 是上限（min 语义）。
 	timeoutMs := in.Timeout
 	if timeoutMs <= 0 {
 		timeoutMs = 120_000 // 默认 2 分钟。
+	}
+	if sb := sandboxOf(ctx); sb != nil {
+		if capMs := int(sb.Policy().Timeout.Milliseconds()); capMs > 0 && capMs < timeoutMs {
+			timeoutMs = capMs
+		}
 	}
 	timeout := time.Duration(timeoutMs) * time.Millisecond
 
@@ -61,11 +66,25 @@ func executeBash(ctx context.Context, in BashInput) (string, error) {
 	}
 
 	cmd := exec.CommandContext(childCtx, shell, flag, in.Command)
-	// 会话工作目录：单进程多会话各自扎根不同目录（WithSessionWorkDir 注入）。
-	if wd := goagent.WorkDirFromContext(ctx); wd != "" {
+	// 工作目录优先级：沙箱 CommandDir > 会话工作目录（WithSessionWorkDir
+	// 注入）> 进程 cwd。沙箱根优先是刻意的——见 sandbox.go 的优先级规则。
+	sb := sandboxOf(ctx)
+	if sb != nil {
+		if d := sb.CommandDir(); d != "" {
+			cmd.Dir = d
+		}
+	} else if wd := goagent.WorkDirFromContext(ctx); wd != "" {
 		cmd.Dir = wd
 	}
-	output, err := cmd.CombinedOutput()
+
+	// Tier 2+ 预留：沙箱实现 ExecSession（如 Docker）时命令路由进沙箱执行。
+	var output []byte
+	var err error
+	if es, ok := sb.(goagent.ExecSession); ok {
+		output, err = es.Exec(childCtx, shell, []string{flag, in.Command}, cmd.Dir)
+	} else {
+		output, err = cmd.CombinedOutput()
+	}
 	result := strings.TrimRight(string(output), "\n\r ")
 
 	if childCtx.Err() == context.DeadlineExceeded {

@@ -115,6 +115,7 @@ func TestEditRequiresRead(t *testing.T) {
 	}
 	// Edit 后保持已读（同批后续 Edit 放行）；Read 若无外部变化则短路
 	//（文件内容 == 模型刚写的，无需重读）
+	ctx := goagent.Context{Context: context.Background(), SessionID: "s2"}
 	e := editExec(t)
 	if _, err := e(ctx, EditInput{FilePath: p, OldString: "xxx", NewString: "yyy"}); err != nil {
 		t.Fatalf("Edit 后同会话再 Edit 不应被拒: %v", err)

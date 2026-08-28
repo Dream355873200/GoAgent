@@ -41,6 +41,14 @@ func init() {
 		}
 	})
 
+	// 注册 Issue 工具提供函数（WithIssueTools() 启用；与 task 同存储）。
+	goagent.RegisterIssueToolsProvider(func(store task.StoreInterface) []goagent.NamedTool {
+		return []goagent.NamedTool{
+			{Name: "IssueReport", Def: IssueReportTool(store)},
+			{Name: "IssueResolve", Def: IssueResolveTool(store)},
+		}
+	})
+
 	// 注册 Plan 工具提供函数。
 	goagent.RegisterPlanToolsProvider(func(store plan.StoreInterface) []goagent.NamedTool {
 		return []goagent.NamedTool{
@@ -149,6 +157,38 @@ func workDirOf(ctx context.Context) string {
 	return goagent.WorkDirFromContext(ctx)
 }
 
+// sandboxOf 双路提取沙箱会话：优先 goagent.Context 结构体的 Sandbox 字段
+// （ToolDef.call 真实路径提升自 context value；手工构造 Context 的调用方
+// 直接设字段即可），否则从 context value 链提取。
+func sandboxOf(ctx context.Context) goagent.SandboxSession {
+	if gctx, ok := ctx.(goagent.Context); ok && gctx.Sandbox != nil {
+		return gctx.Sandbox
+	}
+	return goagent.SandboxFromContext(ctx)
+}
+
+// resolvePathChecked 沙箱感知的路径解析：沙箱在场时由沙箱根解析并做
+// 策略检查（违规返回 LLM 可读错误，模型可改用合法路径重试）；
+// 无沙箱时走原 resolvePath（行为不变）。
+func resolvePathChecked(ctx context.Context, p string, op goagent.FSOp) (string, error) {
+	if sb := sandboxOf(ctx); sb != nil {
+		return sb.ResolvePath(p, op)
+	}
+	return resolvePath(ctx, p), nil
+}
+
+// resolveRootChecked 沙箱感知的搜索根解析：沙箱在场时默认根 = 沙箱根，
+// 显式路径经沙箱策略检查；无沙箱时走原 resolveRoot。
+func resolveRootChecked(ctx context.Context, explicit string) (string, error) {
+	if sb := sandboxOf(ctx); sb != nil {
+		if explicit == "" {
+			return sb.Root(), nil
+		}
+		return sb.ResolvePath(explicit, goagent.OpRead)
+	}
+	return resolveRoot(ctx, explicit)
+}
+
 // ---------- Read ----------
 
 // ReadInput 是 Read 工具的输入。
@@ -168,7 +208,11 @@ func ReadTool() goagent.ToolDef {
 		Permission: goagent.ReadOnly,
 		Concurrent: true,
 		Execute: func(ctx goagent.Context, in ReadInput) (string, error) {
-			in.FilePath = resolvePath(ctx, in.FilePath)
+			p, err := resolvePathChecked(ctx, in.FilePath, goagent.OpRead)
+			if err != nil {
+				return "", err
+			}
+			in.FilePath = p
 			return executeRead(ctx, in)
 		},
 	}
@@ -291,7 +335,11 @@ func WriteTool() goagent.ToolDef {
 		Input:      WriteInput{},
 		Permission: goagent.Normal,
 		Execute: func(ctx goagent.Context, in WriteInput) (string, error) {
-			in.FilePath = resolvePath(ctx, in.FilePath)
+			p, err := resolvePathChecked(ctx, in.FilePath, goagent.OpWrite)
+			if err != nil {
+				return "", err
+			}
+			in.FilePath = p
 			return executeWrite(ctx, in)
 		},
 	}
@@ -344,7 +392,11 @@ func EditTool() goagent.ToolDef {
 		Input:      EditInput{},
 		Permission: goagent.Normal,
 		Execute: func(ctx goagent.Context, in EditInput) (string, error) {
-			in.FilePath = resolvePath(ctx, in.FilePath)
+			p, err := resolvePathChecked(ctx, in.FilePath, goagent.OpWrite)
+			if err != nil {
+				return "", err
+			}
+			in.FilePath = p
 			return executeEdit(ctx, in)
 		},
 	}
@@ -446,9 +498,9 @@ func executeGlob(ctx goagent.Context, in GlobInput) (string, error) {
 		return "", fmt.Errorf("pattern 不能为空")
 	}
 
-	root, err := resolveRoot(ctx, in.Path)
+	root, err := resolveRootChecked(ctx, in.Path)
 	if err != nil {
-		return "", fmt.Errorf("无法获取当前目录: %w", err)
+		return "", err
 	}
 
 	// 处理 ** 递归模式。
@@ -588,9 +640,9 @@ func executeGrep(ctx context.Context, in GrepInput) (string, error) {
 		return "", fmt.Errorf("pattern 不能为空")
 	}
 
-	searchPath, err := resolveRoot(ctx, in.Path)
+	searchPath, err := resolveRootChecked(ctx, in.Path)
 	if err != nil {
-		return "", fmt.Errorf("无法获取当前目录: %w", err)
+		return "", err
 	}
 
 	// 构建 grep/rg 命令参数。优先用 rg（如果可用）。

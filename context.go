@@ -16,6 +16,12 @@ type Context struct {
 	// WorkDir is the current working directory.
 	WorkDir string
 
+	// Sandbox 当前运行的沙箱会话（nil = 无沙箱，默认）。
+	// 由 WithSandbox 启用、App.run / RunPipeline / 节点级覆盖注入。
+	// 内置文件/Bash 工具据此做路径重写与策略检查；自定义工具可直接
+	// 读取（如需要感知自己是否在沙箱内）。见 sandbox.go。
+	Sandbox SandboxSession
+
 	// Logger is a structured logger for the tool.
 	Logger *slog.Logger
 
@@ -38,6 +44,7 @@ type sessCtxKey int
 const (
 	ctxKeySessionID sessCtxKey = iota
 	ctxKeyWorkDir
+	ctxKeySandbox
 )
 
 // WithSessionContext 把会话标识与工作目录注入 context。
@@ -73,6 +80,25 @@ func WorkDirFromContext(ctx context.Context) string {
 	return ""
 }
 
+// WithSandboxSession 把沙箱会话注入 context。
+// App.run（WithSandbox 配置时）、RunPipeline（run 级）与节点级覆盖
+// 自动调用；之后经 newContextFromStd 透出到工具的 Context.Sandbox 字段。
+func WithSandboxSession(ctx context.Context, sb SandboxSession) context.Context {
+	return context.WithValue(ctx, ctxKeySandbox, sb)
+}
+
+// SandboxFromContext 从 context 提取沙箱会话（未注入返回 nil）。
+// nil context 安全。
+func SandboxFromContext(ctx context.Context) SandboxSession {
+	if ctx == nil {
+		return nil
+	}
+	if v, ok := ctx.Value(ctxKeySandbox).(SandboxSession); ok {
+		return v
+	}
+	return nil
+}
+
 // newContextFromStd wraps a standard context.Context into a goagent.Context.
 // Used internally when we only have a plain context (e.g., from middleware adapter).
 // 会话值（SessionID/WorkDir）从 context value 透出——由 App.run 经
@@ -82,6 +108,7 @@ func newContextFromStd(ctx context.Context) Context {
 		Context:   ctx,
 		SessionID: SessionIDFromContext(ctx),
 		WorkDir:   WorkDirFromContext(ctx),
+		Sandbox:   SandboxFromContext(ctx),
 		Logger:    slog.Default(),
 		Progress:  func(string) {},
 		Store:     func(string, any) {},
