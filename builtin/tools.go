@@ -317,7 +317,8 @@ func executeWrite(ctx goagent.Context, in WriteInput) (string, error) {
 	if err := os.WriteFile(in.FilePath, []byte(in.Content), 0644); err != nil {
 		return "", fmt.Errorf("写入文件失败: %w", err)
 	}
-	invalidate(ctx.SessionID, in.FilePath)
+	// 写后仍标记已读（内容=模型刚写的，它有最新视图；同批后续 Edit 放行）
+	markWritten(ctx.SessionID, in.FilePath, in.Content)
 
 	lines := strings.Count(in.Content, "\n") + 1
 	return fmt.Sprintf("已写入 %s (%d 行, %d 字节)", in.FilePath, lines, len(in.Content)), nil
@@ -392,7 +393,8 @@ func executeEdit(ctx goagent.Context, in EditInput) (string, error) {
 	if err := os.WriteFile(in.FilePath, []byte(newText), 0644); err != nil {
 		return "", fmt.Errorf("写入文件失败: %w", err)
 	}
-	invalidate(ctx.SessionID, in.FilePath)
+	// 改后仍标记已读（同批后续 Edit 放行——模型知道刚改的内容）
+	markWritten(ctx.SessionID, in.FilePath, newText)
 
 	return fmt.Sprintf("已替换 %d 处匹配 (%s)", count, in.FilePath), nil
 }

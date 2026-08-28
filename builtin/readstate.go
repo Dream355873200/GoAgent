@@ -57,11 +57,13 @@ func unchangedSinceRead(sessionID, path, currentContent string) bool {
 	return ok && h == hashOf(currentContent)
 }
 
-// 写操作后使指纹失效（Edit/Write 改了文件，下次 Read 不能短路）。
-func invalidate(sessionID, path string) {
-	reads.mu.Lock()
-	defer reads.mu.Unlock()
-	delete(reads.files[sessionID], path)
+// markWritten 写操作（Edit/Write）后更新指纹为新内容。
+// 关键语义（对齐 Claude Code）：写完仍然是「已读」——模型刚写的内容
+// 它当然有最新视图，同批的后续 Edit 不该被误判为「未读」。
+// 指纹更新为写入后的内容，所以下次 Read 若无外部改动会短路——
+// 这也是对的：文件内容 == 模型刚写的，无需重读。
+func markWritten(sessionID, path, newContent string) {
+	markRead(sessionID, path, newContent)
 }
 
 func hashOf(content string) string {

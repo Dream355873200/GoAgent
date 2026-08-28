@@ -113,9 +113,21 @@ func TestEditRequiresRead(t *testing.T) {
 	if err != nil || !strings.Contains(out, "已替换") {
 		t.Fatalf("读后 Edit 应成功: %v %q", err, out)
 	}
-	// Edit 使指纹失效 → 下次 Read 不短路
-	if out2, _ := r(goagent.Context{Context: context.Background(), SessionID: "s2"}, ReadInput{FilePath: p}); strings.Contains(out2, "未修改") {
-		t.Errorf("Edit 后 Read 不应短路: %q", out2)
+	// Edit 后保持已读（同批后续 Edit 放行）；Read 若无外部变化则短路
+	//（文件内容 == 模型刚写的，无需重读）
+	e := editExec(t)
+	if _, err := e(ctx, EditInput{FilePath: p, OldString: "xxx", NewString: "yyy"}); err != nil {
+		t.Fatalf("Edit 后同会话再 Edit 不应被拒: %v", err)
+	}
+	if out2, _ := r(ctx, ReadInput{FilePath: p}); !strings.Contains(out2, "未修改") {
+		t.Errorf("Edit 后无外部改动时 Read 应短路: %q", out2)
+	}
+	// 外部改动（非本会话工具写的）→ 不短路
+	if err := os.WriteFile(p, []byte("externally changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out3, _ := r(ctx, ReadInput{FilePath: p}); strings.Contains(out3, "未修改") {
+		t.Errorf("外部改动后 Read 不应短路: %q", out3)
 	}
 }
 

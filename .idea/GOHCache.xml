@@ -1005,6 +1005,7 @@
         <entry key="RateLimitError">
           <value>
             <set>
+              <option value="file://$PROJECT_DIR$/provider/provider.go" />
               <option value="file://$PROJECT_DIR$/retry/retry.go" />
             </set>
           </value>
@@ -1198,6 +1199,20 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/compaction/session_memory.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SessionStore">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/task/sessionstore.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="SessionStoreConfig">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/task/sessionstore.go" />
             </set>
           </value>
         </entry>
@@ -1864,6 +1879,13 @@
             </set>
           </value>
         </entry>
+        <entry key="chatContentPart">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="chatFunction">
           <value>
             <set>
@@ -1872,6 +1894,13 @@
           </value>
         </entry>
         <entry key="chatFunctionCall">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="chatImageURL">
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/provider/openai/openai.go" />
@@ -2005,6 +2034,13 @@
             </set>
           </value>
         </entry>
+        <entry key="gitCommitInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/git.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="healthResponse">
           <value>
             <set>
@@ -2030,6 +2066,20 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="issueReportInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/issue.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="issueResolveInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/issue.go" />
             </set>
           </value>
         </entry>
@@ -2068,6 +2118,13 @@
             </set>
           </value>
         </entry>
+        <entry key="mockProvider">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/http_parallel_test.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="permRuleEntry">
           <value>
             <set>
@@ -2079,6 +2136,13 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/permission_handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="persistingStore">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/task/sessionstore.go" />
             </set>
           </value>
         </entry>
@@ -2117,6 +2181,13 @@
             </set>
           </value>
         </entry>
+        <entry key="readState">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/builtin/readstate.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="registeredTool">
           <value>
             <set>
@@ -2152,10 +2223,24 @@
             </set>
           </value>
         </entry>
+        <entry key="sessionFileState">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/task/sessionstore.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="sessionMemHookAdapter">
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/goagent.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="sessionPartition">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/task/sessionstore.go" />
             </set>
           </value>
         </entry>
@@ -2574,12 +2659,58 @@
         <entry key="file://$PROJECT_DIR$/builtin/bash.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775467245301" />
+              <option name="lastModified" value="1787831666038" />
               <option name="schema">
                 <list>
                   <option value="BashInput" />
                 </list>
               </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/filetools_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787833552572" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/git.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787829950701" />
+              <option name="schema">
+                <list>
+                  <option value="gitCommitInput" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/git_commit_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787829920185" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/issue.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787829824368" />
+              <option name="schema">
+                <list>
+                  <option value="issueReportInput" />
+                  <option value="issueResolveInput" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/issue_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787829490376" />
             </ScannedPath>
           </value>
         </entry>
@@ -2593,7 +2724,7 @@
         <entry key="file://$PROJECT_DIR$/builtin/management.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240290" />
+              <option name="lastModified" value="1787829458602" />
               <option name="schema">
                 <list>
                   <option value="ManagementDeps" />
@@ -2640,10 +2771,36 @@
             </ScannedPath>
           </value>
         </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/readstate.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787833293853" />
+              <option name="schema">
+                <list>
+                  <option value="readState" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/skill_list_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787828600196" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/task_routing_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787826686102" />
+            </ScannedPath>
+          </value>
+        </entry>
         <entry key="file://$PROJECT_DIR$/builtin/tools.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775471498525" />
+              <option name="lastModified" value="1787833533173" />
               <option name="schema">
                 <list>
                   <option value="ReadInput" />
@@ -2854,12 +3011,19 @@
         <entry key="file://$PROJECT_DIR$/context.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240328" />
+              <option name="lastModified" value="1787832339599" />
               <option name="schema">
                 <list>
                   <option value="Context" />
                 </list>
               </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/context_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787825801829" />
             </ScannedPath>
           </value>
         </entry>
@@ -2920,7 +3084,7 @@
         <entry key="file://$PROJECT_DIR$/event.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240337" />
+              <option name="lastModified" value="1787832591394" />
               <option name="schema">
                 <list>
                   <option value="Event" />
@@ -2989,7 +3153,7 @@
         <entry key="file://$PROJECT_DIR$/goagent.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786965982624" />
+              <option name="lastModified" value="1787832812360" />
               <option name="schema">
                 <list>
                   <option value="App" />
@@ -3051,7 +3215,7 @@
         <entry key="file://$PROJECT_DIR$/http.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786966273156" />
+              <option name="lastModified" value="1787832871446" />
               <option name="schema">
                 <list>
                   <option value="sseWriter" />
@@ -3073,6 +3237,18 @@
             </ScannedPath>
           </value>
         </entry>
+        <entry key="file://$PROJECT_DIR$/http_parallel_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787826095528" />
+              <option name="schema">
+                <list>
+                  <option value="mockProvider" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
         <entry key="file://$PROJECT_DIR$/inferred.go">
           <value>
             <ScannedPath>
@@ -3083,7 +3259,7 @@
         <entry key="file://$PROJECT_DIR$/internal/loop/loop.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786966274941" />
+              <option name="lastModified" value="1787831397291" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -3329,7 +3505,7 @@
         <entry key="file://$PROJECT_DIR$/options.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786965982539" />
+              <option name="lastModified" value="1787825771155" />
               <option name="schema">
                 <list>
                   <option value="appConfig" />
@@ -3574,13 +3750,15 @@
         <entry key="file://$PROJECT_DIR$/provider/openai/openai.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775492304897" />
+              <option name="lastModified" value="1787831151995" />
               <option name="schema">
                 <list>
                   <option value="Config" />
                   <option value="Provider" />
                   <option value="chatRequest" />
                   <option value="chatMessage" />
+                  <option value="chatContentPart" />
+                  <option value="chatImageURL" />
                   <option value="chatTool" />
                   <option value="chatFunction" />
                   <option value="chatToolCall" />
@@ -3602,7 +3780,7 @@
         <entry key="file://$PROJECT_DIR$/provider/provider.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240423" />
+              <option name="lastModified" value="1787831203780" />
               <option name="schema">
                 <list>
                   <option value="Request" />
@@ -3617,6 +3795,7 @@
                   <option value="PromptTooLongError" />
                   <option value="MaxOutputTokensError" />
                   <option value="OverloadError" />
+                  <option value="RateLimitError" />
                 </list>
               </option>
             </ScannedPath>
@@ -3700,7 +3879,7 @@
         <entry key="file://$PROJECT_DIR$/session/store.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240435" />
+              <option name="lastModified" value="1787826506197" />
               <option name="schema">
                 <list>
                   <option value="SessionSummary" />
@@ -3765,6 +3944,29 @@
             </ScannedPath>
           </value>
         </entry>
+        <entry key="file://$PROJECT_DIR$/task/sessionstore.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787826686103" />
+              <option name="schema">
+                <list>
+                  <option value="SessionStoreConfig" />
+                  <option value="sessionPartition" />
+                  <option value="SessionStore" />
+                  <option value="sessionFileState" />
+                  <option value="persistingStore" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/task/sessionstore_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787826686103" />
+            </ScannedPath>
+          </value>
+        </entry>
         <entry key="file://$PROJECT_DIR$/task/store.go">
           <value>
             <ScannedPath>
@@ -3775,7 +3977,7 @@
         <entry key="file://$PROJECT_DIR$/task/task.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240445" />
+              <option name="lastModified" value="1787829540078" />
               <option name="schema">
                 <list>
                   <option value="Task" />
@@ -4057,8 +4259,10 @@
         <entry key="cache_control" value="CacheControl" />
         <entry key="capabilities" value="Capabilities" />
         <entry key="chat_choice" value="chatChoice" />
+        <entry key="chat_content_part" value="chatContentPart" />
         <entry key="chat_function" value="chatFunction" />
         <entry key="chat_function_call" value="chatFunctionCall" />
+        <entry key="chat_image_url" value="chatImageURL" />
         <entry key="chat_message" value="chatMessage" />
         <entry key="chat_request" value="chatRequest" />
         <entry key="chat_response" value="chatResponse" />
@@ -4117,6 +4321,7 @@
         <entry key="framework_tool" value="FrameworkTool" />
         <entry key="func_hook" value="FuncHook" />
         <entry key="gate" value="Gate" />
+        <entry key="git_commit_input" value="gitCommitInput" />
         <entry key="glob_input" value="GlobInput" />
         <entry key="grep_input" value="GrepInput" />
         <entry key="handler" value="Handler" />
@@ -4131,6 +4336,8 @@
         <entry key="internal_plan_confirm_request" value="InternalPlanConfirmRequest" />
         <entry key="interrupt_handler" value="InterruptHandler" />
         <entry key="interrupt_request" value="interruptRequest" />
+        <entry key="issue_report_input" value="issueReportInput" />
+        <entry key="issue_resolve_input" value="issueResolveInput" />
         <entry key="job" value="Job" />
         <entry key="list_summary" value="ListSummary" />
         <entry key="loop" value="Loop" />
@@ -4153,7 +4360,7 @@
         <entry key="middleware_adapter" value="middlewareAdapter" />
         <entry key="middleware_config" value="middlewareConfig" />
         <entry key="middleware_with_filter" value="MiddlewareWithFilter" />
-        <entry key="mock_provider" value="MockProvider" />
+        <entry key="mock_provider" value="mockProvider" />
         <entry key="mock_response" value="MockResponse" />
         <entry key="mock_tool_call" value="MockToolCall" />
         <entry key="model" value="Model" />
@@ -4176,6 +4383,7 @@
         <entry key="permission_response" value="permissionResponse" />
         <entry key="permission_result" value="PermissionResult" />
         <entry key="permission_rules" value="PermissionRules" />
+        <entry key="persisting_store" value="persistingStore" />
         <entry key="pipeline" value="pipeline" />
         <entry key="pipeline_agent_def" value="PipelineAgentDef" />
         <entry key="pipeline_config" value="PipelineConfig" />
@@ -4201,6 +4409,7 @@
         <entry key="query_tracker" value="QueryTracker" />
         <entry key="rate_limit_error" value="RateLimitError" />
         <entry key="read_input" value="ReadInput" />
+        <entry key="read_state" value="readState" />
         <entry key="record" value="Record" />
         <entry key="registered_tool" value="registeredTool" />
         <entry key="registry" value="Registry" />
@@ -4228,10 +4437,14 @@
         <entry key="server_error" value="ServerError" />
         <entry key="server_info" value="ServerInfo" />
         <entry key="session" value="Session" />
+        <entry key="session_file_state" value="sessionFileState" />
         <entry key="session_info" value="SessionInfo" />
         <entry key="session_mem_hook_adapter" value="sessionMemHookAdapter" />
         <entry key="session_memory" value="SessionMemory" />
         <entry key="session_memory_config" value="SessionMemoryConfig" />
+        <entry key="session_partition" value="sessionPartition" />
+        <entry key="session_store" value="SessionStore" />
+        <entry key="session_store_config" value="SessionStoreConfig" />
         <entry key="session_summary" value="SessionSummary" />
         <entry key="skill" value="Skill" />
         <entry key="skill_input" value="skillInput" />
@@ -4340,6 +4553,6 @@
         <entry key="yolo_result" value="YoloResult" />
       </map>
     </option>
-    <option name="lastTimeChecked" value="1787744870981" />
+    <option name="lastTimeChecked" value="1787910397439" />
   </component>
 </project>
