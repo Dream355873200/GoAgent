@@ -233,6 +233,7 @@ goagent.WithAnthropic()
 | `WithBgTaskTools()` | 启用后台任务工具（TaskStop/TaskOutput） | 不启用 |
 | `WithIssueTools()` | 启用问题记录工具（IssueReport/IssueResolve，测试驱动场景） | 不启用 |
 | `WithLogger(l)` | 注入库内日志（pipeline 轨迹/节点错误现场），标准 `log/slog` | `slog.Default()` |
+| `WithDebugMode()` | 测试模式：loop 细节日志（逐轮请求参数、工具调用明细）额外输出；关键事件（限流/切后备/错误）默认就有 | 不启用 |
 | `WithToolKits(kits...)` | 按领域注册工具包（FileKit、ShellKit 等） | 无 |
 | `WithMaxTurns(n)` | 最大循环次数 | `100` |
 | `WithMaxConcurrency(n)` | 最大并发工具数 | `10` |
@@ -623,6 +624,33 @@ goagent/
 | v0.8 | 嵌入者体验：WithLogger 日志注入（slog）、pipeline 错误严格传播、PipelineConfig.OnEvent 事件透出、WithIssueTools 独立 Option、nil provider 守卫、swarm 清理 | ✅ 完成 |
 
 详细架构说明见 [docs/architecture.md](docs/architecture.md) 和 [docs/mechanisms.md](docs/mechanisms.md)。
+
+---
+
+## TODO 执行顺序（内容全保留，只定开工次序）
+
+不排日期——顺序的意义是「开工时选最上面的」，不是承诺。逻辑：
+第一梯队是 AnimeCreater 在等的真实需求；第二梯队是自迭代愿景的
+最短路径；第三梯队是真空需求——真动工前，前两梯队会自然长出对
+它们的需求（或证明不需要），顺序本身就是需求过滤器。
+
+```
+第一梯队（AnimeCreater 直接收益，全偏小）
+  ① EventInterrupted 一等事件（~20 行）
+  ② LLM 调用级 observer 钩子 + ctx 三优化
+  ③ interrupt 挂起/恢复（进程内 + 挂起点 checkpoint）
+  ④ RAG 四件套（Document + 窄接口 + WithRetrieval + 工具双形态）
+
+第二梯队（benchmark 自迭代的地基链）
+  ⑤ benchmark 评测闭环（observer 增强后正好动工）
+  ⑥ L4-α goja 执行器（自迭代需要沙箱代码执行）
+
+第三梯队（等前两梯队消化后再评估，届时按真实需求密度重排）
+  ⑦ AgentTool 转接头 / Plan-Execute / 路由节点 / Supervisor
+  ⑧ RAG Fusion 组合 / 装配期类型校验 / Agent Team / Registry
+     / L2 重规划 / L3 自建类型 / L4-β / L5 / 沙箱 Tier 2-3
+     / 其余全部（见下方各 TODO 详节）
+```
 
 ---
 
@@ -1149,6 +1177,231 @@ agent 修改 prompt / 工具 / 编排后，「效果变好了没有」目前只�
 
 迭代产物全部落版本库（prompt diff / benchmark diff / 运行报告），配合
 GitCommit 工具形成可回滚的改进历史——每一轮"为什么这么改"都有据可查。
+
+---
+
+## TODO: 与同类框架的差异定位及补缺（对照 eino 盘点，2026-08）
+
+### 定位：eino 造引擎，GoAgent 造整车
+
+eino（cloudwego）是「LLM 应用编排框架」——强在通用 Graph 编排、RAG 组件、
+组件级 callbacks 切面，偏 SDK，服务化自己搭。GoAgent 是「Claude-Code 式
+agent 运行时」——沙箱/权限/压缩/计费/服务化内建，开箱即用度高。
+两者是路线差异不是优劣差异；全自研无 fork（无许可证/归属争议）。
+
+**GoAgent 已领先的面**（eino 无对应）：沙箱体系（Tier 0-3）、细粒度权限
++ Approver 审批、上下文压缩一等公民（compaction + Circuit Breaker）、
+成本/预算/计费、HTTP/SSE + WebSocket + TUI + CLI 落地形态、对标
+Claude Code 的文件工具细节、MCP/cron/后台任务/会话记忆运行时生态、
+429 语义区分 + 倒计时状态行重试、**agent 自建 DAG（dynpipeline）**——
+eino 的组件是编译期插的，LLM 没有手；我们的工具是运行时按名选的，
+LLM 现场建图 + 校验矩阵保质量。
+
+### graph vs pipeline：都是 DAG，范式不同
+
+eino 的 graph 节点是**函数组件**（Retriever/Embedder/ChatModel），拼的是
+「数据变换网」——RxJS/Spark 的精神同类；我们的 pipeline 节点是 **agent**
+（带 Instruction/Tools 的 LLM 循环），拼的是「任务流水线」——Temporal/
+Camunda 的精神同类。关键分野表：
+
+| 维度 | eino graph | GoAgent pipeline |
+|------|-----------|------------------|
+| 节点是什么 | 函数组件（数据→数据） | agent（任务→自主执行） |
+| 连线语义 | 类型化传值（编译期检查） | 消息队列派活（运行时流动） |
+| 分支位置 | 图结构（AddBranch，图上可见） | agent 行为内部（LLM 判断） |
+| 循环 | Pregel 有环迭代（一等支持） | 严格无环；重试走 Review+MaxRetries |
+| 校验时机 | 编译期（类型系统） | 装配期（LLM 可读校验矩阵——因为拼图人常是 LLM） |
+| 心智 | 搭数据处理管道 | 设计车间流程 |
+
+LangGraph 三分格局入档：eino graph 编排**数据变换**（组件网）、
+LangGraph 编排**控制流**（agent ⇄ tools 状态机 + checkpoint + 
+human-in-the-loop，主场景=长时间运行的有状态 agent）、我们编排
+**任务依赖**（agent 工序）。LangGraph 最核心的 checkpoint 版
+interrupt/resume 正是我们补缺清单 #2。
+
+**装配期类型校验（可补，eino「编译期验证」的等价物）**：eino 靠
+节点输入输出的 Go 类型 + 泛型让接线错误在 build/compile 时暴露
+（没烧 LLM 的钱就发现接错）。我们的节点间是队列传 string/any，
+结构校验有（环/悬空/工具存在性）但类型校验没有——上游推的消息
+下游能不能解析要到运行时才知道。可行路径：PipelineNode 已有
+MessageType any 字段，升级为装配期一致性校验（上游 MessageType 与
+下游 worker 期望解析的类型比对，不一致拒绝装配），成本一个校验
+函数。与 L3 动态类型的 schema 校验 TODO 汇流。
+
+**判断公式：拓扑是代码（编译期定、只有开发者看）→ 函数调用就够；
+拓扑是数据（运行期定、要持久化/分享/热改）→ 才需要图结构。**
+开发者拼自己的三步静态管道时，graph API 是过度设计（三行函数调用
+可调试性更好）；graph 的真实价值在「组件货架 + 编译期类型保障」——
+那服务的是 LangChain 式 integration 生态路线，我们不走。
+
+### 动态拓扑三场景分解（为什么不补 graph 动态性）
+
+「运行时改拓扑」经常被混为一谈，拆开后各有归属：
+
+| 场景 | 需要动态吗 | 归属 |
+|------|----------|------|
+| A. 数据分支（classifier 路由到不同分支） | ❌ 静态图条件边就够 | eino AddBranch；我们的 agent 工具调用天然覆盖 |
+| B. LLM 运行中建图 | ✅ | **我们已有且领先**（dynpipeline L1；质量保证=校验矩阵压缩判断空间：结构校验+能力收敛+可读错误自纠+拆分护栏） |
+| C. 热重载/灰度/多租户改管道 | ✅ 唯一真需求 | 基础设施职责（Envoy/网关层）；库内做=发明 service mesh 的一角 |
+
+结论：eino 的 graph 动态性实际只覆盖 A（最不需要动态的那种）；B 我们
+领先；C 不该任何库做。「补 graph」的理由经逐场景拆解后不成立。
+
+### 补缺清单（按重要性排）
+
+1. **RAG 能力层（高，双形态四件套）**：AI 应用半数场景是 RAG，当前零覆盖。
+   形态定位（讨论定稿）——RAG 在应用里是**嵌入管道为主、agent 工具为辅**：
+
+   ```
+   共享底座：Document 类型（Content+Metadata 贯穿全程，审计引用来源）
+            + 窄接口四兄弟（Retrieve(ctx,q)/EmbedStrings/Store/Load，
+              对齐 eino 接口密度——每个一两个方法，没人会实现错）
+       ├─ 形态 1（主）：WithRetrieval 嵌入管道——App.run 前置固定流程，
+       │   retrieve→rerank→拼 prompt，agent 无感知。可靠性/成本可控/
+       │   可独立 A/B 调优——客服/文档问答等生产 RAG 的主流形态
+       │   （含 ShouldRetrieve 谓词：闲聊跳过检索省成本）
+       └─ 形态 2（辅）：retrieve 注册为 InferTool——agent 运行时自己
+           决定查不查/查几轮/换什么词再查。研究型任务、多跳问题、
+           检索是与代码/文件工具同级的现场决策时用
+   ```
+
+   - **组合模式为设计约定**：多路检索（向量+BM25+图谱融合）走
+     FusionRetriever 组合（Children []Retriever + Merge 策略，使用者
+     普通 Go 代码）——框架不穷举组合，拓扑自由度从框架转移给使用者。
+     开发期组合用 Go 代码就是最优拓扑语言（类型检查/可调试/IDE 全在）
+   - **分块策略独立**（Loader/Transformer 解耦——RAG 工程中效果差异
+     最大、最需独立实验的解耦点）
+   - **边界声明**（诚实）：WithRetrieval 单链覆盖单路前置检索；分叉/
+     多路走组合模式与谓词；迭代检索/中段检索走 agent 工具形态或
+     选用 graph 系框架。运行时动态改检索管道（热切换）= 基础设施职责
+2. **interrupt/resume 双路径 + 中断一等事件（高，讨论定稿）**：
+   对标 LangGraph 学零件不学产品（不要通用时间旅行/任意点回放，
+   只要「挂起点恢复」）。现状盘点：终止能力已全——POST /interrupt
+   → InterruptHandler 按会话路由 cancel → loop 打断 → 被中断工具
+   写回「工具执行被用户中断」tool_result（消息序列完整，同会话可
+   续聊）→ 历史落盘保留；SSE 断开≠取消（后台 ctx 解耦，网络闪断
+   不误杀）。真正缺的是三件：
+   - **EventInterrupted 一等事件（小，~20 行）**：现在用户主动终止走
+     EvtError(context.Canceled)，与 provider 超时/工具崩溃混在同一
+     通道——前端要靠 errors.Is 自己判。loop 的 cancel 检查处
+     （loop.go:303/:612）识别 Canceled 时发独立事件类型，HTTP 层
+     映射 {"type":"interrupted"} SSE 事件，前端直接渲染「已停止」
+     而非报错样式
+   - **进程内挂起/恢复**：goroutine 挂起（非取消），状态活在内存，
+     审批到达唤醒续跑——复用 429 等待的挂起机制地基，服务秒级~
+     分钟级审批（pipeline 审批三情况的「宽射程工具异步审批」
+     逃生舱的直接前置）
+   - **挂起点 checkpoint 落盘**：审批周期常超进程生命周期（部署重启/
+     崩溃/假期审批——挂三天的 goroutine 会被重启蒸发）。成本核算
+     后比想象便宜：消息历史落盘已存在（loop FinalMessages 逐条
+     即时写 JSONL）+ RunWithHistory 本就是「历史喂回续跑」——
+     checkpoint = 已有的历史 + 新增的「执行位置 + 挂起原因」小块
+     记录；resume = RunWithHistory + 从挂起点继续未完成那步。
+     与已有会话恢复哲学同构（状态归业务，循环归框架）
+   - 不做：LangGraph 式任意节点断点/时间旅行/状态 diff 回放（框架
+     化路线产物）；三语义彻底分开——终止（立即杀，已有）/ 挂起
+     （等人）/ 恢复（断点续跑）
+3. **agent 模式库（中，按价值拆开）**：SubAgent 是机制，缺的是配方。
+   逐个判断（不全盘对标 eino prebuilt）：
+   - **Plan-Execute：做**——零件已有 70%（plan/ 包 + MessageFunc +
+     SubAgent），模式价值被广泛验证（计划是一等执行单元、可改道）
+   - **AgentTool 转接头：顺手做**——把 agent 循环包成 ToolDef.Execute
+     的薄适配器（~百行），解锁「agent 进 pipeline 当普通节点/进工具箱/
+     进路由表」的组合自由度。与 SubAgent 同一机制的两个朝向：
+     SubAgent 是运行时委派行为（LLM 决定叫谁），AgentTool 是构造时
+     组合零件（开发者钉进位置）
+   - **Supervisor：缓，按 eino 控制流模式做**（见下方「Supervisor 设计」）
+   - **DeepAgent：不做**——SubAgent 系统就是它，加壳反而困惑
+4. **LLM 调用级 observer 钩子（中，覆盖面修正）**：对标审计后真实差距
+   只有两处——① LLM 调用本身无切面（只有 OnTokenUsage 摘要，没有
+   OnLLMStart/Done/Error 的每次调用入参/出参/耗时，做 tracing 的宿主
+   视角里模型调用是黑洞）；② 钩子成对性无结构保证（OnToolStart/Done
+   靠宿主自己配对——ctx span 关联已列入 ctx 三优化）。补齐即与 eino
+   打平，且业务钩子面（权限/压缩/会话/成本）比它宽。工具调用级钩子
+   我们已有，无需补
+5. **通用 Graph 编排（不做，论证已闭环）**：见上方「graph vs pipeline」
+   与「动态拓扑三场景」——不是做不了，是其核心价值（组件货架+编译期
+   类型检查）服务我们不走的生态路线
+
+### Supervisor 设计（缓做，按 eino 控制流模式，讨论定稿）
+
+三个概念的边界先立住：**SubAgent 是委派行为（LLM 现场决定叫谁）、
+AgentTool 是组合零件（开发者构造时钉位置）、Supervisor 是调度协议
+（路由表+移交语义+调度循环的打包）**——同一机制（agent 调 agent）
+的三种方向盘。
+
+**模式选择（重要决策记录）**：移交语义选 **eino 式控制流**，不选队列
+数据流。理由：子 agent 间协作的主流形态是「接力推进同一件事」——
+控制流移交天然保持上下文连续（B 在 A 的完整对话历史上继续），队列
+数据流表达这种语义要靠「上下文摘要 baggage」打补丁，补丁的存在本身
+说明模型选错了（v1 设计曾走队列方案，评审后废弃——记录：为架构
+统一牺牲语义正确性是框架设计的经典陷阱）。队列消息流只在 pipeline
+节点间保留（那是任务分发的合法主场）。
+
+设计要点（按控制流模式）：
+
+1. **transfer = 对话控制权移交**：子 agent 调 transfer_to_agent(target)
+   时不「返回结果给主 agent」，而是把当前对话线程（完整消息历史 +
+   自己的身份说明）交给目标 agent，目标 agent 在此上下文基础上继续。
+   实现落点：loop 的消息列表本来就是载体——移交 = 消息历史交接 +
+   切换 system prompt（身份）+ 继续循环。对齐 eino 的
+   TransferToAgentAction 但走我们已有的消息结构
+2. **路由表拼 prompt**：候选 agent 清单（名字+Description）自动拼进
+   supervisor/子 agent 的 system prompt——LLM 看得见才用得了（与
+   create_pipeline 工具清单内嵌同一手法）
+3. **质量与安全边界**：
+   - 结构校验：目标必须在候选清单内，否则 LLM 可读错误 + 附可用清单
+   - 防环：hop 计数，超过 N 跳强制收敛（「请直接完成任务」）
+   - 无兄弟/候选集空 → transfer 工具不注册（能力不存在 = 不会试图用，
+     与沙箱哲学同构）
+   - LLM 怎么知道自己「要」转 → 不「知道」而是「判断」：职责描述 +
+     候选对比 + 打回 guidance 兜底。判断是 LLM 的职责，框架只负责
+     把判断需要的信息摆到眼前
+4. **与 pipeline 的关系**：Supervisor 配方 = 路由 agent（LLM 决定移交）
+   + 候选子 agent 池，是 SubAgent 机制上的协议打包；pipeline 节点间
+   的任务流动仍走队列（两套语义各归其位：协作走控制流，分发走数据流）
+5. **路由节点（RouterNode，与 transfer 互补而非替代）**：pipeline 内
+   的数据流路由——一个轻量 agent 节点，读入任务 → 产出「目标节点 +
+   载荷」→ 推目标节点队列（现有 msgQueues 机制）。解决 transfer 覆盖
+   不了的「分发」场景：N 个任务按类型各奔最擅长的 worker（对话类→
+   dialog_worker / 动作类→action_worker），每个任务独立无需上下文
+   接力。产出路由指令需结构化校验（合法目标节点集 + 失败 LLM 可读
+   重试，校验手法同 dynpipeline 矩阵）。与 Supervisor/transfer 的分工：
+   **协作（接力推进同一件事）走控制流 transfer，分发（批量任务按类型
+   奔向 worker）走数据流路由节点**——两种移交语义对应两类场景，
+   不互相冒充
+
+### Pipeline Registry 升级（社区工作流，与 RAG 联动的生态顺序）
+
+社区分享的单元不只是 pipeline 结构——**prompt 才是 agent 时代真正难做
+的东西**（结构人人会拼，instruction 调好要试错几十轮）。分享配方比
+分享组件（eino integration 模式）价值密度高一档：skill 生态分享
+「怎么干活的知识」，integration 生态分享「接线的代码」。分享单元 =
+节点 DAG + 每节点 instruction + 工具需求清单（DynPipelineSpec 格式
+天然满足——「装配零新代码」的注册表机制直接复用）+ 可带子 agent。
+
+生态位顺序（倒了会死）：
+1. 先有 RAG 工具层 → 没有它很多工作流写不出来
+2. 再定稿 registry 格式（DynPipelineSpec + 版本 + prompt 包）
+3. 最后建社区（分享/发现/安装——应用层）。先建社区，分享的都是不
+   依赖 RAG 的简单流水线，价值密度撑不起 adoption
+
+### ctx 三优化（借鉴 eino 的 callbacks 设计）
+
+eino 的可取模式：ctx 作为切面状态的载体（callbacks.OnStart(ctx, input)
+返回带 handler 状态的 ctx，OnEnd 用同一条链对上状态；全局 handler +
+InitCallbacks(ctx,...) 单次注入分层）。三个落地项：
+
+1. **observer 事件的 span 关联**：OnToolStart 在 ctx 塞调用 ID，
+   OnToolDone 取出——宿主算「单次工具调用耗时」不用自己配对，
+   trace/span 语义，零 API 变化（内部实现）
+2. **沙箱会话的 ctx 覆盖契约写死**：ctx 链上后注入的沙箱覆盖先注入的
+   （子覆盖父）——实现已是如此但未成文。benchmark trial 嵌套 pipeline
+   时父子沙箱关系需要明确语义，写进 WithSandboxSession 文档约定
+3. **observer 的 ctx 边界注入**：现在只有 App 级 WithObservers；
+   加 observer.FromContext(ctx) 让「这次 run 临时加采集 observer」
+   不用构造新 App——benchmark 场景直接需要（每 trial 塞一个独立
+   采集 observer），对齐 eino 的 InitCallbacks(ctx, ...) 模式
 
 ---
 

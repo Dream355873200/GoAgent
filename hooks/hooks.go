@@ -18,6 +18,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	"github.com/Dream355873200/GoAgent/message"
 )
 
 // HookEvent 标识 hook 事件类型。
@@ -73,6 +75,17 @@ type HookContext struct {
 
 	// SessionID 是当前会话 ID。
 	SessionID string
+
+	// StopReason 是本轮 LLM 响应的停止原因（仅 Stop 有效）。
+	// provider 的 StopMaxTokens 等值原样透传，供截断检测类 hook 使用。
+	StopReason string
+
+	// LastAssistantText 是最后一轮助手回复全文（仅 Stop 有效）。
+	// 内容级检查（如"代码块是否闭合"）依赖它。
+	LastAssistantText string
+
+	// Messages 是当前会话的完整消息列表（仅 Stop 有效）。
+	Messages []message.Message
 
 	// Custom 是自定义键值对，可在 hook 间传递数据。
 	Custom map[string]any
@@ -154,11 +167,17 @@ func (m *Manager) RunPostToolUse(ctx context.Context, toolName string, input jso
 
 // RunStop 执行所有 Stop hooks。
 // 如果任一 hook 返回 Block=true，表示循环不应退出。
-func (m *Manager) RunStop(ctx context.Context, sessionID string) (*HookResult, error) {
+// stopReason/lastText/messages 是退出现场信息（引擎自愈已处理过的
+// max_tokens 截断不会走到这里）——内容级检查（代码块闭合、产物
+// 存在性）依赖 lastText/messages。
+func (m *Manager) RunStop(ctx context.Context, sessionID, stopReason, lastText string, messages []message.Message) (*HookResult, error) {
 	return m.runEvent(ctx, &HookContext{
-		Event:     EventStop,
-		SessionID: sessionID,
-		Custom:    make(map[string]any),
+		Event:             EventStop,
+		SessionID:         sessionID,
+		StopReason:        stopReason,
+		LastAssistantText: lastText,
+		Messages:          messages,
+		Custom:            make(map[string]any),
 	})
 }
 

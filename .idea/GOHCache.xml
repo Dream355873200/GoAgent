@@ -17,13 +17,6 @@
             </set>
           </value>
         </entry>
-        <entry key="AgentCapability">
-          <value>
-            <set>
-              <option value="file://$PROJECT_DIR$/agent/swarm.go" />
-            </set>
-          </value>
-        </entry>
         <entry key="AgentContext">
           <value>
             <set>
@@ -336,6 +329,13 @@
             </set>
           </value>
         </entry>
+        <entry key="CreatePipelineInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/dynpipeline.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="CustomTask">
           <value>
             <set>
@@ -407,6 +407,27 @@
             </set>
           </value>
         </entry>
+        <entry key="DirSandbox">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sandbox_dir.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="DynNodeSpec">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/dynpipeline.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="DynPipelineSpec">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/dynpipeline.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="EditInput">
           <value>
             <set>
@@ -443,6 +464,13 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/extractmem/extractmem.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="FSRule">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sandbox.go" />
             </set>
           </value>
         </entry>
@@ -548,13 +576,6 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/websocket/handler.go" />
-            </set>
-          </value>
-        </entry>
-        <entry key="HandoffResult">
-          <value>
-            <set>
-              <option value="file://$PROJECT_DIR$/agent/swarm.go" />
             </set>
           </value>
         </entry>
@@ -882,6 +903,13 @@
             </set>
           </value>
         </entry>
+        <entry key="PipelineEvent">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/pipeline.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="PipelineNode">
           <value>
             <set>
@@ -907,6 +935,13 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/planconfirm_handler.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="Policy">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sandbox.go" />
             </set>
           </value>
         </entry>
@@ -1094,13 +1129,6 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/pipeline.go" />
-            </set>
-          </value>
-        </entry>
-        <entry key="Router">
-          <value>
-            <set>
-              <option value="file://$PROJECT_DIR$/agent/swarm.go" />
             </set>
           </value>
         </entry>
@@ -1341,20 +1369,6 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/compaction/summary.go" />
-            </set>
-          </value>
-        </entry>
-        <entry key="SwarmAgent">
-          <value>
-            <set>
-              <option value="file://$PROJECT_DIR$/agent/swarm.go" />
-            </set>
-          </value>
-        </entry>
-        <entry key="SwarmConfig">
-          <value>
-            <set>
-              <option value="file://$PROJECT_DIR$/agent/swarm.go" />
             </set>
           </value>
         </entry>
@@ -1746,6 +1760,13 @@
             </set>
           </value>
         </entry>
+        <entry key="WorktreeSandbox">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sandbox_worktree.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="WriteInput">
           <value>
             <set>
@@ -1999,10 +2020,24 @@
             </set>
           </value>
         </entry>
+        <entry key="dirSandboxSession">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sandbox_dir.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="enterWorktreeInput">
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/builtin/management.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="errSandbox">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sandbox_pipeline_test.go" />
             </set>
           </value>
         </entry>
@@ -2125,6 +2160,27 @@
             </set>
           </value>
         </entry>
+        <entry key="multiBaseSandbox">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sandbox_pipeline_test.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="noopSandbox">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sandbox.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="noopSession">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sandbox.go" />
+            </set>
+          </value>
+        </entry>
         <entry key="permRuleEntry">
           <value>
             <set>
@@ -2178,6 +2234,27 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/http.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="probeInput">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sandbox_pipeline_test.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="probeProvider">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sandbox_pipeline_test.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="probeResult">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sandbox_pipeline_test.go" />
             </set>
           </value>
         </entry>
@@ -2304,6 +2381,13 @@
           <value>
             <set>
               <option value="file://$PROJECT_DIR$/cli.go" />
+            </set>
+          </value>
+        </entry>
+        <entry key="stopHookAdapter">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/hooks/stophook_builtin.go" />
             </set>
           </value>
         </entry>
@@ -2454,6 +2538,13 @@
             </set>
           </value>
         </entry>
+        <entry key="worktreeSandboxSession">
+          <value>
+            <set>
+              <option value="file://$PROJECT_DIR$/sandbox_worktree.go" />
+            </set>
+          </value>
+        </entry>
       </map>
     </option>
     <option name="scannedPathMapping">
@@ -2518,22 +2609,6 @@
                   <option value="StreamEvent" />
                   <option value="DefaultSubAgent" />
                   <option value="SubAgentManager" />
-                </list>
-              </option>
-            </ScannedPath>
-          </value>
-        </entry>
-        <entry key="file://$PROJECT_DIR$/agent/swarm.go">
-          <value>
-            <ScannedPath>
-              <option name="lastModified" value="1775403240266" />
-              <option name="schema">
-                <list>
-                  <option value="SwarmConfig" />
-                  <option value="SwarmAgent" />
-                  <option value="HandoffResult" />
-                  <option value="AgentCapability" />
-                  <option value="Router" />
                 </list>
               </option>
             </ScannedPath>
@@ -2659,7 +2734,7 @@
         <entry key="file://$PROJECT_DIR$/builtin/bash.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1787831666038" />
+              <option name="lastModified" value="1787919309783" />
               <option name="schema">
                 <list>
                   <option value="BashInput" />
@@ -2671,7 +2746,7 @@
         <entry key="file://$PROJECT_DIR$/builtin/filetools_test.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1787833552572" />
+              <option name="lastModified" value="1787913794716" />
             </ScannedPath>
           </value>
         </entry>
@@ -2704,6 +2779,13 @@
                   <option value="issueResolveInput" />
                 </list>
               </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/issue_option_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787914039252" />
             </ScannedPath>
           </value>
         </entry>
@@ -2783,6 +2865,13 @@
             </ScannedPath>
           </value>
         </entry>
+        <entry key="file://$PROJECT_DIR$/builtin/sandbox_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787919508168" />
+            </ScannedPath>
+          </value>
+        </entry>
         <entry key="file://$PROJECT_DIR$/builtin/skill_list_test.go">
           <value>
             <ScannedPath>
@@ -2800,7 +2889,7 @@
         <entry key="file://$PROJECT_DIR$/builtin/tools.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1787833533173" />
+              <option name="lastModified" value="1787919302757" />
               <option name="schema">
                 <list>
                   <option value="ReadInput" />
@@ -3011,7 +3100,7 @@
         <entry key="file://$PROJECT_DIR$/context.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1787832339599" />
+              <option name="lastModified" value="1787918958168" />
               <option name="schema">
                 <list>
                   <option value="Context" />
@@ -3078,6 +3167,27 @@
                   <option value="ExecuteResult" />
                 </list>
               </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/dynpipeline.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787915953827" />
+              <option name="schema">
+                <list>
+                  <option value="DynPipelineSpec" />
+                  <option value="DynNodeSpec" />
+                  <option value="CreatePipelineInput" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/dynpipeline_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787916043758" />
             </ScannedPath>
           </value>
         </entry>
@@ -3153,7 +3263,7 @@
         <entry key="file://$PROJECT_DIR$/goagent.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1787832812360" />
+              <option name="lastModified" value="1788098220501" />
               <option name="schema">
                 <list>
                   <option value="App" />
@@ -3186,7 +3296,7 @@
         <entry key="file://$PROJECT_DIR$/hooks/hooks.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1775403240363" />
+              <option name="lastModified" value="1788098053710" />
               <option name="schema">
                 <list>
                   <option value="HookContext" />
@@ -3194,6 +3304,25 @@
                   <option value="Manager" />
                 </list>
               </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/hooks/stophook_builtin.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1788098078718" />
+              <option name="schema">
+                <list>
+                  <option value="stopHookAdapter" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/hooks/stophook_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1788098326839" />
             </ScannedPath>
           </value>
         </entry>
@@ -3259,7 +3388,7 @@
         <entry key="file://$PROJECT_DIR$/internal/loop/loop.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1787831397291" />
+              <option name="lastModified" value="1788098186453" />
               <option name="schema">
                 <list>
                   <option value="Config" />
@@ -3336,6 +3465,13 @@
                   <option value="InterruptHandler" />
                 </list>
               </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/logger_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787914841367" />
             </ScannedPath>
           </value>
         </entry>
@@ -3505,7 +3641,7 @@
         <entry key="file://$PROJECT_DIR$/options.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1787825771155" />
+              <option name="lastModified" value="1787919149705" />
               <option name="schema">
                 <list>
                   <option value="appConfig" />
@@ -3616,11 +3752,12 @@
         <entry key="file://$PROJECT_DIR$/pipeline.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1787657502585" />
+              <option name="lastModified" value="1787919255909" />
               <option name="schema">
                 <list>
                   <option value="pipelineNodeNameKey" />
                   <option value="PipelineConfig" />
+                  <option value="PipelineEvent" />
                   <option value="PipelineNode" />
                   <option value="PipelineAgentDef" />
                   <option value="ReviewEvent" />
@@ -3635,6 +3772,13 @@
                   <option value="retryMessage" />
                 </list>
               </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/pipeline_event_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787915315986" />
             </ScannedPath>
           </value>
         </entry>
@@ -3821,6 +3965,77 @@
                   <option value="Attempt" />
                 </list>
               </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/sandbox.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787918985921" />
+              <option name="schema">
+                <list>
+                  <option value="FSRule" />
+                  <option value="Policy" />
+                  <option value="noopSandbox" />
+                  <option value="noopSession" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/sandbox_dir.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787919005127" />
+              <option name="schema">
+                <list>
+                  <option value="DirSandbox" />
+                  <option value="dirSandboxSession" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/sandbox_pipeline_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787919646020" />
+              <option name="schema">
+                <list>
+                  <option value="probeProvider" />
+                  <option value="probeResult" />
+                  <option value="probeInput" />
+                  <option value="multiBaseSandbox" />
+                  <option value="errSandbox" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/sandbox_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787919335900" />
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/sandbox_worktree.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787919073574" />
+              <option name="schema">
+                <list>
+                  <option value="WorktreeSandbox" />
+                  <option value="worktreeSandboxSession" />
+                </list>
+              </option>
+            </ScannedPath>
+          </value>
+        </entry>
+        <entry key="file://$PROJECT_DIR$/sandbox_worktree_test.go">
+          <value>
+            <ScannedPath>
+              <option name="lastModified" value="1787919361482" />
             </ScannedPath>
           </value>
         </entry>
@@ -4199,7 +4414,7 @@
         <entry key="file://$PROJECT_DIR$/worktree/worktree.go">
           <value>
             <ScannedPath>
-              <option name="lastModified" value="1786966276345" />
+              <option name="lastModified" value="1787919049107" />
               <option name="schema">
                 <list>
                   <option value="Worktree" />
@@ -4213,7 +4428,6 @@
     </option>
     <option name="tableStructMapping">
       <map>
-        <entry key="agent_capability" value="AgentCapability" />
         <entry key="agent_context" value="AgentContext" />
         <entry key="agent_definition" value="AgentDefinition" />
         <entry key="agent_event_msg" value="agentEventMsg" />
@@ -4285,6 +4499,7 @@
         <entry key="content_item" value="ContentItem" />
         <entry key="context" value="Context" />
         <entry key="cost_summary" value="CostSummary" />
+        <entry key="create_pipeline_input" value="CreatePipelineInput" />
         <entry key="cron_create_input" value="cronCreateInput" />
         <entry key="cron_delete_input" value="cronDeleteInput" />
         <entry key="cron_field" value="cronField" />
@@ -4300,8 +4515,13 @@
         <entry key="definition" value="Definition" />
         <entry key="degradation_aware_modifier" value="DegradationAwareModifier" />
         <entry key="degradation_tracker" value="DegradationTracker" />
+        <entry key="dir_sandbox" value="DirSandbox" />
+        <entry key="dir_sandbox_session" value="dirSandboxSession" />
+        <entry key="dyn_node_spec" value="DynNodeSpec" />
+        <entry key="dyn_pipeline_spec" value="DynPipelineSpec" />
         <entry key="edit_input" value="EditInput" />
         <entry key="enter_worktree_input" value="enterWorktreeInput" />
+        <entry key="err_sandbox" value="errSandbox" />
         <entry key="event" value="Event" />
         <entry key="execute_response" value="executeResponse" />
         <entry key="execute_result" value="ExecuteResult" />
@@ -4319,13 +4539,13 @@
         <entry key="forked_agent_config" value="ForkedAgentConfig" />
         <entry key="forked_agent_result" value="ForkedAgentResult" />
         <entry key="framework_tool" value="FrameworkTool" />
+        <entry key="fs_rule" value="FSRule" />
         <entry key="func_hook" value="FuncHook" />
         <entry key="gate" value="Gate" />
         <entry key="git_commit_input" value="gitCommitInput" />
         <entry key="glob_input" value="GlobInput" />
         <entry key="grep_input" value="GrepInput" />
         <entry key="handler" value="Handler" />
-        <entry key="handoff_result" value="HandoffResult" />
         <entry key="health_response" value="healthResponse" />
         <entry key="hook_context" value="HookContext" />
         <entry key="hook_result" value="HookResult" />
@@ -4365,8 +4585,11 @@
         <entry key="mock_tool_call" value="MockToolCall" />
         <entry key="model" value="Model" />
         <entry key="model_pricing" value="ModelPricing" />
+        <entry key="multi_base_sandbox" value="multiBaseSandbox" />
         <entry key="multi_observer" value="MultiObserver" />
         <entry key="named_tool" value="NamedTool" />
+        <entry key="noop_sandbox" value="noopSandbox" />
+        <entry key="noop_session" value="noopSession" />
         <entry key="nop_observer" value="NopObserver" />
         <entry key="notebook_add_cell_input" value="NotebookAddCellInput" />
         <entry key="notebook_edit_input" value="NotebookEditInput" />
@@ -4387,6 +4610,7 @@
         <entry key="pipeline" value="pipeline" />
         <entry key="pipeline_agent_def" value="PipelineAgentDef" />
         <entry key="pipeline_config" value="PipelineConfig" />
+        <entry key="pipeline_event" value="PipelineEvent" />
         <entry key="pipeline_node" value="PipelineNode" />
         <entry key="pipeline_node_name_key" value="pipelineNodeNameKey" />
         <entry key="pipeline_node_state" value="pipelineNodeState" />
@@ -4394,11 +4618,15 @@
         <entry key="plan_confirm_handler" value="PlanConfirmHandler" />
         <entry key="plan_confirm_http_request" value="PlanConfirmHTTPRequest" />
         <entry key="plan_confirm_request" value="PlanConfirmRequest" />
+        <entry key="policy" value="Policy" />
         <entry key="post_compact_cleanup_runner" value="PostCompactCleanupRunner" />
         <entry key="pre_compact_hook_runner" value="PreCompactHookRunner" />
         <entry key="pre_compact_result" value="PreCompactResult" />
         <entry key="preprocess_result" value="PreprocessResult" />
         <entry key="preprocessor" value="Preprocessor" />
+        <entry key="probe_input" value="probeInput" />
+        <entry key="probe_provider" value="probeProvider" />
+        <entry key="probe_result" value="probeResult" />
         <entry key="processor" value="Processor" />
         <entry key="prompt_too_long_error" value="PromptTooLongError" />
         <entry key="prompts_capability" value="PromptsCapability" />
@@ -4424,7 +4652,6 @@
         <entry key="retry_stream_provider" value="RetryStreamProvider" />
         <entry key="review_event" value="ReviewEvent" />
         <entry key="review_result_item" value="ReviewResultItem" />
-        <entry key="router" value="Router" />
         <entry key="rule" value="Rule" />
         <entry key="rule_set" value="RuleSet" />
         <entry key="run_result" value="RunResult" />
@@ -4460,6 +4687,7 @@
         <entry key="sse_writer" value="sseWriter" />
         <entry key="stdin_approver" value="stdinApprover" />
         <entry key="stdio_transport" value="StdioTransport" />
+        <entry key="stop_hook_adapter" value="stopHookAdapter" />
         <entry key="stop_hook_result" value="StopHookResult" />
         <entry key="stop_hook_runner" value="StopHookRunner" />
         <entry key="storage" value="Storage" />
@@ -4479,8 +4707,6 @@
         <entry key="sub_agent_tracker" value="subAgentTracker" />
         <entry key="summary" value="Summary" />
         <entry key="summary_config" value="SummaryConfig" />
-        <entry key="swarm_agent" value="SwarmAgent" />
-        <entry key="swarm_config" value="SwarmConfig" />
         <entry key="sync_observable" value="SyncObservable" />
         <entry key="system_block" value="SystemBlock" />
         <entry key="task" value="Task" />
@@ -4546,6 +4772,8 @@
         <entry key="withheld_event" value="WithheldEvent" />
         <entry key="withholder" value="Withholder" />
         <entry key="worktree" value="Worktree" />
+        <entry key="worktree_sandbox" value="WorktreeSandbox" />
+        <entry key="worktree_sandbox_session" value="worktreeSandboxSession" />
         <entry key="write_input" value="WriteInput" />
         <entry key="ws_config" value="WSConfig" />
         <entry key="yolo_classifier" value="YoloClassifier" />
@@ -4553,6 +4781,6 @@
         <entry key="yolo_result" value="YoloResult" />
       </map>
     </option>
-    <option name="lastTimeChecked" value="1787910397439" />
+    <option name="lastTimeChecked" value="1788092908275" />
   </component>
 </project>

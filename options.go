@@ -78,6 +78,9 @@ type appConfig struct {
 
 	// 库内日志（WithLogger 注入；nil = slog.Default()）
 	logger *slog.Logger
+
+	// 测试模式（WithDebugMode）：loop 细节日志全量输出
+	debug bool
 }
 
 // ProviderConfig 是 LLM Provider 的配置，可直接传给 New()。
@@ -812,6 +815,29 @@ func WithIssueTools() Option {
 func WithLogger(l *slog.Logger) Option {
 	return optionFunc(func(c *appConfig) {
 		c.logger = l
+	})
+}
+
+// WithDebugMode 开启测试模式：loop 引擎的细节日志全部输出。
+//
+// 默认只打关键事件（每轮摘要、限流重试、后备切换、错误现场）；
+// 测试模式下额外输出逐轮请求参数（消息数/工具数/max_tokens）、
+// 工具调用开始/完成明细、节点启停耗时等中间信息——对齐 README
+// TODO「Agent 迭代测试模式」的信息暴露原则：测试模式的中间信息
+// 应尽可能可获取。
+//
+// 日志级别全部走 Info/Warn/Error（不依赖 slog 的 Debug level），
+// 宿主无需调整 handler 级别，开启即生效。
+//
+// 示例：
+//
+//	app := goagent.New(
+//	    goagent.WithProvider(provider),
+//	    goagent.WithDebugMode(), // 排查/测试时打开，生产关闭
+//	)
+func WithDebugMode() Option {
+	return optionFunc(func(c *appConfig) {
+		c.debug = true
 	})
 }
 

@@ -11,9 +11,9 @@ package goagent
 
 import (
 	"context"
-	"log/slog"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"sync"
 
@@ -1376,6 +1376,11 @@ func (p *pipeline) buildLightweightLoop(agentDef *PipelineAgentDef, nodeCtx cont
 		Compaction:   compMgr,
 		Hooks:        hooksRunner,
 		Observer:     obs,
+		// 日志/测试模式继承父 App：pipeline 节点的 429 限流、工具调用
+		// 明细此前完全不可见（loop 零日志 + Progress 事件被 runLightweight
+		// 丢弃），WithDebugMode 开启后节点级 loop 同样输出细节轨迹。
+		Logger: p.parentApp.logger,
+		Debug:  p.parentApp.config.debug,
 	})
 }
 
@@ -1625,6 +1630,8 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 				WithSystemPrompt(sup.Instruction),
 				WithMaxTurns(5),
 				WithApprover(AutoApprover()),
+				WithLogger(p.parentApp.logger),
+				withDebugModeIf(p.parentApp.config.debug),
 			)
 			if p.parentApp.obsRegistry != nil {
 				finalApp.obsRegistry = p.parentApp.obsRegistry
@@ -1658,6 +1665,8 @@ func (p *pipeline) runSupervisor(ctx context.Context) {
 			WithSystemPrompt(sup.Instruction),
 			WithMaxTurns(10), // 单轮审核最多 10 次 LLM 调用（wait_for_review + 读取工具 + approve/reject）
 			WithApprover(AutoApprover()),
+			WithLogger(p.parentApp.logger),
+			withDebugModeIf(p.parentApp.config.debug),
 		)
 		if p.parentApp.obsRegistry != nil {
 			subApp.obsRegistry = p.parentApp.obsRegistry
@@ -1720,6 +1729,15 @@ func (a *App) UsePipeline(cfg PipelineConfig) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.pipeline = newPipeline(cfg, a)
+}
+
+// withDebugModeIf 条件启用测试模式：supervisor 的 sub-App 继承父 App
+// 的 debug 配置（off 时用 no-op Option，不改变任何行为）。
+func withDebugModeIf(on bool) Option {
+	if !on {
+		return optionFunc(func(*appConfig) {})
+	}
+	return WithDebugMode()
 }
 
 // RunPipeline 启动 DAG 流水线，阻塞直到所有节点完成。

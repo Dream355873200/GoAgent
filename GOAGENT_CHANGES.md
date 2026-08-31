@@ -5,6 +5,66 @@ Dream355873200/GoAgent 的本地增强副本。amobileCreater 的 engine 通过
 go.mod `replace` 指向此处。**每次向 GitHub 推送前**：把下面对应条目
 整理进正式 commit，然后移除 replace 升级版本号。
 
+## 2026-08-31（测试模式 WithDebugMode + loop 引擎日志面）
+
+- **起因（生产排查）**：漫剧 pipeline 启动无反应、429 限流日志不打印。
+  根因是 loop 引擎**零日志**——所有引擎转折（限流重试/过载切换/截断
+  恢复/错误退出）只发 Event 或调 Observer，一个字都不写日志；pipeline
+  的 runLightweight 又丢弃 Progress 事件，三条出口（事件/observer/日志）
+  全断，撞 429 时外部完全不可见。
+- **loop 日志面（Config 新增 Logger/Debug）**：logInfo/logWarn/logError/
+  logDebug 四个辅助方法，nil logger 安全。插桩点——启动（model/tools/
+  msgs/max_turns）、429 限流（等待时长+attempt+恢复/耗尽）、过载切后备、
+  API 错误/流中断/上下文取消/最大轮次/上下文耗尽（全部终止路径）、
+  max_tokens 截断恢复两级、thinking-only 恢复、stop hook 阻止、每轮完成
+  摘要（tools/input_tokens/msgs）、正常完成（turns/stop/text 长度）。
+  debug 细节（logDebug）：逐轮请求参数（msgs/tools/max_tokens/token
+  估算）、tool_start/tool_done（id/input_len/content_len/err）。
+- **WithDebugMode() Option**：测试模式开关（appConfig.debug）。关键事件
+  日志默认输出（不受开关控制）；细节日志仅 debug 开启时输出。级别全部
+  走 Info/Warn/Error——**不依赖 slog Debug level**，宿主无需调整 handler
+  级别，开启即生效。对齐 README TODO「Agent 迭代测试模式」的信息暴露
+  原则（测试模式的中间信息应尽可能可获取）。
+- **接线全覆盖**：App.run 主循环（goagent.go）传 Logger=a.logger +
+  Debug=a.config.debug；pipeline 节点 loop（buildLightweightLoop）同样
+  继承——pipeline 的 429 此前完全不可见，这是本次修复的主场景；
+  supervisor 的 subApp/finalApp（每轮审核现造的 App）经
+  WithLogger+withDebugModeIf 继承（no-op Option 兜底，off 时零变化）。
+- **与 Observer 的分工定稿**：logger 给人（排查/测试文本轨迹），
+  Observer 给程序（计费/SSE/benchmark 结构化回调）。429 等**引擎内部
+  转折不发 observer**（粒度是业务事件不是引擎转折），所以 observer
+  覆盖不了本问题——补日志是正解；未来 benchmark 若需机器消费限流
+  数据再加 OnRateLimitRetry 接口。
+- **测试**：internal/loop/logging_test.go——关键事件无 debug 也输出/
+  debug 细节受开关控制/nil logger 不 panic。全量 build/vet/test 过，
+  默认路径（不注入 Logger）零行为变化。
+
+## 2026-08-29（stop hook 双轨合并）
+
+- **hooks 包成为 stop 扩展点唯一入口（接口演化债清理）**：原
+  internal/loop/stophook.go（StopHookRunner，老轨道）与 hooks 包
+  EventStop（新框架）双轨并存、串联执行——成因是通用 hook 框架
+  出现时未吸收老机制签名能力，老轨道因内置截断 hook 在用未删。
+  合并内容：
+  - HookContext 加 StopReason/LastAssistantText/Messages 字段
+    （EventStop 专用现场信息——签名决定 hook 能做什么）
+  - Manager.RunStop 签名升级：RunStop(ctx, sessionID, stopReason,
+    lastText, messages)——loop 的退出路径两段串联合成一段
+  - NewStopHook(name, fn) 函数式包装；内置 MaxOutputTokensStopHook
+    （数 ``` 奇偶的截断兜底，引擎 stopReason 恢复优先于此）迁入
+    hooks/stophook_builtin.go
+  - 删除 internal/loop/stophook.go（老轨道零外部引用，安全删除）
+  - 三层职责定稿：引擎自愈（loop 主循环，提 max_tokens 上限/续写
+    提示——需改请求参数只能住引擎）/ 内置启发式（hooks 包）/
+    用户扩展（WithHooks）
+- **测试**：hooks/stophook_test.go——现场信息透传/block 生效/
+  截断检测奇偶判断/恢复上限防死循环。全量 build/vet/test 过，
+  AnimeCreater 零影响（双轨本来都未注册使用）。
+- **文档**：interview-guide/deep/tools.md 补 executor 三层（含
+  TrackedExecutor 死代码的诚实说明）+ stop hook 合并后三层职责。
+  README TODO 的合并条目同步完成（原计划与 EventInterrupted 一起
+  做，用户指示提前单独完成）。
+
 ## 2026-08-28（沙箱层 Tier 0/1 + pipeline 会话上下文缺口修复）
 
 - **沙箱契约（sandbox.go 新增）**：`Sandbox`/`SandboxSession`/`Policy`
@@ -78,6 +138,68 @@ go.mod `replace` 指向此处。**每次向 GitHub 推送前**：把下面对应
   人看账单——审批卡片（DAG 图 + provenance 徽章 + 射程摘要，嵌入方
   复用画布组件）/ spec+自然语言说明成对提交并交叉验证（零成本，
   对齐 plan mode 模式）/ Pulumi 式代码视图（远期可不做）。
+- **eino 对照盘点 + 补缺清单（README 新 TODO 节）**：定位「eino 造引擎、
+  GoAgent 造整车，全自研无 fork」。补缺按重要性：RAG 组件层（高）、
+  带 checkpoint 的 interrupt/resume（高——根包现在只有 cancel）、
+  agent 模式库（中，prebuilt 配方）、组件级 callbacks 切面（中）、
+  通用 Graph 编排（低，刻意不做项）。ctx 三优化：observer 事件 span
+  关联、沙箱 ctx 覆盖契约成文、observer.FromContext 单 run 注入
+  （benchmark 每 trial 独立采集的直接前置）。
+  注：早前探查报告声称 goagent/agent 是 eino adk 的 fork——已证伪
+  （agent/ 下 5 个自研文件 1109 行，子 agent 系统，与 adk 文件零对应），
+  对比结论已按「全自研」修正。
+- **eino 对比深挖定稿（README 差异定位节大扩充）**：
+  graph vs pipeline 范式对比（函数组件数据变换网 vs agent 任务流水线，
+  六维分野表 + 「拓扑是代码还是数据」判断公式）；动态拓扑三场景分解
+  （A 数据分支不需要动态/B LLM 建图我们领先 dynpipeline/C 热重载是
+  基础设施职责）——「补 graph」论证闭环为不做。RAG 双形态四件套：
+  Document+窄接口四兄弟为共享底座，WithRetrieval 嵌入管道为主
+  （含 ShouldRetrieve 谓词）+ retrieve 工具为辅；多路检索走
+  FusionRetriever 组合模式（框架不穷举组合）；边界诚实声明。agent
+  模式库逐个判断：Plan-Execute 做（零件 70%）、AgentTool 转接头顺手做
+  （SubAgent=运行时委派 vs AgentTool=构造时组合，同机制两朝向）、
+  Supervisor 缓但设计定稿（路由节点复用队列消息=边静态流动态，
+  transfer 四问答案：prompt 候选清单/消费队列不接收/无兄弟不注册/
+  LLM 判断非知道；合法移交图=DAG 子图（Injects 声明）；AllowRevive
+  唤醒逃生舱；完整规则表）、DeepAgent 不做（SubAgent 就是它）。
+  Pipeline Registry 升级：prompt 是 agent 时代真正难做的（分享配方
+  价值密度>分享组件），生态三步顺序（RAG 层→格式→社区）。领先面补
+  agent 自建 DAG（eino 组件编译期插、LLM 没有手）。
+- **Supervisor 模式改判（用户裁决）**：移交语义放弃队列数据流方案，
+  按 eino 控制流模式做——transfer = 对话控制权移交（完整消息历史 +
+  身份切换，落点在 loop 消息列表交接），子 agent 协作的主流形态是
+  接力而非工单分发；队列消息流只在 pipeline 节点间保留。v1 队列方案
+  废弃原因记录在案（为架构统一牺牲语义正确性=框架设计经典陷阱）。
+  同时 LangGraph 对比入档（控制流状态机路线，与 eino 数据变换网、
+  我们任务流水线三分）；组件 callbacks 缺口校准为两处——LLM 调用级
+  钩子（OnLLMStart/Done/Error）+ ctx span 配对（工具级钩子已有）。
+- **概念澄清后的三项 TODO 增补**：① 路由节点（RouterNode）补回——
+  pipeline 内数据流路由（任务按类型分奔 worker），与 transfer 互补
+  而非替代（协作走控制流接力 / 分发走数据流路由，两种移交语义对应
+  两类场景不互相冒充）；② 装配期类型校验——PipelineNode.MessageType
+  升级为上下游类型一致性校验（eino「编译期验证」的等价物，与 L3
+  动态类型 schema 校验汇流）；③ LangGraph 应用场景入档（长时有状态
+  agent / human-in-the-loop interrupt-resume / 多 agent 状态机，
+  定位「agent 版 Temporal」，学零件不学产品）。
+- **interrupt/resume 补缺 #2 定稿（README TODO 重写）**：对标 LangGraph
+  学零件不学产品。终止能力审计（已全）：/interrupt 端点、按会话路由
+  cancel、被中断工具写回 tool_result（消息序列完整同会话可续聊）、
+  历史落盘保留、SSE 断开≠取消。缺三件：EventInterrupted 一等事件
+  （~20 行，用户终止与报错分离）；进程内挂起/恢复（goroutine 挂起
+  非取消，复用 429 机制，服务分钟级审批）；挂起点 checkpoint 落盘
+  （审批周期常超进程生命周期；成本核算：消息历史落盘已有+
+  RunWithHistory 已是历史喂回，新增仅「执行位置+挂起原因」小块；
+  resume=RunWithHistory+断点续跑，与「状态归业务循环归框架」哲学
+  同构）。不做任意点回放/时间旅行。终止/挂起/恢复三语义分离。
+  （此条历经两轮用户纠偏：先误判持久化不必做——忽视审批周期超
+  进程生命周期；再被追问终止能力——实测发现终止链路已全。）
+- **TODO 执行顺序标定（内容零删减，用户裁决「不瘦身，模块化即可」）**：
+  TODO 区顶部加三梯队开工序——第一梯队 AnimeCreater 直接收益
+  （EventInterrupted / observer+ctx / interrupt 挂起恢复 / RAG 四件套）、
+  第二梯队 benchmark 自迭代最短路径（评测闭环 → L4-α）、第三梯队真空
+  需求（模式库/组合/Registry/L2-L5 等，届时按真实需求密度重排）。
+  不排日期；顺序即需求过滤器（前两梯队会自然长出或证伪第三梯队
+  的需求）。
 
 ## 2026-08-28（动态 Pipeline L1 + 嵌入者体验）
 

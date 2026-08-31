@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/Dream355873200/GoAgent/budget"
@@ -34,9 +35,8 @@ type Config struct {
 	Permission      *permission.Gate
 	Memory          *memory.Manager
 	Executor        *executor.Executor
-	StopHooks       *StopHookRunner   // stop hook 运行器
 	Budget          *budget.Tracker   // token 预算追踪器
-	Hooks           HooksRunner       // 外部 hooks 管理器（可选）
+	Hooks           HooksRunner       // hooks 管理器（含 stop 扩展点，可选）
 	PlanChecker     PlanChecker       // plan mode 工具过滤（可选）
 	PostSampling    PostSamplingHook  // 采样后钩子（SessionMemory 等）
 	InitialMessages []message.Message // 历史消息（多轮对话恢复用）
@@ -47,6 +47,15 @@ type Config struct {
 	// SessionID 是当前会话的标识符，用于 Observer 事件的上下文。
 	// 如果为空字符串，Observer 事件中的 SessionID 字段为空。
 	SessionID string
+	// Logger 库内日志出口（nil = 不打日志）。关键事件（每轮摘要、
+	// 限流重试、后备切换、错误现场）走 Info/Warn/Error 级，
+	// 由宿主经 WithLogger 或 slog.Default() 注入。
+	Logger *slog.Logger
+	// Debug 测试模式：细节日志（逐轮请求参数、工具调用明细）额外
+	// 输出。对齐「测试模式的中间信息应尽可能可获取」原则。
+	// 细节日志同样走 Info 级输出（不依赖 slog Debug level），
+	// 宿主无需调整 handler 级别。
+	Debug bool
 }
 
 // PlanChecker 是 plan mode 的接口。
@@ -67,7 +76,9 @@ type HooksRunner interface {
 	// RunPostToolUse 在工具执行后调用。
 	RunPostToolUse(ctx context.Context, toolName string, input json.RawMessage, result string, toolErr error)
 	// RunStop 在循环退出前调用。返回 block=true 时阻止退出。
-	RunStop(ctx context.Context) (block bool, message string, err error)
+	// stopReason 是本轮 LLM 的停止原因（引擎自愈已处理 StopMaxTokens，
+	// 到这里的不会是截断）；lastText/messages 是退出现场，供内容级检查。
+	RunStop(ctx context.Context, stopReason, lastText string, messages []message.Message) (block bool, message string, err error)
 }
 
 // PostSamplingHook 是采样后（API 响应+工具执行后）调用的钩子。
@@ -185,6 +196,37 @@ func New(cfg Config) *Loop {
 	return &Loop{cfg: cfg, toolIndex: idx}
 }
 
+// logInfo 输出关键事件日志（每轮摘要、限流重试、后备切换、错误现场）。
+// Logger 未注入时静默跳过。
+func (l *Loop) logInfo(format string, args ...any) {
+	if l.cfg.Logger != nil {
+		l.cfg.Logger.Info(fmt.Sprintf("loop: "+format, args...))
+	}
+}
+
+// logWarn 输出可自愈的异常日志（限流、过载切换、截断恢复）。
+func (l *Loop) logWarn(format string, args ...any) {
+	if l.cfg.Logger != nil {
+		l.cfg.Logger.Warn(fmt.Sprintf("loop: "+format, args...))
+	}
+}
+
+// logError 输出导致循环终止的错误日志。
+func (l *Loop) logError(format string, args ...any) {
+	if l.cfg.Logger != nil {
+		l.cfg.Logger.Error(fmt.Sprintf("loop: "+format, args...))
+	}
+}
+
+// logDebug 输出测试模式细节日志（逐轮请求参数、工具调用明细）。
+// 仅在 Config.Debug（WithDebugMode）开启时输出——级别仍走 Info，
+// 宿主无需调整 slog handler 级别。
+func (l *Loop) logDebug(format string, args ...any) {
+	if l.cfg.Logger != nil && l.cfg.Debug {
+		l.cfg.Logger.Info(fmt.Sprintf("loop: "+format, args...))
+	}
+}
+
 // Run 启动 agent 循环并返回一个事件通道。
 func (l *Loop) Run(ctx context.Context, input string) <-chan Event {
 	out := make(chan Event, 64)
@@ -254,9 +296,14 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 	// nil provider 守卫：此前直接在 Capabilities() 上 panic（nil pointer），
 	// 且发生在 goroutine 里无人 recover——整个进程崩掉。给出可诊断的错误事件。
 	if activeProvider == nil {
+		l.logError("provider 未配置（WithProvider / ProviderConfig 均未设置），循环退出")
 		out <- Event{Type: EvtError, Error: fmt.Errorf("loop: provider 未配置（WithProvider / ProviderConfig 均未设置）")}
 		return
 	}
+
+	l.logInfo("启动 session=%s model=%s tools=%d initial_msgs=%d max_turns=%d debug=%v",
+		l.cfg.SessionID, activeProvider.Capabilities().ModelID, len(l.cfg.Tools),
+		len(state.messages), l.cfg.MaxTurns, l.cfg.Debug)
 
 	// P1a: 工具定义缓存 — 一次性构建，跨迭代复用。
 	// 对齐 Claude Code 的 toolUseContext.options.tools（不在循环内重建）。
@@ -292,6 +339,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 	for {
 		// 检查最大轮次。
 		if state.turnCount >= l.cfg.MaxTurns {
+			l.logError("已达最大轮次 (%d)，循环终止", l.cfg.MaxTurns)
 			if l.cfg.Observer != nil {
 				l.cfg.Observer.OnError(ctx, fmt.Errorf("已达最大轮次 (%d)", l.cfg.MaxTurns))
 			}
@@ -301,6 +349,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 
 		// 检查上下文取消。
 		if ctx.Err() != nil {
+			l.logError("上下文已取消，循环终止: %v", ctx.Err())
 			if l.cfg.Observer != nil {
 				l.cfg.Observer.OnError(ctx, ctx.Err())
 			}
@@ -342,6 +391,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 		hardLimit := contextWindow - 3000
 		if totalTokens > hardLimit && l.cfg.Compaction == nil {
 			err := fmt.Errorf("上下文已耗尽: %d tokens > %d 限制", totalTokens, hardLimit)
+			l.logError("%v", err)
 			if l.cfg.Observer != nil {
 				l.cfg.Observer.OnError(ctx, err)
 			}
@@ -375,6 +425,9 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 			req.SystemPrompt = systemPrompt
 		}
 
+		l.logDebug("turn=%d 请求: msgs=%d tools=%d max_tokens=%d input_tokens_est=%d",
+			state.turnCount+1, len(state.messages), len(toolDefs), maxTokens, totalTokens)
+
 		stream, err := activeProvider.Stream(ctx, req)
 
 		// 速率限制重试：429（TPM/RPM 配额）等待后重试同一模型必然可行。
@@ -393,6 +446,8 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 					if wait > 60*time.Second {
 						wait = 60 * time.Second
 					}
+					l.logWarn("429 限流: %s · 等待 %s 后重试 (attempt %d/%d) · turn=%d",
+						brief, wait, attempt, maxRateRetries, state.turnCount+1)
 					// 每秒推送倒计时状态行（前端原地更新 + 闪烁动画）
 					deadline := time.Now().Add(wait)
 					for time.Now().Before(deadline) {
@@ -402,6 +457,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 							brief, remain, attempt, maxRateRetries)}
 						select {
 						case <-ctx.Done():
+							l.logError("429 等待中被取消: %v", ctx.Err())
 							out <- Event{Type: EvtError, Error: fmt.Errorf("API 错误: %w", err)}
 							return
 						case <-time.After(time.Until(deadline)):
@@ -409,13 +465,16 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 					}
 					stream, err = activeProvider.Stream(ctx, req)
 					if err == nil {
+						l.logInfo("429 限流恢复: attempt %d 后成功 · turn=%d", attempt, state.turnCount+1)
 						break
 					}
 					if !errors.As(err, &rateLimitErr) {
 						break // 变成别的错误了（过载/断网）：走下面的常规处理
 					}
 				}
-				if err == nil {
+				if err != nil {
+					l.logError("429 重试 %d 次后仍失败: %v", maxRateRetries, err)
+				} else {
 					out <- Event{Type: EvtProgress, StatusKey: statusKey, Text: ""} // 清除状态行
 				}
 			}
@@ -427,6 +486,8 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 			if errors.As(err, &overloadErr) && l.cfg.Fallback != nil && !state.usingFallback {
 				activeProvider = l.cfg.Fallback
 				state.usingFallback = true
+				l.logWarn("主模型过载，切换到后备模型 %s · turn=%d",
+					activeProvider.Capabilities().ModelID, state.turnCount+1)
 				out <- Event{Type: EvtProgress, Text: "主模型过载，切换到后备模型"}
 				continue
 			}
@@ -443,6 +504,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 				}
 			}
 
+			l.logError("API 错误，循环终止: %v", err)
 			out <- Event{Type: EvtError, Error: fmt.Errorf("API 错误: %w", err)}
 			if l.cfg.Observer != nil {
 				l.cfg.Observer.OnError(ctx, fmt.Errorf("API 错误: %w", err))
@@ -482,6 +544,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 			case provider.EventToolUseStart:
 				if ev.ToolCall != nil {
 					toolCalls = append(toolCalls, *ev.ToolCall)
+					l.logDebug("tool_start: %s id=%s input_len=%d", ev.ToolCall.Name, ev.ToolCall.ID, len(ev.ToolCall.Input))
 					out <- Event{Type: EvtToolStart, ToolName: ev.ToolCall.Name, ToolInput: ev.ToolCall.Input, ToolUseID: ev.ToolCall.ID}
 
 					// Observer: 通知工具开始执行。
@@ -552,6 +615,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 				}
 
 			case provider.EventError:
+				l.logError("流中断，循环终止: %v", ev.Error)
 				out <- Event{Type: EvtError, Error: ev.Error}
 				if l.cfg.Observer != nil {
 					l.cfg.Observer.OnError(ctx, ev.Error)
@@ -561,6 +625,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 
 			// 轮询已完成的流式工具。
 			for _, result := range streamingExec.Poll() {
+				l.logDebug("tool_done: %s id=%s err=%v content_len=%d", result.Name, result.ToolUseID, result.IsError, len(result.Content))
 				out <- Event{Type: EvtToolDone, ToolName: result.Name, ToolResult: result.Content, ToolUseID: result.ToolUseID}
 				// Observer: 通知工具执行完成。
 				if l.cfg.Observer != nil {
@@ -654,6 +719,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 					state.maxOutputTokensOverride = 64_000
 					t := TransMaxOutputEscalate
 					state.transition = &t
+					l.logWarn("输出被截断(stop=max_tokens)，提升 max_tokens 至 64000 重试")
 					out <- Event{Type: EvtProgress, Text: "输出被截断，提升最大 tokens"}
 					continue
 				}
@@ -667,6 +733,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 					state.maxOutputRecoveryCount++
 					t := TransMaxOutputRecovery
 					state.transition = &t
+					l.logWarn("输出被截断(stop=max_tokens)，注入继续提示 %d/3", state.maxOutputRecoveryCount)
 					out <- Event{Type: EvtProgress, Text: fmt.Sprintf("输出被截断，恢复尝试 %d/3", state.maxOutputRecoveryCount)}
 					continue
 				}
@@ -687,28 +754,18 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 					state.messages = append(state.messages, recoveryMsg)
 					t := TransThinkingOnlyRecovery
 					state.transition = &t
+					l.logWarn("回复只有思考无正文，注入正文重述提示 %d/2", state.thinkingOnlyRecoveryCount)
 					out <- Event{Type: EvtProgress, Text: "回复只有思考无正文，要求正文重述"}
 					continue
 				}
 			}
 
-			// 运行 Stop Hooks。
-			if l.cfg.StopHooks != nil && l.cfg.StopHooks.HasHooks() {
-				hookResult := l.cfg.StopHooks.RunStopHooks(ctx, state.messages, assistantText)
-				if hookResult != nil && hookResult.Block {
-					// Hook 阻止了退出，注入修正消息继续循环。
-					correctionMsg := message.NewMetaMessage(hookResult.Message)
-					state.messages = append(state.messages, correctionMsg)
-					t := TransStopHookBlocking
-					state.transition = &t
-					out <- Event{Type: EvtProgress, Text: fmt.Sprintf("stop hook 阻止退出: %s", hookResult.Reason)}
-					continue
-				}
-			}
-
-			// 外部 Hooks RunStop（与 StopHooks 互补，覆盖更通用的退出拦截场景）。
+			// Stop Hooks（统一扩展点：hooks 包 EventStop）。
+			// 双轨合并后 internal 的 StopHookRunner 已删除——用户注册
+			// stop hook 只经 WithHooks 一条路，现场信息（停止原因/最后
+			// 文本/消息历史）直接传给 hook。
 			if l.cfg.Hooks != nil {
-				block, msg, err := l.cfg.Hooks.RunStop(ctx)
+				block, msg, err := l.cfg.Hooks.RunStop(ctx, string(stopReason), assistantText, state.messages)
 				if err != nil {
 					out <- Event{Type: EvtError, Error: fmt.Errorf("stop hook 错误: %w", err)}
 					return
@@ -718,12 +775,15 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 					state.messages = append(state.messages, correctionMsg)
 					t := TransStopHookBlocking
 					state.transition = &t
-					out <- Event{Type: EvtProgress, Text: fmt.Sprintf("外部 hook 阻止退出: %s", msg)}
+					l.logWarn("stop hook 阻止退出: %s", msg)
+					out <- Event{Type: EvtProgress, Text: fmt.Sprintf("stop hook 阻止退出: %s", msg)}
 					continue
 				}
 			}
 
 			// 正常完成。
+			l.logInfo("完成: turns=%d msgs=%d stop=%s text=%dB thinking=%dB",
+				state.turnCount, len(state.messages), stopReason, len(assistantText), len(thinkingText))
 			out <- Event{Type: EvtDone}
 			return
 		}
@@ -734,6 +794,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 		// streamingToolExecutor.getRemainingResults() 路径。
 		remaining := streamingExec.Wait(ctx)
 		for _, result := range remaining {
+			l.logDebug("tool_done: %s id=%s err=%v content_len=%d", result.Name, result.ToolUseID, result.IsError, len(result.Content))
 			out <- Event{Type: EvtToolDone, ToolName: result.Name, ToolResult: result.Content, ToolUseID: result.ToolUseID}
 			// Observer: 通知工具执行完成。
 			if l.cfg.Observer != nil {
@@ -791,6 +852,8 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 		state.hasAttemptedReactiveCompact = false
 		t := TransNextTurn
 		state.transition = &t
+		l.logInfo("turn=%d 完成: tools=%d input_tokens=%d msgs=%d",
+			state.turnCount, len(allResults), state.lastInputTokens, len(state.messages))
 
 		// 同步到 finalMessages：外部（goagent.run）在事件流消费中途调用
 		// FinalMessages() 做逐条即时持久化，进程被杀时已完成的轮次全保留。

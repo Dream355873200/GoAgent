@@ -21,9 +21,9 @@ package goagent
 
 import (
 	"context"
-	"log/slog"
 	"encoding/json"
 	"fmt"
+	"log
 	"os"
 	"path/filepath"
 	"sync"
@@ -878,6 +878,8 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		Hooks:        &hooksRunnerAdapter{mgr: a.hooksMgr},
 		Observer:     a.obsRegistry.Observer(),
 		SessionID:    sessionID,
+		Logger:       a.logger,
+		Debug:        a.config.debug,
 	}
 
 	// PlanChecker 仅在 Plan 系统启用时注入。
@@ -1130,8 +1132,8 @@ func (h *hooksRunnerAdapter) RunPostToolUse(ctx context.Context, toolName string
 	_ = h.mgr.RunPostToolUse(ctx, toolName, input, result, toolErr, "")
 }
 
-func (h *hooksRunnerAdapter) RunStop(ctx context.Context) (block bool, message string, err error) {
-	result, err := h.mgr.RunStop(ctx, "")
+func (h *hooksRunnerAdapter) RunStop(ctx context.Context, stopReason, lastText string, messages []message.Message) (block bool, message string, err error) {
+	result, err := h.mgr.RunStop(ctx, "", stopReason, lastText, messages)
 	if err != nil {
 		return false, "", err
 	}
