@@ -23,7 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
