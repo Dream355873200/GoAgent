@@ -48,7 +48,7 @@ func (p *probeProvider) Stream(ctx context.Context, req *provider.Request) (<-ch
 		if turn == 1 {
 			id := fmt.Sprintf("call-%s-1", key)
 			ch <- provider.StreamEvent{
-				Type: provider.EventToolUseStart,
+				Type:     provider.EventToolUseStart,
 				ToolCall: &message.ToolCall{ID: id, Name: "probe", Input: json.RawMessage(`{}`)},
 			}
 			ch <- provider.StreamEvent{

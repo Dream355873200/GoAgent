@@ -88,6 +88,11 @@ type Session struct {
 
 	// TurnCount 是当前的轮次计数。
 	TurnCount int `json:"turn_count"`
+
+	// LastCheckpoint 是最近一次挂起的执行现场（从未挂起为 nil）。
+	// Restore 时从 JSONL 的 checkpoint 记录回填；resume 场景宿主据此
+	// 判断「从挂起点继续」还是普通续聊。
+	LastCheckpoint *Checkpoint `json:"last_checkpoint,omitempty"`
 }
 
 // NewSession 创建一个新会话。

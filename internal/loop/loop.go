@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/Dream355873200/GoAgent/budget"
@@ -56,6 +57,11 @@ type Config struct {
 	// 细节日志同样走 Info 级输出（不依赖 slog Debug level），
 	// 宿主无需调整 handler 级别。
 	Debug bool
+	// SuspendGate 挂起/恢复门闩（可选）。非 nil 时，每轮工具执行前
+	// 检查是否处于挂起等待——审批等待/用户暂停场景由宿主经
+	// gate.Wait 阻塞、gate.Resume 唤醒续跑（非取消语义）。
+	// 挂起期间消息序列与执行位置保持完整（内存态）。
+	SuspendGate *SuspendGate
 }
 
 // PlanChecker 是 plan mode 的接口。
@@ -133,6 +139,8 @@ type Event struct {
 }
 
 // 事件类型（匹配公共 EventType）。
+// 注意：公共面 11-14 已被 SubAgentProgress/AskUser/PlanConfirm/Interrupt
+// 占用，本包新增类型必须显式对齐公共数值（toPublicEvent 数值直转）。
 const (
 	EvtTextDelta    = 0
 	EvtThinking     = 1
@@ -145,6 +153,8 @@ const (
 	EvtError        = 8
 	EvtProgress     = 9
 	EvtCompaction   = 10
+	// EvtInterrupted = 15 对齐公共 EventInterrupted：用户主动终止。
+	EvtInterrupted = 15
 )
 
 // Transition 描述循环继续到下一次迭代的原因。
@@ -181,8 +191,13 @@ type loopState struct {
 
 // Loop 是核心 agent 状态机。
 type Loop struct {
-	cfg           Config
-	toolIndex     map[string]*ToolEntry
+	cfg       Config
+	toolIndex map[string]*ToolEntry
+	// mu 保护 finalMessages：写方是 run goroutine（每轮末尾 + 结束
+	// defer），读方是事件消费 goroutine（EventDone 时 / 逐条持久化
+	// 时调 FinalMessages）——两个 goroutine 天然并发，没有锁就是
+	// data race（-race 实测：EventDone 事件先于 defer 写到达消费者）。
+	mu            sync.RWMutex
 	finalMessages []message.Message // 循环结束后的完整消息列表
 	state         *loopState        // 当前运行状态（用于 Pause/Resume）
 }
@@ -241,7 +256,17 @@ func (l *Loop) Run(ctx context.Context, input string) <-chan Event {
 // 必须在 Run() 返回的 channel 消费完毕后调用。
 // 用于会话持久化。
 func (l *Loop) FinalMessages() []message.Message {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	return l.finalMessages
+}
+
+// setFinalMessages 由 run goroutine 同步最新消息列表（锁内拷贝 slice
+// header；底层元素只追加不改写，读方拿到的旧 header 仍安全）。
+func (l *Loop) setFinalMessages(msgs []message.Message) {
+	l.mu.Lock()
+	l.finalMessages = msgs
+	l.mu.Unlock()
 }
 
 func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
@@ -285,7 +310,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 	// 供外部在事件流消费中途调用 FinalMessages() 做逐条即时持久化。
 	defer func() {
 		l.state = nil
-		l.finalMessages = state.messages
+		l.setFinalMessages(state.messages)
 		if l.cfg.Observer != nil {
 			l.cfg.Observer.OnSessionEnd(ctx, l.cfg.SessionID, state.turnCount)
 		}
@@ -347,8 +372,39 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 			return
 		}
 
+		// 挂起检查点：宿主经 SuspendGate 发起挂起（非取消）时，循环在此
+		// 阻塞等待唤醒。复用 429 等待的机制地基（select 等 channel），
+		// 区别：429 等定时器，挂起等外部信号。挂起期间内存态（消息序列/
+		// 执行位置）完整保留，唤醒后从本行继续——「挂起点恢复」而非重跑。
+		if l.cfg.SuspendGate != nil && l.cfg.SuspendGate.IsWaiting() {
+			l.logInfo("循环挂起中，等待唤醒 · turn=%d msgs=%d", state.turnCount+1, len(state.messages))
+			out <- Event{Type: EvtProgress, StatusKey: "suspend", Text: "已挂起，等待外部信号"}
+			resumed, suspendErr := l.cfg.SuspendGate.Wait(ctx)
+			if suspendErr != nil {
+				// Terminate：终止路径（区别于终止 ctx cancel 的第三种退出）。
+				l.logWarn("挂起被终止: %v", suspendErr)
+				out <- Event{Type: EvtProgress, StatusKey: "suspend", Text: ""}
+				out <- Event{Type: EvtError, Error: suspendErr}
+				return
+			}
+			if !resumed {
+				// ctx 取消（用户终止）：走统一的中断路径。
+				out <- Event{Type: EvtProgress, StatusKey: "suspend", Text: ""}
+				continue // 下一轮循环顶部的 ctx 检查会处理终止
+			}
+			l.logInfo("挂起唤醒，继续执行 · turn=%d", state.turnCount+1)
+			out <- Event{Type: EvtProgress, StatusKey: "suspend", Text: ""} // 清除状态行
+		}
+
 		// 检查上下文取消。
 		if ctx.Err() != nil {
+			// 用户主动终止（/interrupt 路由到 ctx cancel）与超时/其他错误
+			// 分开：Canceled 走一等事件，前端渲染「已停止」而非报错。
+			if errors.Is(ctx.Err(), context.Canceled) {
+				l.logInfo("用户中断，循环终止")
+				out <- Event{Type: EvtInterrupted, Text: "用户中断"}
+				return
+			}
 			l.logError("上下文已取消，循环终止: %v", ctx.Err())
 			if l.cfg.Observer != nil {
 				l.cfg.Observer.OnError(ctx, ctx.Err())
@@ -428,6 +484,20 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 		l.logDebug("turn=%d 请求: msgs=%d tools=%d max_tokens=%d input_tokens_est=%d",
 			state.turnCount+1, len(state.messages), len(toolDefs), maxTokens, totalTokens)
 
+		// LLM 调用级 observer（可选接口）：Stream 建立前触发 OnLLMStart。
+		llmInfo := &observer.LLMCallInfo{
+			Model:          activeProvider.Capabilities().ModelID,
+			Turn:           state.turnCount + 1,
+			NumMessages:    len(state.messages),
+			NumTools:       len(toolDefs),
+			MaxTokens:      maxTokens,
+			InputTokensEst: totalTokens,
+		}
+		if o, ok := l.cfg.Observer.(observer.LLMObserver); ok {
+			o.OnLLMStart(ctx, llmInfo)
+		}
+		llmStart := time.Now()
+
 		stream, err := activeProvider.Stream(ctx, req)
 
 		// 速率限制重试：429（TPM/RPM 配额）等待后重试同一模型必然可行。
@@ -457,8 +527,14 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 							brief, remain, attempt, maxRateRetries)}
 						select {
 						case <-ctx.Done():
-							l.logError("429 等待中被取消: %v", ctx.Err())
-							out <- Event{Type: EvtError, Error: fmt.Errorf("API 错误: %w", err)}
+							// 用户在 429 等待期间中断：同样走一等事件。
+							if errors.Is(ctx.Err(), context.Canceled) {
+								l.logInfo("429 等待中用户中断")
+								out <- Event{Type: EvtInterrupted, Text: "用户中断"}
+							} else {
+								l.logError("429 等待中被取消: %v", ctx.Err())
+								out <- Event{Type: EvtError, Error: fmt.Errorf("API 错误: %w", err)}
+							}
 							return
 						case <-time.After(time.Until(deadline)):
 						}
@@ -504,7 +580,20 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 				}
 			}
 
+			// 流请求本身被取消（用户中断在 Stream 建立阶段传导）。
+			if errors.Is(err, context.Canceled) {
+				l.logInfo("用户中断（请求阶段），循环终止")
+				if o, ok := l.cfg.Observer.(observer.LLMObserver); ok {
+					o.OnLLMError(ctx, llmInfo, err)
+				}
+				out <- Event{Type: EvtInterrupted, Text: "用户中断"}
+				return
+			}
+
 			l.logError("API 错误，循环终止: %v", err)
+			if o, ok := l.cfg.Observer.(observer.LLMObserver); ok {
+				o.OnLLMError(ctx, llmInfo, err)
+			}
 			out <- Event{Type: EvtError, Error: fmt.Errorf("API 错误: %w", err)}
 			if l.cfg.Observer != nil {
 				l.cfg.Observer.OnError(ctx, fmt.Errorf("API 错误: %w", err))
@@ -521,6 +610,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 		var thinkingText string
 		var toolCalls []message.ToolCall
 		var stopReason provider.StopReason
+		var turnUsage *provider.Usage // 本轮流中 EventUsage 携带的用量（OnLLMDone 用）
 
 		// 重置 withholder。
 		withholder.Clear()
@@ -547,9 +637,10 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 					l.logDebug("tool_start: %s id=%s input_len=%d", ev.ToolCall.Name, ev.ToolCall.ID, len(ev.ToolCall.Input))
 					out <- Event{Type: EvtToolStart, ToolName: ev.ToolCall.Name, ToolInput: ev.ToolCall.Input, ToolUseID: ev.ToolCall.ID}
 
-					// Observer: 通知工具开始执行。
+					// Observer: 通知工具开始执行（ctx 携带调用 ID，
+					// 宿主经 observer.ToolCallIDFromContext 做 span 关联）。
 					if l.cfg.Observer != nil {
-						l.cfg.Observer.OnToolStart(ctx, ev.ToolCall.Name, ev.ToolCall.Input)
+						l.cfg.Observer.OnToolStart(observer.WithToolCallID(ctx, ev.ToolCall.ID), ev.ToolCall.Name, ev.ToolCall.Input)
 					}
 					// 记录开始时间用于计算执行时长。
 					state.toolStartTimes[ev.ToolCall.ID] = time.Now()
@@ -594,6 +685,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 			case provider.EventUsage:
 				if ev.Usage != nil {
 					out <- Event{Type: EvtUsageUpdate, Usage: ev.Usage}
+					turnUsage = ev.Usage
 					// P1b: 记录 API 返回的实际 input tokens。
 					if ev.Usage.InputTokens > 0 {
 						state.lastInputTokens = ev.Usage.InputTokens
@@ -615,7 +707,19 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 				}
 
 			case provider.EventError:
+				// 流被取消（用户中断传导到 provider 层）同样走一等事件。
+				if errors.Is(ev.Error, context.Canceled) {
+					l.logInfo("用户中断（流中），循环终止")
+					if o, ok := l.cfg.Observer.(observer.LLMObserver); ok {
+						o.OnLLMError(ctx, llmInfo, ev.Error)
+					}
+					out <- Event{Type: EvtInterrupted, Text: "用户中断"}
+					return
+				}
 				l.logError("流中断，循环终止: %v", ev.Error)
+				if o, ok := l.cfg.Observer.(observer.LLMObserver); ok {
+					o.OnLLMError(ctx, llmInfo, ev.Error)
+				}
 				out <- Event{Type: EvtError, Error: ev.Error}
 				if l.cfg.Observer != nil {
 					l.cfg.Observer.OnError(ctx, ev.Error)
@@ -641,6 +745,20 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 					}
 				}
 			}
+		}
+
+		// 流消费完毕：LLM 调用级 observer 触发 OnLLMDone（本轮响应完整落地）。
+		if o, ok := l.cfg.Observer.(observer.LLMObserver); ok {
+			o.OnLLMDone(ctx, llmInfo, &observer.LLMResult{
+				Model:         activeProvider.Capabilities().ModelID,
+				Turn:          state.turnCount + 1,
+				Duration:      time.Since(llmStart),
+				StopReason:    string(stopReason),
+				OutputTextLen: len(assistantText),
+				ThinkingLen:   len(thinkingText),
+				NumToolCalls:  len(toolCalls),
+				Usage:         turnUsage,
+			})
 		}
 
 		// ⑥ 中止检查 — 生成合成 tool_result 维持 API 消息对齐。
@@ -674,7 +792,13 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 					)
 				}
 			}
-			out <- Event{Type: EvtError, Error: ctx.Err()}
+			// 用户主动终止走一等事件（合成 tool_result 逻辑见上，保持消息
+			// 序列完整以便同会话续聊）；DeadlineExceeded 等仍走错误通道。
+			if errors.Is(ctx.Err(), context.Canceled) {
+				out <- Event{Type: EvtInterrupted, Text: "用户中断"}
+			} else {
+				out <- Event{Type: EvtError, Error: ctx.Err()}
+			}
 			return
 		}
 
@@ -708,7 +832,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 		// 同步到 finalMessages：assistant 消息（思考+工具调用）一完成就落盘，
 		// 不等工具执行完——工具跑几十秒（analyze/build）期间前端重连/重开
 		// 项目就能看到本轮的思考和正在执行的工具调用。
-		l.finalMessages = state.messages
+		l.setFinalMessages(state.messages)
 
 		// ⑦ 无工具调用 → 退出判断。
 		if len(toolCalls) == 0 {
@@ -804,9 +928,9 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 					delete(state.toolStartTimes, result.ToolUseID)
 				}
 				if result.IsError {
-					l.cfg.Observer.OnToolError(ctx, result.Name, nil, fmt.Errorf("%s", result.Content), duration)
+					l.cfg.Observer.OnToolError(observer.WithToolCallID(ctx, result.ToolUseID), result.Name, nil, fmt.Errorf("%s", result.Content), duration)
 				} else {
-					l.cfg.Observer.OnToolDone(ctx, result.Name, nil, result.Content, duration)
+					l.cfg.Observer.OnToolDone(observer.WithToolCallID(ctx, result.ToolUseID), result.Name, nil, result.Content, duration)
 				}
 			}
 		}
@@ -857,7 +981,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 
 		// 同步到 finalMessages：外部（goagent.run）在事件流消费中途调用
 		// FinalMessages() 做逐条即时持久化，进程被杀时已完成的轮次全保留。
-		l.finalMessages = state.messages
+		l.setFinalMessages(state.messages)
 
 		// 增加压缩管理器的轮次计数。
 		if l.cfg.Compaction != nil {

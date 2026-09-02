@@ -59,6 +59,11 @@ func (m *MockProvider) nextResponse() MockResponse {
 		m.responseIdx++
 		return resp
 	}
+	if len(m.Responses) == 0 {
+		// 零响应配置：返回空文本响应而不是 panic（NewMockProvider()
+		// 无参形态的合法语义——agent 收到空回复自然退出）。
+		return MockResponse{}
+	}
 	return m.Responses[len(m.Responses)-1]
 }
 

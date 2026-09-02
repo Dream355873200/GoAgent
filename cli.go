@@ -205,6 +205,8 @@ func toTUIEvent(ev Event) tui.Event {
 		te.Type = tui.EvCompaction
 	case EventSubAgentProgress:
 		te.Type = tui.EvSubAgentProgress
+	case EventInterrupted:
+		te.Type = tui.EvInterrupted
 	}
 
 	return te

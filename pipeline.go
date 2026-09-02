@@ -1362,10 +1362,12 @@ func (p *pipeline) buildLightweightLoop(agentDef *PipelineAgentDef, nodeCtx cont
 	}
 
 	// Observer: 继承父 App 的 obsRegistry（如果有）。
+	// 与主循环同规则合并 ctx 边界注入链（observer.IntoContext）。
 	var obs observer.Observer
 	if p.parentApp.obsRegistry != nil {
 		obs = p.parentApp.obsRegistry.Observer()
 	}
+	obs = observer.ResolveObserver(nodeCtx, obs)
 
 	return loop.New(loop.Config{
 		Provider:     prov,
@@ -1413,6 +1415,10 @@ func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDe
 			lastError = ev.Error
 			p.logger.Warn(fmt.Sprintf("runLightweight: agent=%s error=%v", agentDef.Name, ev.Error))
 			p.emitEvent(agentDef.Name, "error", ev.Error.Error(), "")
+		case loop.EvtInterrupted:
+			// 用户主动终止：区别于错误通道透出，前端渲染「已停止」。
+			p.logger.Info(fmt.Sprintf("runLightweight: agent=%s interrupted", agentDef.Name))
+			p.emitEvent(agentDef.Name, "interrupted", ev.Text, "")
 		case loop.EvtProgress:
 			// 429 状态行等：StatusKey 非空 = 原地更新语义，Text 空 = 清除。
 			// 此前被静默丢弃——嵌入方无法把节点的限流等待展示给用户。

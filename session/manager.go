@@ -133,6 +133,29 @@ func (m *Manager) UpdateState(ctx context.Context, sessionID string, state State
 	return m.store.UpdateState(ctx, sessionID, state)
 }
 
+// WriteCheckpoint 写入挂起点检查记录（执行位置 + 挂起原因）。
+// 配合消息历史逐条落盘，构成恢复所需的全部现场——resume 时
+// RunWithHistory(历史) + checkpoint 的执行位置继续未完成那步。
+// 存储后端未实现 Checkpointer 时返回 ErrCheckpointUnsupported。
+func (m *Manager) WriteCheckpoint(ctx context.Context, sessionID string, cp Checkpoint) error {
+	c, ok := m.store.(Checkpointer)
+	if !ok {
+		return ErrCheckpointUnsupported
+	}
+	return c.WriteCheckpoint(ctx, sessionID, cp)
+}
+
+// ReadLastCheckpoint 读取最近一条挂起点检查记录。
+// 无 checkpoint（会话从未挂起）返回 nil, nil。
+// 存储后端未实现 Checkpointer 时返回 ErrCheckpointUnsupported。
+func (m *Manager) ReadLastCheckpoint(ctx context.Context, sessionID string) (*Checkpoint, error) {
+	c, ok := m.store.(Checkpointer)
+	if !ok {
+		return nil, ErrCheckpointUnsupported
+	}
+	return c.ReadLastCheckpoint(ctx, sessionID)
+}
+
 // Store 返回底层 SessionStore（供高级用户使用）。
 func (m *Manager) Store() SessionStore {
 	return m.store

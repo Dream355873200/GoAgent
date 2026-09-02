@@ -125,10 +125,10 @@ func (noopSandbox) Enter(ctx context.Context, sessionID string, policy Policy) (
 
 type noopSession struct{}
 
-func (noopSession) Root() string                            { return "" }
-func (noopSession) CommandDir() string                      { return "" }
-func (noopSession) Policy() Policy                          { return Policy{} }
-func (noopSession) Close() error                            { return nil }
+func (noopSession) Root() string                                  { return "" }
+func (noopSession) CommandDir() string                            { return "" }
+func (noopSession) Policy() Policy                                { return Policy{} }
+func (noopSession) Close() error                                  { return nil }
 func (noopSession) ResolvePath(p string, op FSOp) (string, error) { return p, nil }
 
 // ---------------------------------------------------------------------------

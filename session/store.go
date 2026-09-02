@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/Dream355873200/GoAgent/message"
@@ -121,6 +122,28 @@ func (fs *FileStore) AppendMessage(ctx context.Context, sessionID string, msg me
 func (fs *FileStore) UpdateState(ctx context.Context, sessionID string, state State) error {
 	return fs.storage.WriteState(sessionID, state)
 }
+
+// WriteCheckpoint 写入挂起点检查记录（Checkpointer 接口）。
+func (fs *FileStore) WriteCheckpoint(ctx context.Context, sessionID string, cp Checkpoint) error {
+	return fs.storage.WriteCheckpoint(sessionID, cp)
+}
+
+// ReadLastCheckpoint 读取最近一条挂起点检查记录（Checkpointer 接口）。
+// 无 checkpoint 返回 nil, nil。
+func (fs *FileStore) ReadLastCheckpoint(ctx context.Context, sessionID string) (*Checkpoint, error) {
+	return fs.storage.ReadLastCheckpoint(sessionID)
+}
+
+// Checkpointer 是可选的挂起点检查能力（SessionStore 的扩展接口）。
+// FileStore 已实现；自定义存储按需实现——未实现的 store 上调用
+// Manager 的 checkpoint 方法返回 ErrCheckpointUnsupported。
+type Checkpointer interface {
+	WriteCheckpoint(ctx context.Context, sessionID string, cp Checkpoint) error
+	ReadLastCheckpoint(ctx context.Context, sessionID string) (*Checkpoint, error)
+}
+
+// ErrCheckpointUnsupported 存储后端不支持挂起点检查。
+var ErrCheckpointUnsupported = fmt.Errorf("session store 不支持 checkpoint")
 
 // MemoryStore 是基于内存的 SessionStore 实现。
 // 不做持久化，进程重启后数据丢失。

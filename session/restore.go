@@ -55,6 +55,13 @@ func Restore(storage *Storage, sessionID string) (*Session, error) {
 				session.State = StateSuspended
 			}
 
+		case RecordCheckpoint:
+			// 挂起点检查记录：只保留最后一条（最新执行位置才是恢复点）。
+			var cp Checkpoint
+			if err := json.Unmarshal(record.Data, &cp); err == nil {
+				session.LastCheckpoint = &cp
+			}
+
 		case RecordBoundary:
 			// 边界记录作为特殊消息处理。
 			var msg message.Message

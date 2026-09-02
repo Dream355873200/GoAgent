@@ -6,6 +6,7 @@ import (
 	"github.com/Dream355873200/GoAgent/agent"
 	"github.com/Dream355873200/GoAgent/bgtask"
 	"github.com/Dream355873200/GoAgent/hooks"
+	"github.com/Dream355873200/GoAgent/internal/loop"
 	"github.com/Dream355873200/GoAgent/observer"
 	"github.com/Dream355873200/GoAgent/permission"
 	"github.com/Dream355873200/GoAgent/plan"
@@ -81,6 +82,15 @@ type appConfig struct {
 
 	// 测试模式（WithDebugMode）：loop 细节日志全量输出
 	debug bool
+
+	// 挂起/恢复（WithSuspend）：非 nil 时 loop 在每轮工具执行前检查
+	// 挂起门闩，宿主经 app.SuspendGate() 发起挂起/唤醒/终止。
+	// nil = 不启用挂起（默认，行为零变化）。
+	suspendGate *loop.SuspendGate
+
+	// RAG 形态 1（WithRetrieval）：非 nil 时每次 run 前置检索，
+	// 命中内容拼进用户输入（agent 无感知）。nil = 不检索（默认）。
+	retrieval *RetrievalConfig
 }
 
 // ProviderConfig 是 LLM Provider 的配置，可直接传给 New()。
@@ -838,6 +848,28 @@ func WithLogger(l *slog.Logger) Option {
 func WithDebugMode() Option {
 	return optionFunc(func(c *appConfig) {
 		c.debug = true
+	})
+}
+
+// WithSuspend 启用挂起/恢复：返回 SuspendGate，宿主持有它发起挂起
+// （gate.Suspend()）、唤醒续跑（gate.Resume()）或终止（gate.Terminate()）。
+//
+// 三语义彻底分开（TODO 定稿）：
+//   - 终止（已有）：POST /interrupt → ctx cancel → 循环退出；
+//   - 挂起（本选项）：goroutine 挂起而非取消，状态活在内存，
+//     审批到达/用户确认后唤醒从挂起点续跑；
+//   - 恢复：挂起点继续未完成那步，不是从头重跑。
+//
+// 挂起机制复用 429 等待的地基（select 等 channel），服务秒级~分钟级
+// 审批等待。进程重启场景配合 checkpoint（见 App.Checkpoint）使用。
+//
+// 示例：
+//
+//	gate := goagent.WithSuspend()  // 注意：作为 Option 传入 New() 时 gate 为 nil，
+//	                               // 请用 app := goagent.New(...); gate := app.SuspendGate()
+func WithSuspend() Option {
+	return optionFunc(func(c *appConfig) {
+		c.suspendGate = loop.NewSuspendGate()
 	})
 }
 

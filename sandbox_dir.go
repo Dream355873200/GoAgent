@@ -72,9 +72,9 @@ type dirSandboxSession struct {
 	policy Policy
 }
 
-func (s *dirSandboxSession) Root() string     { return s.root }
+func (s *dirSandboxSession) Root() string       { return s.root }
 func (s *dirSandboxSession) CommandDir() string { return s.root }
-func (s *dirSandboxSession) Policy() Policy   { return s.policy }
+func (s *dirSandboxSession) Policy() Policy     { return s.policy }
 
 // ResolvePath 相对路径按根解析 + Clean（词法捕获 `..` 逃逸），再按策略检查。
 func (s *dirSandboxSession) ResolvePath(p string, op FSOp) (string, error) {

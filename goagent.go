@@ -552,6 +552,26 @@ func (a *App) PlanStore() plan.StoreInterface {
 	return a.planMgr
 }
 
+// SuspendGate 返回挂起/恢复门闩（需先启用 WithSuspend，否则 nil）。
+//
+// 宿主典型用法（审批等待场景）：
+//
+//	gate := app.SuspendGate()
+//	// 发起挂起：下一次轮次边界循环阻塞，状态活在内存
+//	go func() {
+//	    if approved := waitForApproval(); approved {
+//	        gate.Resume()     // 唤醒续跑
+//	    } else {
+//	        gate.Terminate()  // 终止
+//	    }
+//	}()
+//
+// 注意 WithSuspend() 作为 Option 无法把 gate 返回给宿主——正确姿势是
+// New(WithSuspend()) 之后经本方法取引用。
+func (a *App) SuspendGate() *loop.SuspendGate {
+	return a.config.suspendGate
+}
+
 // Usage 返回成本追踪摘要（如果启用了 WithCostTracking）。
 // 如果未启用，返回 nil。
 func (a *App) Usage() *cost.CostSummary {
@@ -818,9 +838,6 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		sessMem = sessionmem.New(a.provider, *cfg.sessionMemoryCfg)
 	}
 
-	// 7. 动态 System Prompt 组装。
-	systemPrompt := a.buildSystemPrompt(cfg, memMgr)
-
 	// 提取 SessionID（sess 可能为 nil，如 pipeline supervisor、RunWithHistory 等场景）。
 	var sessionID string
 	if sess != nil {
@@ -855,6 +872,10 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		}
 	}
 
+	// 7. 动态 System Prompt 组装。必须在 workDir 定型之后——环境信息段
+	// 要告知模型当前工作目录（见 buildSystemPrompt）。
+	systemPrompt := a.buildSystemPrompt(cfg, memMgr, workDir)
+
 	// 会话上下文注入：SessionID + 工作目录经 context value 流经整个
 	// 执行链（loop → executor → 工具的 goagent.Context 字段）。
 	// 工作目录由 WithSessionWorkDir 的解析函数按会话提供——单进程多会话
@@ -862,7 +883,20 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	// 未配置时为空 = 沿用进程 cwd（旧行为）。
 	ctx = WithSessionContext(ctx, sessionID, workDir)
 
+	// RAG 形态 1（WithRetrieval）：run 前置固定流程——retrieve→rerank→
+	// 拼进用户输入，agent 无感知。检索失败 fail-closed（见 WithRetrieval）。
+	if cfg.retrieval != nil {
+		var err error
+		input, err = a.injectRetrieval(ctx, cfg.retrieval, input, out)
+		if err != nil {
+			out <- Event{Type: EventError, Error: err}
+			return
+		}
+	}
+
 	// 构建 loop 配置。
+	// Observer 合并 ctx 边界注入链（observer.IntoContext）：benchmark 等
+	// 单次 run 临时采集的 observer 与 App 级 observer 同时收到事件。
 	loopCfg := loop.Config{
 		Provider:     a.provider,
 		Fallback:     a.fallback,
@@ -876,10 +910,11 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		Executor:     exec,
 		Budget:       budgetTracker,
 		Hooks:        &hooksRunnerAdapter{mgr: a.hooksMgr},
-		Observer:     a.obsRegistry.Observer(),
+		Observer:     observer.ResolveObserver(ctx, a.obsRegistry.Observer()),
 		SessionID:    sessionID,
 		Logger:       a.logger,
 		Debug:        a.config.debug,
+		SuspendGate:  a.config.suspendGate,
 	}
 
 	// PlanChecker 仅在 Plan 系统启用时注入。
@@ -944,7 +979,10 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 }
 
 // buildSystemPrompt 使用 sysprompt.Builder 动态组装系统提示词。
-func (a *App) buildSystemPrompt(cfg appConfig, memMgr *memory.Manager) string {
+// workDir 是本次 run 的工作目录（会话目录 > 沙箱根；空 = 进程 cwd），
+// 注入环境信息段告知模型——不告知会导致模型猜路径（如 /workspace）
+// 并误用当前平台不存在的命令（如 Windows cmd 下跑 pwd）。
+func (a *App) buildSystemPrompt(cfg appConfig, memMgr *memory.Manager, workDir string) string {
 	builder := sysprompt.NewBuilder()
 
 	if cfg.systemPrompt != "" {
@@ -961,10 +999,22 @@ func (a *App) buildSystemPrompt(cfg appConfig, memMgr *memory.Manager) string {
 		builder.AddSection("reminder", resolvePrompt(cfg.promptDir, prompts.Reminder), nil)
 	}
 
-	// 环境信息和 Git 状态（WithGitContext 启用时才注入）。
+	// 环境信息（平台/Shell/工作目录）：无条件注入——工作目录是模型的
+	// 寻址基准（对齐 Claude Code 的 Working directory 行）。会话目录未
+	// 提供（未配 WithSessionWorkDir）时回退进程 cwd。
+	if workDir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			workDir = wd
+		}
+	}
+	builder.SetProjectDir(workDir)
+	builder.AddEnvironmentInfo()
+
+	// Git 状态（WithGitContext 启用时才注入）。仓库根从工作目录探测——
+	// 多项目会话场景下进程 cwd 与会话目录不同，git 上下文必须对齐后者。
 	if cfg.enableGitStatus {
-		builder.AddEnvironmentInfo()
-		if root := sysprompt.DetectGitRoot(); root != "" {
+		root := sysprompt.DetectGitRootIn(workDir)
+		if root != "" {
 			builder.SetGitRoot(root)
 		}
 		builder.AddGitStatus()
@@ -995,8 +1045,9 @@ func resolvePrompt(promptDir, embedName string) string {
 }
 
 // GetSystemPrompt 返回当前的完整 system prompt（供用户查看/调试）。
+// 注意：不含 run 级动态信息（会话工作目录）——实际 run 时会按会话注入。
 func (a *App) GetSystemPrompt() string {
-	return a.buildSystemPrompt(a.config, nil)
+	return a.buildSystemPrompt(a.config, nil, "")
 }
 
 // buildPromptVars 构建提示词模板变量。

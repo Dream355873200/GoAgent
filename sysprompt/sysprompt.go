@@ -10,7 +10,15 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
+)
+
+// shellOnce 缓存 shell 探测结果：AddEnvironmentInfo 每次 run 都会组装，
+// 探测（fork bash --version）只做一次。
+var (
+	shellOnce  sync.Once
+	shellCache string
 )
 
 // Section 是 system prompt 的一个段落。
@@ -184,8 +192,15 @@ func buildEnvironmentInfo(projectDir string) string {
 	return "# Environment\n" + strings.Join(parts, "\n")
 }
 
-// detectShell 检测当前 shell。
+// detectShell 检测当前 shell（进程级缓存——探测要 fork 子进程）。
 func detectShell() string {
+	shellOnce.Do(func() {
+		shellCache = detectShellUncached()
+	})
+	return shellCache
+}
+
+func detectShellUncached() string {
 	if runtime.GOOS == "windows" {
 		// Windows 上检查 SHELL 环境变量（Git Bash）或默认 cmd。
 		cmd := exec.Command("bash", "--version")
@@ -285,7 +300,15 @@ func CurrentDate() string {
 // DetectGitRoot 检测当前目录的 git 仓库根目录。
 // 如果不在 git 仓库中则返回空字符串。
 func DetectGitRoot() string {
+	return DetectGitRootIn("")
+}
+
+// DetectGitRootIn 检测指定目录所在 git 仓库根目录；dir 为空时用进程 cwd。
+// 会话工作目录与进程 cwd 不同时（WithSessionWorkDir 多项目场景），
+// git 上下文必须从会话目录探测，否则状态对不上。
+func DetectGitRootIn(dir string) string {
 	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = dir
 	output, err := cmd.Output()
 	if err != nil {
 		return ""

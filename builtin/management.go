@@ -256,7 +256,7 @@ func skillDescOf(s *skill.Skill) string {
 }
 
 // skillToolDescription 动态构建描述：内嵌当前可用 skill 清单
-//（名称 + 一行描述），让模型在决策时直接看得到有哪些技能可用——
+// （名称 + 一行描述），让模型在决策时直接看得到有哪些技能可用——
 // 否则模型不知道技能存在，永远不会调用。
 func skillToolDescription(reg *skill.Registry) string {
 	var sb strings.Builder

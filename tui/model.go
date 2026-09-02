@@ -106,6 +106,7 @@ const (
 	EvProgress
 	EvCompaction
 	EvSubAgentProgress
+	EvInterrupted
 )
 
 // ── viewMode 控制 TUI 当前状态 ──────────────────────────────────────
@@ -622,6 +623,11 @@ func (m Model) handleAgentEvent(msg agentEventMsg) (tea.Model, tea.Cmd) {
 		}
 		m.activityText = ""
 		m.appendContent(ErrorStyle.Render(fmt.Sprintf("\n[错误] %v", ev.Error)) + "\n")
+
+	case EvInterrupted:
+		// 用户主动终止：渲染「已停止」而非报错样式。
+		m.activityText = ""
+		m.appendContent(DimStyle.Render(fmt.Sprintf("\n[已停止] %s", ev.Text)) + "\n")
 
 	case EvCompaction:
 		m.activityText = "压缩上下文..."

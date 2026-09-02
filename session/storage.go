@@ -30,6 +30,9 @@ const (
 	RecordBoundary RecordType = "boundary"
 	// RecordState 状态变更记录。
 	RecordState RecordType = "state"
+	// RecordCheckpoint 挂起点检查记录：执行位置 + 挂起原因小块。
+	// resume = 历史消息（已存在的 message 记录）+ 本记录的执行位置。
+	RecordCheckpoint RecordType = "checkpoint"
 )
 
 // Record 是 JSONL 文件中的一条记录。
@@ -114,6 +117,58 @@ func (s *Storage) WriteState(sessionID string, state State) error {
 		Timestamp: time.Now(),
 		Data:      data,
 	})
+}
+
+// Checkpoint 是挂起点的执行现场小块（消息历史之外的部分）。
+// 消息历史本来就在 JSONL 里逐条落盘——checkpoint 只补「执行位置 +
+// 挂起原因」，resume = RunWithHistory(历史) + 从此处继续。
+type Checkpoint struct {
+	// Reason 挂起原因（approval/user）。
+	Reason string `json:"reason"`
+	// Turn 挂起时的轮次（已完成轮数）。
+	Turn int `json:"turn"`
+	// PendingStep 挂起时未完成的那步描述（如待审批的工具调用）。
+	PendingStep string `json:"pending_step,omitempty"`
+	// CreatedAt 挂起发生时间（Unix 毫秒）。
+	CreatedAt int64 `json:"created_at"`
+}
+
+// WriteCheckpoint 写入一条挂起点检查记录（覆盖语义：ReadLastCheckpoint
+// 只取最后一条，最新的执行位置才是恢复点）。
+func (s *Storage) WriteCheckpoint(sessionID string, cp Checkpoint) error {
+	cp.CreatedAt = time.Now().UnixMilli()
+	data, err := json.Marshal(cp)
+	if err != nil {
+		return err
+	}
+	return s.Write(sessionID, Record{
+		Type:      RecordCheckpoint,
+		Timestamp: time.Now(),
+		Data:      data,
+	})
+}
+
+// ReadLastCheckpoint 读取最近一条挂起点检查记录。
+// 无 checkpoint（会话不存在或从未挂起）返回 nil, nil。
+func (s *Storage) ReadLastCheckpoint(sessionID string) (*Checkpoint, error) {
+	if !s.Exists(sessionID) {
+		return nil, nil
+	}
+	records, err := s.ReadAll(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for i := len(records) - 1; i >= 0; i-- {
+		if records[i].Type != RecordCheckpoint {
+			continue
+		}
+		var cp Checkpoint
+		if err := json.Unmarshal(records[i].Data, &cp); err != nil {
+			return nil, fmt.Errorf("解析 checkpoint 记录失败: %w", err)
+		}
+		return &cp, nil
+	}
+	return nil, nil
 }
 
 // ReadAll 读取会话文件的所有记录。

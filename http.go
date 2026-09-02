@@ -858,6 +858,12 @@ func (t EventType) String() string {
 		return "plan_confirm"
 	case EventInterrupt:
 		return "interrupt"
+	case EventInterrupted:
+		// 用户主动终止：前端渲染「已停止」而非报错样式。
+		return "interrupted"
+	case EventRetrieval:
+		// RAG 前置检索摘要（信息性事件，观测检索开销）。
+		return "retrieval"
 	default:
 		return "unknown"
 	}

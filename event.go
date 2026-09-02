@@ -62,6 +62,17 @@ const (
 	// EventInterrupt — 请求中断当前执行。
 	// 前端收到此事件后，可以选择继续或取消。
 	EventInterrupt
+
+	// EventInterrupted — 用户主动终止了当前执行（POST /interrupt 等）。
+	// 与 EventError 分离：provider 超时/工具崩溃走 Error，用户主动停止走
+	// 本事件——前端直接渲染「已停止」而非报错样式，无需 errors.Is 判断。
+	// Text 携带可读原因。
+	EventInterrupted
+
+	// EventRetrieval — RAG 前置检索完成（WithRetrieval 形态 1）。
+	// Text 携带摘要（query 前 60 字符 / 命中条数 / 注入字符数），
+	// 供宿主观测检索开销与命中情况。信息性事件，无需前端反应。
+	EventRetrieval
 )
 
 // Event is emitted by the agent loop for the consumer to react to.

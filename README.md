@@ -636,13 +636,42 @@ goagent/
 
 ```
 第一梯队（AnimeCreater 直接收益，全偏小）
-  ① EventInterrupted 一等事件（~20 行）
-  ② LLM 调用级 observer 钩子 + ctx 三优化
-  ③ interrupt 挂起/恢复（进程内 + 挂起点 checkpoint）
-  ④ RAG 四件套（Document + 窄接口 + WithRetrieval + 工具双形态）
+  ① EventInterrupted 一等事件 ✅ 已完成（loop 五处取消检查点识别 Canceled
+    发 EvtInterrupted；HTTP 层 SSE 映射 "interrupted"；TUI 渲染「已停止」；
+    pipeline runLightweight 透出 interrupted 事件）
+  ② LLM 调用级 observer 钩子 + ctx 三优化 ✅ 已完成（LLMObserver 可选
+    接口 OnLLMStart/Done/Error；ctx span 关联 WithToolCallID；沙箱 ctx
+    覆盖契约成文；observer.IntoContext 边界注入）
+  ③ interrupt 挂起/恢复 ✅ 已完成（SuspendGate 门闩 Wait/Resume/Terminate；
+    WithSuspend 选项；session checkpoint 记录：执行位置+挂起原因小块，
+    resume = RunWithHistory + checkpoint 续跑）
+  ④ RAG 四件套 ✅ 已完成（retrieval 子包：Document + 窄接口四兄弟
+    Retriever/Embedder/Store/Loader/Transformer + FusionRetriever 多路
+    融合 + MemoryRetriever/VectorStore/ChunkTransformer/FileLoader 参考
+    实现 + Index 建索引流水线；根包门面：WithRetrieval 形态 1 前置
+    管道〔ShouldRetrieve 谓词/MaxChars 保序截断/fail-closed〕+
+    NewRetrieveTool 形态 2 agent 工具 + EventRetrieval 观测事件）
 
 第二梯队（benchmark 自迭代的地基链）
-  ⑤ benchmark 评测闭环（observer 增强后正好动工）
+  ⑤ benchmark 评测闭环 ✅ B0+B1+B2 已完成（调研四路合成
+    docs/benchmark-research.md；benchmark 子包：Case/Assert/Verdict
+    打分制 + 14 个内置断言原语〔10 个确定性输出/轨迹类 + 4 个终态类
+    file-exists/file-not-exists/file-contains/state-equals〕+
+    RegisterAssert 逃生舱 + Runner〔Repeat/四态结果/infra 自动重试/
+    并发〕+ Report JSONL 落盘 + SuiteHash 内容哈希 + DiffReports 回归
+    对比 + Judge/LLMJudge〔closedqa rubric，judge 故障落 excluded〕+
+    "judge" 断言〔多准则并发判分〕+ PassK〔pass^k 可靠性/pass@k
+    能力上界〕+ 方差/CI95/延迟统计 + JUnitXML；根包门面：类型别名 +
+    AgentTarget〔事件流聚合 + CaptureStateFrom 终态采集〕+ 工厂形态；
+    GoldReplayer〔DeriveState 回放派生期望终态——SABER 教训不手写〕；
+    Case.AgentView〔hidden 断言分离——答案泄漏物理防线〕；
+    ValidateCase〔case 入库双端验证：gold 全过 + bad 至少挂一条〕；
+    空转实验操作指南见 benchmark-research.md §6）
+    自迭代安全边界（用户共识）：一二档开放——prompt/skill〔声明式
+    文本，可 diff 可回滚〕；工具注册本身结果明显用单测即可，但工具
+    description 是 prompt 的一部分仍可 bench；三档（agent 改核心
+    代码）等沙箱 Tier 2 进程隔离后再开——Tier 1 防意外不防恶意，
+    而三档恰恰制造恶意场景。
   ⑥ L4-α goja 执行器（自迭代需要沙箱代码执行）
 
 第三梯队（等前两梯队消化后再评估，届时按真实需求密度重排）

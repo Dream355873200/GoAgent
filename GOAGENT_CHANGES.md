@@ -5,6 +5,245 @@ Dream355873200/GoAgent 的本地增强副本。amobileCreater 的 engine 通过
 go.mod `replace` 指向此处。**每次向 GitHub 推送前**：把下面对应条目
 整理进正式 commit，然后移除 replace 升级版本号。
 
+## 2026-09-01（⑤ benchmark B2 自迭代武装——一二档判分可靠性）
+
+- **范围决策（用户共识）**：自迭代一二档开放（prompt/skill——声明式
+  文本可 diff 可回滚；工具注册本身结果明显用单测，但工具 description
+  属 prompt 仍可 bench）；三档（agent 改核心代码）等沙箱 Tier 2 进程
+  隔离后再开——Tier 1 防意外不防恶意，三档恰恰制造恶意场景。
+- **B2 终态断言族（benchmark/state.go）**：TargetOutput 加 State
+  字段（工作区快照 map[path]content，二进制跳过）；四个断言原语——
+  file-exists（存在性）、file-not-exists（Preserve 语义：不该动的
+  没动，SWE-bench PASS_TO_PASS）、file-contains（单文件内容）、
+  state-equals（期望快照精确比对，缺失/内容不同/多余全识别，分母
+  取大边——agent 留垃圾终态是脏的）。τ-bench×SWE-bench 交叉结论：
+  「对话内容对」和「副作用对」是独立通道，只看输出的断言是纸糊的。
+- **GoldReplayer（根包 gold.go）**：DeriveState(ctx, dir, tools,
+  calls) 在隔离目录回放参考工具调用序列（走 ToolDef.call 同一咽喉点
+  ——WorkDir/沙箱解析与真实 agent 运行一致），返回终态快照。SABER
+  教训：手写期望态是标注错误重灾区（τ-bench 被批出 50+ 处，修复后
+  airline 涨 14-20 分）；回放派生让期望终态与工具语义永远一致。
+  只比终态不比路径——等价路径全通过。附 SnapshotDir（目录快照，
+  NUL 字节检测跳过二进制）/SortedPaths。
+- **hidden 断言分离（Case.AgentView）**：剥掉 Asserts/Tags/Metadata
+  的 agent 视图——答案泄漏是物理问题（SWE-bench 教训），靠实现者
+  自觉不读不够，提供不可泄漏的形态才是硬保证。
+- **case 入库验证（benchmark/validate.go）**：ValidateCase(c, gold,
+  bad) 双端验证——gold 未全过 = 断言无法判定成功；bad 全过 = 恒真
+  断言拦不住回归。把「判分器本身有 bug」从运行时污染提前到入库
+  拦截（SWE-bench validation 阶段）。
+- **AgentTarget.CaptureStateFrom**：Run 结束后快照指定目录为
+  TargetOutput.State（终态断言采集端）。快照失败不中断——终态断言
+  在空 State 上正常判挂（agent 没产出终态 = 任务失败，非基建错误）。
+- **MockProvider 健壮性修复（顺手）**：NewMockProvider() 零响应
+  配置下 nextResponse 取 Responses[-1] 直接 panic；改返回空文本响应
+  （agent 收到空回复自然退出的合法语义）。
+- **测试**：state_test.go（四断言通过/失败/部分分/三类差异/坏 case
+  error/AgentView 剥离/ValidateCase 四情形）+ gold_test.go（回放
+  派生落盘/未知工具报错/端到端：DeriveState→state-equals→
+  CaptureStateFrom→ValidateCase——mock agent 未写文件被终态通道
+  判 fail，正是「只看输出会漏掉文件没写」的演示）。全量 9 包
+  -race 零失败。
+
+## 2026-09-01（⑤ benchmark B1 真模型层 + loop 并发修复）
+
+- **B1 能力评测层（judge 评「好不好」，确定性断言评「坏没坏」）**：
+  - **benchmark/judge.go**：Judge 接口（JudgeInput 含工具轨迹——
+    「有没有真做」和「做对了没」是两个维度）+ JudgeFunc 适配器 +
+    LLMJudge（走 provider.Provider.Complete——judge 与被测 agent 可
+    不同家模型，降低同源偏好；closedqa 风格 rubric prompt 三纪律：
+    只依据准则/宁可 FAIL 不放水/先判断后结论；首行 PASS/FAIL 解析
+    + 逐行扫描兜底——比 JSON 结构化输出抖动率低；格式损坏自动重试
+    默认 1 次）+ WithJudge/JudgeFromContext context 注入（保持
+    AssertFunc 纯函数签名，注册表不持状态）+ "judge" 断言类型
+    （Value=rubric 文本或准则数组，多准则并发判分；judge 自身故障
+    返回 error → case 落 excluded 不进分母——judge 坏了不惩罚被测
+    agent）。Runner 加 Judge 字段：Run 内部自动注入 ctx；validate
+    阶段「用了 judge 断言但没配 Judge」整单拒跑（配置错误）
+  - **benchmark/passk.go**：Report.PassK(k) → per-(target,case) 的
+    pass^k（C(c,k)/C(n,k) 全过概率，τ-bench 可靠性口径——gpt-4o
+    retail pass^1≈60% 但 pass^8≈25% 的鸿沟）与 pass@k
+    （1−C(n−c,k)/C(n,k) 至少一次过，HumanEval 无偏估计，能力上界）；
+    只统计有效 trial，infra/excluded 不进分母；k>n 时 pass^k 退化
+    为「全部样本都过」的频率并如实反映样本极限
+  - **benchmark/junit.go**：Report.JUnitXML(w)——CI 系统通吃格式
+    （GitHub Actions/Jenkins/GitLab 内建解析）；(target,case)=一个
+    testcase，AllPass 通过/否则 failure〔带失败断言明细——点开能看
+    挂在哪条断言〕/Valid=0 落 error〔基建问题不算红〕
+  - **report.go 统计扩展**：CaseSummary 加 ScoreStdDev/ScoreCI95
+    （正态近似 1.96σ/√n，注释明示 n<30 偏窄——METR 误差棒 ±2 倍
+    教训：看方差本身比看 CI 可靠）+ MeanLatencyMs/LatencyStdDevMs
+  - **根包门面**：Judge/JudgeInput/JudgeFunc/LLMJudge/PassKStat
+    类型别名 + WithJudge/JudgeFromContext；门面注释补 B1 用法示例
+  - **空转实验指南**：docs/benchmark-research.md §6 补操作指南
+    （同配置跑两遍看分数差——噪声底座决定 CI 阈值/默认 Repeat/
+    「多大 delta 算真信号」；四项健康信号读数表：ScoreStdDev/
+    Diff 零迁移/pass^2 比值/judge 与人工抽检一致率）
+  - **测试**：judge_test.go（PASS/FAIL/带思考前缀/小写解析、格式
+    损坏重试与耗尽、Runner 全链路〔judge 过→case 过/挂→case 挂/
+    与确定性断言 AND〕、多准则 Score=0.5、缺 Judge 拒跑、judge 故障
+    excluded）+ passk_test.go（binom 数学〔C(20,10)=184756〕/
+    pass^k 与 pass@k 公式验证/k 超样本退化/聚合口径/方差 CI 统计/
+    junit 结构与回读）+ 根包门面自食（judge+pass^k+junit 全走别名）
+- **loop 并发修复（-race 暴露的既有 bug）**：Loop.FinalMessages 与
+  run goroutine 的 defer 写存在 data race——EventDone 事件先于 defer
+  写 finalMessages 到达消费者，App.run 收到事件立刻读即并发。修：
+  Loop 加 RWMutex 保护 finalMessages，三处写点走 setFinalMessages
+  setter。连带 TestHTTPParallelSessions/TestWithRetrievalInjectsContext
+  的 -race 失败一并消除；测试侧 flakyTarget 计数器改 atomic（Runner
+  并发 trial 下闭包计数器必须并发安全）。全量 9 包 -race 零失败。
+
+## 2026-09-01（第二梯队开工：⑤ benchmark B0 底座 + 度量学调研）
+
+- **调研先行（用户判断「重要但难做好」，四路并行）**：
+  SWE-bench 系 / τ-bench（pass^k）/ METR 方法论 / promptfoo·LangSmith·
+  Braintrust 工程形态 + Go 生态空白确认（langchaingo 与 eino 均无 eval
+  模块）。合成文档 docs/benchmark-research.md——四路独立收敛的结论：
+  重复运行是指标地基（METR 误差棒 ±2 倍、τ-bench 要求 4+ trials）、
+  变化量是一等公民（单次分数无意义）、判分打分制非布尔制、失败四分类
+  （基建抖动不进分母）。通用型定位的库/宿主边界：格式+原语+模板+矩阵
+  +diff 内置，golden 数据与领域判分留宿主。
+- **⑤ benchmark B0（最小闭环，纯 mock）**：
+  - **benchmark 子包**：Case（声明式，断言字段只在评分阶段消费——
+    Target 只拿 Input，SWE-bench 答案泄漏教训）+ Assert（Type/Value/
+    Weight/Negate/Metric）+ Verdict（Pass/Score 0-1/Reason 打分制）；
+    10 个内置确定性原语（contains/contains-any/equals/starts-with/
+    regex/is-json/tool-used〔通配〕/tool-sequence/max-latency-ms/
+    max-tokens）+ RegisterAssert 轻逃生舱（OpenAI evals 继承类教训）；
+    断言评估自身出错（坏正则等）= case 损坏 → excluded 不进分母
+    （τ-bench 标注错误教训）；Runner（Repeat 重复运行/四态结果
+    pass·fail·infra_error·excluded/infra 自动重试默认 2 负数关闭/
+    并发 semaphore/单 run 超时/套件校验——ID 重复·无断言整单拒跑）；
+    Report（JSONL：header 行+per-trial 行；SuiteHash 内容哈希按 ID
+    排序——顺序无关可比性；Summaries per-(target,case) 聚合 AllPass
+    口径；DiffReports 状态迁移 Fixed/Regressed/Unstable + SuiteMismatch）
+  - **根包门面 benchmark.go**：类型别名（Result 因根包占用改名
+    TrialResult）+ AgentTarget（opts 装配 App，每次 Run 现造——事件流
+    聚合为 TargetOutput：文本/工具轨迹/轮次/token/耗时，trajectory
+    断言无需后配 tracing）+ NewAgentTargetFromFactory 工厂形态
+    （有状态组件如 MockProvider 每 trial 现造——Repeat>1 时共享游标
+    跨 trial 污染是实测踩到的坑）+ UseTools 追加工具面
+  - **自食测试**：根包（AgentTarget 驱动自建工具全链路/矩阵对比
+    good vs bad + Diff 零迁移/infra_error 不进分母/门面别名）+
+    builtin 包（Write→Read→Edit 真实文件工具全链路，锁 readstate
+    合法路径——根包测试 import builtin 会环，放 builtin 包）
+  - **实测修掉的两个真坑**：(a) MockProvider 响应游标并发污染
+    （暴露 benchmark 环境隔离纪律：trial 间除外部世界零共享）；
+    (b) App.Run 传 sess=nil → sessionID 空 → WithSessionWorkDir
+    静默失效（AgentTarget 改走 RunWithHistory 空历史拿 ephemeral
+    会话）。另：无人值守评测跑 Normal 级工具需显式
+    WithPermissionMode(PermissionBypass)——库不默认放开权限
+    （审批交互无人应答会挂起，但放开与否是宿主决策）
+- 测试：benchmark 子包 14 个（断言原语/四态/重试/校验/JSONL 往返/
+  哈希稳定/Diff）+ 根包 4 个 + builtin 1 个全绿；全量 9 包零失败
+- 待做（B1）：Judge 接口 + LLMJudge（promptfoo/OpenAI 验证过的
+  factuality/closedqa rubric）+ pass^k 指标 + 方差/CI 呈现 +
+  junit.xml + 空转实验（3-5 真实任务 × 10 重复测噪声底座，
+  决定所有阈值默认值）
+
+## 2026-09-01（第一梯队收官：④ RAG 四件套 + 包结构约定）
+
+- **④ RAG 双形态四件套**（补缺清单第 1 项，讨论定稿的实现）：
+  - **retrieval 子包（共享底座）**：Document 类型（Content+Metadata
+    贯穿全程，Metadata["source"]/["score"] 是引用审计与融合排序的
+    货币）；窄接口四兄弟 Retriever/Embedder/Store/Loader + Transformer/
+    Reranker（对齐 eino 接口密度）；FusionRetriever 多路融合
+    （Children 并发 + Merge 策略注入，预置 MergeInterleaveByScore——
+    只信任路内相对序不信任路间绝对分；任一路失败整体 fail-closed）；
+    参考实现 MemoryRetriever（关键词）/VectorStore（进程内余弦）/
+    ChunkTransformer（滑窗分块带 chunk_index 定位）/FileLoader
+    （.md/.txt 目录递归）；Index 辅助流水线（Loader→Transformer→
+    Embedder→Store 一次串成）
+  - **根包门面（retrieval.go）**：类型别名 + 形态 1 WithRetrieval
+    （App.run 前置 retrieve→rerank→拼 prompt，agent 无感知；含
+    ShouldRetrieve 谓词闲聊短路、Timeout、MaxChars 保序截断〔头一条
+    超预算硬截且至少透出 1/4 预算的内容——不能给模型留空壳引用块〕、
+    检索失败 fail-closed 发 EventError）+ 形态 2 NewRetrieveTool
+    （agent 运行时自主调用，研究型任务/多跳问题）+ EventRetrieval
+    观测事件（query 摘要/命中数/注入字符数，SSE type=retrieval）
+  - 组合模式为设计约定：多路检索走 FusionRetriever 普通 Go 代码组合；
+    分块策略独立（Loader/Transformer 解耦）；边界诚实声明（迭代检索/
+    中段检索走工具形态）
+- **包结构约定**（回答「为什么 pipeline 等散落根目录」）：根目录 = API
+  门面（App/Option/Event/ToolDef 契约）；新子系统一律「子包实现 +
+  根包门面」（retrieval 模式）或「内核下沉 internal/ + 根包壳」
+  （loop 模式）；sandbox 契约留根包做依赖锚点。pipeline/http/cli 的
+  下沉（internal/pipeline，~1800 行）留作专项等第一梯队收敛后做
+- 测试：retrieval 子包 8 个 + 根包 6 个（注入/谓词短路/零命中不污染/
+  fail-closed/截断保序/工具全链路）全绿；全量回归 8 包零失败
+
+## 2026-09-01（环境信息段无条件注入：工作目录对模型可见）
+
+- **修复「能力存在但不可见」**：WithSessionWorkDir 注入的会话工作目录
+  只存在于 ctx value（Glob/Read 等工具解析正常），但 system prompt 从
+  不告知模型——模型不知道当前目录也不知道平台，会猜路径（如
+  /workspace）、用平台不存在的命令（Windows cmd 下跑 pwd），然后自我
+  怀疑。对齐 Claude Code 的 Working directory 行为：
+  - `buildSystemPrompt(cfg, memMgr, workDir)` 新增第三参数，run() 内
+    组装点移到 workDir 定型之后（会话目录 > 沙箱根，沙箱覆盖时模型
+    看到的就是沙箱根，不会被旧路径拒之门外）
+  - 环境信息段（Platform/Architecture/Shell/Working directory）从
+    enableGitStatus 门后改为**无条件注入**；workDir 空时回退进程 cwd
+  - enableGitStatus 时的 git 仓库根探测改用会话目录
+    （新增 sysprompt.DetectGitRootIn(dir)，原 DetectGitRoot 委托之）——
+    多项目会话下 git 状态不再对不上
+  - detectShell 探测结果进程级缓存（sync.Once）——环境段每次 run 组装，
+    不能每次 fork bash --version
+- 测试：envinfo_test.go 三件（会话目录注入 / 空回退 cwd / 沙箱根覆盖）
+- 兼容性：默认用户 system prompt 多一段环境信息（对齐 Claude Code），
+  其余行为零变化；GetSystemPrompt 不含 run 级会话目录（注释明示）。
+
+## 2026-08-31（第一梯队三件套：EventInterrupted / LLM observer 钩子 / 挂起恢复）
+
+- **① EventInterrupted 一等事件**：用户主动终止此前走
+  EvtError(context.Canceled)，与 provider 超时/工具崩溃混在同一通道，
+  前端要靠 errors.Is 自己判。现在 loop 五处取消检查点（轮次起点 ctx
+  检查 / Stream 请求阶段取消 / 流中 EventError 携带 Canceled / 流后
+  中止检查 / 429 等待中取消）识别 Canceled 时发独立事件
+  EvtInterrupted=15（对齐公共 EventInterrupted，SubAgentProgress=11~
+  Interrupt=14 之后的下一个槽位）；DeadlineExceeded 等仍走 EvtError。
+  HTTP 层 SSE 映射 {"type":"interrupted"}；TUI EvInterrupted 渲染
+  「[已停止]」而非报错样式；pipeline runLightweight 透出
+  interrupted 事件类型（区别于 error）。
+- **② LLM 调用级 observer 钩子（LLMObserver 可选接口）**：Observer
+  主接口保持稳定（analytics/cost 等现有实现零改动），新增可选接口
+  LLMObserver{OnLLMStart/OnLLMDone/OnLLMError}——loop 在 Stream 建立
+  前触发 Start（LLMCallInfo：model/turn/msgs/tools/max_tokens/token
+  估算），流消费完毕触发 Done（LLMResult：duration/stop_reason/
+  text_len/thinking_len/tool_calls/usage），失败路径触发 Error。tracing
+  视角里模型调用不再是黑洞。
+- **② ctx 三优化**：(a) span 关联——loop 调 OnToolStart/OnToolDone/
+  OnToolError 时传 observer.WithToolCallID(ctx, id) 派生 ctx，宿主
+  observer 实现经 ToolCallIDFromContext 直接拿配对 ID，无需自行配对
+  （零 API 变化）；(b) 沙箱会话的 ctx 覆盖契约成文——WithSandboxSession
+  文档约定「后注入覆盖先注入（子覆盖父）」，benchmark trial 嵌套
+  pipeline 的父子沙箱语义明确；(c) observer 边界注入——
+  observer.IntoContext(ctx, o) 把采集 observer 挂到 ctx，
+  ResolveObserver(ctx, base) 合并广播（App.run 与 pipeline
+  buildLightweightLoop 都已接线），benchmark 每 trial 塞独立采集
+  observer 不用构造新 App。
+- **③ interrupt 挂起/恢复（三语义分开）**：终止（已有，ctx cancel）/
+  挂起（等人，非取消）/ 恢复（挂起点续跑）彻底分开。
+  loop.SuspendGate 门闩（Wait 阻塞 / Resume 唤醒 / Terminate 终止 /
+  IsWaiting 探测 / ctx 取消走统一中断路径），挂起检查点在每轮轮次
+  起点（IsWaiting 才进），机制复用 429 等待地基（select 等 channel）。
+  WithSuspend() Option + App.SuspendGate() 取引用。session 包新增
+  RecordCheckpoint 记录类型（Checkpoint{Reason/Turn/PendingStep/
+  CreatedAt}）——消息历史本就逐条落盘 JSONL，checkpoint 只补「执行
+  位置 + 挂起原因」小块；FileStore 实现 Checkpointer 接口，
+  Manager.WriteCheckpoint/ReadLastCheckpoint 做能力探测（MemoryStore
+  未实现返回 ErrCheckpointUnsupported）；Restore 回填
+  Session.LastCheckpoint。resume = RunWithHistory(历史) + 从 checkpoint
+  执行位置继续。
+- **测试**：internal/loop/interrupted_test.go（4 个：数值对齐/流中
+  Canceled/轮前取消/Deadline 仍走 Error）、observer/observer_context_test.go
+  （6 个：Nop 零感知/边界广播/无注入原样返回/链式注入/ToolCallID 往返/
+  Usage 携带）、internal/loop/llm_hooks_test.go（3 个：Start→Done 序列/
+  错误路径/Nop 无影响）、internal/loop/suspend_test.go（6 个：Resume
+  唤醒/Terminate/ctx 取消/未挂起 Resume/多轮/loop 集成）、
+  session/checkpoint_test.go（5 个：往返/Restore 回填/Manager 能力
+  探测/不支持报错/混排）。全量 go build + go vet + go test 通过。
+
 ## 2026-08-31（测试模式 WithDebugMode + loop 引擎日志面）
 
 - **起因（生产排查）**：漫剧 pipeline 启动无反应、429 限流日志不打印。

@@ -83,6 +83,12 @@ func WorkDirFromContext(ctx context.Context) string {
 // WithSandboxSession 把沙箱会话注入 context。
 // App.run（WithSandbox 配置时）、RunPipeline（run 级）与节点级覆盖
 // 自动调用；之后经 newContextFromStd 透出到工具的 Context.Sandbox 字段。
+//
+// 覆盖契约（ctx 链上后注入覆盖先注入的，子覆盖父）：同一 ctx 链上多次
+// 调用时，后注入的沙箱会话生效——context.WithValue 的标准语义。
+// benchmark trial 嵌套 pipeline 时，节点级覆盖（runNode）注入在
+// run 级（RunPipeline）之后派生的 ctx 上，因此节点沙箱覆盖 run 沙箱；
+// 需要子沿用父沙箱的宿主不要在子层再调 WithSandboxSession。
 func WithSandboxSession(ctx context.Context, sb SandboxSession) context.Context {
 	return context.WithValue(ctx, ctxKeySandbox, sb)
 }
