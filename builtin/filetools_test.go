@@ -181,6 +181,36 @@ func TestWriteOverwriteProtection(t *testing.T) {
 	}
 }
 
+// Write 外部修改拦截：Read 之后磁盘被外部改过（用户编辑器保存/其他
+// agent 写入）→ Write 整文件覆盖会静默抹掉外部改动，必须拒绝并要求重读。
+func TestWriteExternalModificationGuard(t *testing.T) {
+	_, p := setupFile(t, "original content\n")
+	r := readExec(t)
+	w := writeExec(t)
+	ctx := goagent.Context{Context: context.Background(), SessionID: "s-ext"}
+
+	// 读 → 外部改 → Write 拒绝（携带诊断）
+	_, _ = r(ctx, ReadInput{FilePath: p})
+	if err := os.WriteFile(p, []byte("user hand-edited\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := w(ctx, WriteInput{FilePath: p, Content: "ai full rewrite"})
+	if err == nil || !strings.Contains(err.Error(), "外部修改") {
+		t.Fatalf("Read 后磁盘被改，Write 覆盖应被拒绝: %v", err)
+	}
+
+	// 重新 Read（拿到用户版本）→ Write 放行，且不误伤
+	_, _ = r(ctx, ReadInput{FilePath: p})
+	if _, err := w(ctx, WriteInput{FilePath: p, Content: "ai merged rewrite"}); err != nil {
+		t.Fatalf("重读后 Write 应放行: %v", err)
+	}
+
+	// 会话工具自己 Write 后（markWritten 更新指纹）→ 再 Write 不误拦
+	if _, err := w(ctx, WriteInput{FilePath: p, Content: "again"}); err != nil {
+		t.Fatalf("自己写后连续 Write 不应被误拦: %v", err)
+	}
+}
+
 // 会话隔离：A 会话读过不影响 B 会话的校验状态。
 func TestReadStateSessionIsolation(t *testing.T) {
 	_, p := setupFile(t, "content\n")

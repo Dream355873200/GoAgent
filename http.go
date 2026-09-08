@@ -69,6 +69,12 @@ func runHTTP(app *App, addr string) error {
 	fmt.Printf("  GET  /usage     — Token 使用统计\n")
 	fmt.Printf("  GET  /audit     — 工具执行分析\n")
 
+	// 宿主扩展路由（WithHTTPRoutes）：领域端点注册进同一 mux，
+	// 与内置路由共用 App/会话上下文。仅 RunHTTP 模式生效。
+	for pattern, handler := range app.config.httpRoutes {
+		mux.HandleFunc(pattern, handler)
+	}
+
 	return http.ListenAndServe(addr, mux)
 }
 

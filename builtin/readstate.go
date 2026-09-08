@@ -57,6 +57,18 @@ func unchangedSinceRead(sessionID, path, currentContent string) bool {
 	return ok && h == hashOf(currentContent)
 }
 
+// contentMismatchedSinceRead 文件当前内容是否与会话上次 Read/Write 时
+// **不同**（外部修改检测）。三态区分：
+//   未读取过     → false（「没读过」由 hasRead 单独拦，不在这误报）
+//   读取过且一致 → false
+//   读取过但变了 → true（Write 覆盖前拦截：外部改动会被静默抹掉）
+func contentMismatchedSinceRead(sessionID, path, currentContent string) bool {
+	reads.mu.Lock()
+	defer reads.mu.Unlock()
+	h, ok := reads.files[sessionID][path]
+	return ok && h != hashOf(currentContent)
+}
+
 // markWritten 写操作（Edit/Write）后更新指纹为新内容。
 // 关键语义（对齐 Claude Code）：写完仍然是「已读」——模型刚写的内容
 // 它当然有最新视图，同批的后续 Edit 不该被误判为「未读」。

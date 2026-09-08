@@ -2,6 +2,7 @@ package goagent
 
 import (
 	"log/slog"
+	"net/http"
 
 	"github.com/Dream355873200/GoAgent/agent"
 	"github.com/Dream355873200/GoAgent/bgtask"
@@ -91,6 +92,11 @@ type appConfig struct {
 	// RAG 形态 1（WithRetrieval）：非 nil 时每次 run 前置检索，
 	// 命中内容拼进用户输入（agent 无感知）。nil = 不检索（默认）。
 	retrieval *RetrievalConfig
+
+	// HTTP 扩展路由（WithHTTPRoutes）：RunHTTP 构建的路由表之外由宿主
+	// 注册的额外端点（如领域通知端点）。路由表已含 /chat /tasks 等，
+	// 宿主路由与之冲突时后注册者生效（ServeMux 语义）。nil = 无扩展。
+	httpRoutes map[string]func(http.ResponseWriter, *http.Request)
 }
 
 // ProviderConfig 是 LLM Provider 的配置，可直接传给 New()。
@@ -616,6 +622,34 @@ func WithSubAgents(defs ...agent.Definition) Option {
 func WithObservers(obs ...observer.Observer) Option {
 	return optionFunc(func(c *appConfig) {
 		c.observers = append(c.observers, obs...)
+	})
+}
+
+// --- HTTP 扩展路由 Option ---
+
+// WithHTTPRoutes 在 RunHTTP 的内置路由之外注册宿主自定义端点。
+// 典型用途：领域通知端点（如「用户在编辑器保存了文件」→ 注入会话消息）。
+// pattern 遵循 http.ServeMux 语法（如 "POST /notify/user-edit"）；
+// 与内置路由同 pattern 时按 ServeMux 语义（后注册生效，重复注册 panic）。
+// 仅 RunHTTP 模式生效（RunCLI/Execute 忽略）。
+//
+// 示例：
+//
+//	app := goagent.New(cfg,
+//	    goagent.WithHTTPRoutes(map[string]func(http.ResponseWriter, *http.Request){
+//	        "POST /notify/ping": func(w http.ResponseWriter, r *http.Request) {
+//	            w.Write([]byte("pong"))
+//	        },
+//	    }),
+//	)
+func WithHTTPRoutes(routes map[string]func(http.ResponseWriter, *http.Request)) Option {
+	return optionFunc(func(c *appConfig) {
+		if c.httpRoutes == nil {
+			c.httpRoutes = make(map[string]func(http.ResponseWriter, *http.Request))
+		}
+		for p, h := range routes {
+			c.httpRoutes[p] = h
+		}
 	})
 }
 

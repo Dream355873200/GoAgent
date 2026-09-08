@@ -352,8 +352,19 @@ func executeWrite(ctx goagent.Context, in WriteInput) (string, error) {
 
 	// 覆盖保护：目标文件已存在但本会话没读过 → 拒绝并指路。
 	// 模型有最新视图时才允许覆盖（对齐 Claude Code 的安全语义）。
-	if _, err := os.Stat(in.FilePath); err == nil && !hasRead(ctx.SessionID, in.FilePath) {
-		return "", fmt.Errorf("%s 已存在但本会话未读取过——先 Read 它确认当前内容，再决定覆盖（防止凭印象覆盖丢失现有内容）", in.FilePath)
+	if _, err := os.Stat(in.FilePath); err == nil {
+		if !hasRead(ctx.SessionID, in.FilePath) {
+			return "", fmt.Errorf("%s 已存在但本会话未读取过——先 Read 它确认当前内容，再决定覆盖（防止凭印象覆盖丢失现有内容）", in.FilePath)
+		}
+		// 外部修改检测：磁盘内容 ≠ 会话上次 Read/Write 时的指纹 → 拒绝。
+		// 场景：用户在编辑器手工保存（或另一个 agent 改了同一文件）后，
+		// AI 凭 Read 过的旧印象 Write 整文件覆盖——外部修改会被静默抹掉。
+		// Read 校验（ContentMismatchedSinceRead）Edit 侧由 old_string 匹配
+		// 天然兜底；Write 是整文件替换没有匹配网，必须显式拦。
+		if cur, err := os.ReadFile(in.FilePath); err == nil && contentMismatchedSinceRead(ctx.SessionID, in.FilePath, string(cur)) {
+			return "", fmt.Errorf("%s 在你上次 Read 之后被外部修改过（可能是用户在编辑器手工保存）——"+
+				"重新 Read 拿到最新内容后，把外部改动合并进你的版本再 Write（不要直接覆盖）", in.FilePath)
+		}
 	}
 
 	// 确保父目录存在。
