@@ -676,7 +676,9 @@ goagent/
     + Interrupt 超时强杀 + 结构化错误回传，经 CoreTools() 自动注册）
 
 第三梯队（等前两梯队消化后再评估，届时按真实需求密度重排）
-  ⑦ AgentTool 转接头 / Plan-Execute / 路由节点 / Supervisor
+  ⑦ ✅ AgentTool 转接头（根包 agenttool.go：AgentToolOf/NamedAgentTool——
+    agent.Definition 包成 ToolDef，构造时钉进工具箱/pipeline 节点/路由表）
+    / Plan-Execute / 路由节点 / Supervisor
   ⑧ RAG Fusion 组合 / 装配期类型校验 / Agent Team / Registry
      / L2 重规划 / L3 自建类型 / L4-β / L5 / 沙箱 Tier 2-3
      / 其余全部（见下方各 TODO 详节）
@@ -1362,11 +1364,13 @@ MessageType any 字段，升级为装配期一致性校验（上游 MessageType 
    逐个判断（不全盘对标 eino prebuilt）：
    - **Plan-Execute：做**——零件已有 70%（plan/ 包 + MessageFunc +
      SubAgent），模式价值被广泛验证（计划是一等执行单元、可改道）
-   - **AgentTool 转接头：顺手做**——把 agent 循环包成 ToolDef.Execute
-     的薄适配器（~百行），解锁「agent 进 pipeline 当普通节点/进工具箱/
+   - **AgentTool 转接头 ✅ 已实现**（根包 agenttool.go）——`AgentToolOf(def, prov)`
+     把 agent 循环包成 ToolDef.Execute 的薄适配器，`NamedAgentTool(name, def, prov)`
+     出 NamedTool 形态。解锁「agent 进 pipeline 当普通节点工具/进工具箱/
      进路由表」的组合自由度。与 SubAgent 同一机制的两个朝向：
      SubAgent 是运行时委派行为（LLM 决定叫谁），AgentTool 是构造时
-     组合零件（开发者钉进位置）
+     组合零件（开发者钉进位置）。返回值 = 子 agent 最终文本 + 轮次/
+     token 统计附注；每次调用独立历史跑完即弃
    - **Supervisor：缓，按 eino 控制流模式做**（见下方「Supervisor 设计」）
    - **DeepAgent：不做**——SubAgent 系统就是它，加壳反而困惑
 4. **LLM 调用级 observer 钩子（中，覆盖面修正）**：对标审计后真实差距

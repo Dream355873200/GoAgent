@@ -5,6 +5,25 @@ Dream355873200/GoAgent 的本地增强副本。amobileCreater 的 engine 通过
 go.mod `replace` 指向此处。**每次向 GitHub 推送前**：把下面对应条目
 整理进正式 commit，然后移除 replace 升级版本号。
 
+## 2026-09-08（AgentTool 转接头——agent 包成 ToolDef 的组合零件）
+
+- **根包 agenttool.go**：`AgentToolOf(def, prov)` 把 agent.Definition +
+  provider 包成 goagent.ToolDef——每次工具调用 = 一次完整的隔离 agent
+  运行（agent.Runner 驱动：独立消息历史/SystemPrompt/工具集/MaxTurns），
+  返回值 = 最终文本 + 轮次与 token 统计附注。`NamedAgentTool` 出
+  NamedTool 形态。
+- **与 SubAgent 的边界**（同一机制两个朝向）：SubAgent 是运行时委派
+  行为（WithSubAgents 注册成 Agent_<name> 工具，LLM 现场决定叫谁）；
+  AgentTool 是构造时组合零件（开发者写代码钉死名字和位置）——可进
+  app.Tool() 注册表、PipelineAgentDef.Tools 节点工具集、动态 Pipeline
+  按名解析工具箱、路由表等一切 ToolDef 能出现的位置。
+- **典型用途**：领域助手模式——主 agent 挂一个「项目助手」工具，内部
+  是带 RAG 检索+领域工具的多轮循环，只回传结论不回传过程，主上下文
+  不被检索撑爆（AnimeCreater B2-② 项目页助手即此形态）。
+- **测试**（agenttool_test.go）：scriptedProvider 脚本回放驱动真实
+  ToolDef.call 路径——多轮工具循环+统计附注/任务透传/空任务报错/
+  失败带 agent 名透传/NamedTool 形态。全量回归绿。
+
 ## 2026-09-08（L4-α goja 执行器——run_js 沙箱代码执行）
 
 - **builtin/js.go 新增 RunJSTool()**：LLM 生成的 JS 源码进 goja 解释器
