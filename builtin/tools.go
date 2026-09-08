@@ -106,7 +106,7 @@ func init() {
 }
 
 // CoreTools 返回核心内置工具，供 app.UseTools() 批量注册。
-// 包含 Read/Write/Edit/Glob/Grep/Bash/WebSearch/WebFetch。
+// 包含 Read/Write/Edit/Glob/Grep/Bash/run_js/WebSearch/WebFetch。
 // 不包含 AskUser/Task/Plan/BgTask 等子系统工具，需通过对应 With* Option 单独启用。
 //
 // AllTools 是 CoreTools 的别名（向后兼容）。
@@ -118,6 +118,7 @@ func CoreTools() []goagent.NamedTool {
 		{Name: "Glob", Def: GlobTool()},
 		{Name: "Grep", Def: GrepTool()},
 		{Name: "Bash", Def: BashTool()},
+		{Name: "run_js", Def: RunJSTool()},
 		{Name: "GitCommit", Def: GitCommitTool()},
 		{Name: "WebSearch", Def: WebSearchTool()},
 		{Name: "WebFetch", Def: WebFetchTool()},

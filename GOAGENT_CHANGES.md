@@ -5,6 +5,49 @@ Dream355873200/GoAgent 的本地增强副本。amobileCreater 的 engine 通过
 go.mod `replace` 指向此处。**每次向 GitHub 推送前**：把下面对应条目
 整理进正式 commit，然后移除 replace 升级版本号。
 
+## 2026-09-08（L4-α goja 执行器——run_js 沙箱代码执行）
+
+- **builtin/js.go 新增 RunJSTool()**：LLM 生成的 JS 源码进 goja 解释器
+  执行，宿主不可穿透。两形态一线切换（沙箱在场与否）：
+  - **纯计算形态**（无沙箱）：零能力注入——通往 os/fs/net 的调用路径
+    在运行时里物理不存在（区别于 Tier 1 的「检查后放行」），JS 只能
+    解析/变换/聚合/生成数据。benchmark trial 最常用形态。
+  - **沙箱注入形态**（WithSandbox 生效时自动）：注入 readFile/writeFile/
+    listDir/stat 四个 host 函数，全部经 SandboxSession.ResolvePath 双锁
+    ——能力与射程同时受限（解释器万一有逃逸 bug，拿到的也只是被
+    Tier 1 Policy 约束的环境）。
+- **资源限额**（进程内模式的唯一真实弱点）：超时默认 10s（timeout_ms
+  可调，上限 300s），到点 vm.Interrupt 强杀死循环；沙箱 Policy.Timeout
+  更小时以策略为准（对齐 Bash 工具）；输出走 ToolDef.MaxResultSizeChars
+  统一截断。
+- **结构化错误回传**（失败也是产出）：编译错误（*goja.CompilerSyntaxError）
+  带行号、运行错误（*goja.Exception）带 JS 调用栈、超时中断带可读中文、
+  host 函数路径违规带沙箱拒绝原因——全部回传给 LLM 喂「生成 → 执行 →
+  报错 → 修正」内循环（benchmark 自迭代的地基）。
+- **实现细节踩坑**：goja 的 RunProgram 跑 program body——函数体 program
+  返回的是函数对象，需 AssertFunction + 显式调用取返回值；host 函数报错
+  必须 panic(vm.NewGoError(err))（goja 约定 panic Value = JS 异常），
+  返回 GoError 对象只会变成无害的 JS 值。
+- **console.log 捕获**：自注入 console（log/warn/error/info/debug 五通道）
+  收集到 slice 随结果返回（沙箱内无标准流概念）。
+- **注册**：进 builtin.CoreTools()（run_js 名称），JSCapabilityKit()
+  可选 Kit 形态；依赖 github.com/dop251/goja（纯 Go 跨平台）。
+- **测试**：builtin/js_test.go 九件——纯计算/console 捕获/无沙箱能力不
+  存在（ReferenceError）/编译错误带行号/运行错误带栈/死循环 200ms 强杀/
+  Policy.Timeout 压顶/沙箱写读往返+根外拒绝/大输出。全量 go test 回归绿。
+- **文档**：README L4 节落地顺序表 L4-α 标 ✅ + 用法示例；TODO 队列 ⑥ 标完成。
+
+## 2026-09-08（Write 外部修改拦截 + WithHTTPRoutes 宿主扩展路由）
+
+- **Write 覆盖前外部修改检测**（builtin/tools.go + readstate.go）：磁盘
+  内容与会话 Read/Write 指纹不一致（用户编辑器保存/其他 agent 写入）→
+  拒绝并要求重读合并。Edit 侧由 old_string 匹配天然兜底；Write 是整文件
+  替换没有匹配网，必须显式拦。markWritten 更新指纹避免自写误拦。
+- **WithHTTPRoutes Option**（options.go + http.go）：RunHTTP 内置路由
+  之外注册宿主端点（领域通知等），复用同一 mux/App。
+- **测试**：TestWriteExternalModificationGuard 三态覆盖（读后外部改拒绝/
+  重读后放行/自写不误拦）。
+
 ## 2026-09-01（⑤ benchmark B2 自迭代武装——一二档判分可靠性）
 
 - **范围决策（用户共识）**：自迭代一二档开放（prompt/skill——声明式

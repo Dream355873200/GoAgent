@@ -672,7 +672,8 @@ goagent/
     description 是 prompt 的一部分仍可 bench；三档（agent 改核心
     代码）等沙箱 Tier 2 进程隔离后再开——Tier 1 防意外不防恶意，
     而三档恰恰制造恶意场景。
-  ⑥ L4-α goja 执行器（自迭代需要沙箱代码执行）
+  ⑥ ✅ L4-α goja 执行器（builtin.RunJSTool：纯计算/沙箱能力注入两形态
+    + Interrupt 超时强杀 + 结构化错误回传，经 CoreTools() 自动注册）
 
 第三梯队（等前两梯队消化后再评估，届时按真实需求密度重排）
   ⑦ AgentTool 转接头 / Plan-Execute / 路由节点 / Supervisor
@@ -970,9 +971,36 @@ goja 的安全账（三层递进）：
 
 | 阶段 | 内容 | 支撑 |
 |------|------|------|
-| L4-α | goja 执行器：`run_js` 工具 + 能力注入（文件能力套 Policy 白名单）+ 资源限额（Interrupt/内存配额）+ 结构化错误回传 | 自迭代闭环的代码执行需求 |
+| L4-α ✅ 已完成 | goja 执行器：`run_js` 工具 + 能力注入（文件能力套 Policy 白名单）+ 资源限额（Interrupt 超时强杀/输出截断）+ 结构化错误回传 | 自迭代闭环的代码执行需求 |
 | L4-β | 确定性模式（禁 Date/Math.random，固定 seed）+ goja+子进程保守模式 | benchmark 复现 + 高敏场景 |
 | L5 | wazero 常驻运行时（生成的工具编译成 wasm 长跑，能力注入接口与 goja 同构） | 工具生成的性能需求 |
+
+#### L4-α 已实现（builtin.RunJSTool）
+
+两形态一线切换——沙箱在场与否决定 JS 有没有文件能力，宿主零额外配置：
+
+```go
+// 形态 1：纯计算（无沙箱）——通往 os/fs/net 的调用路径物理不存在
+app.UseTools(goagent.NamedTool{Name: "run_js", Def: builtin.RunJSTool()})
+
+// 形态 2：沙箱注入（WithSandbox 生效时自动）——readFile/writeFile/
+// listDir/stat 四个 host 函数全部经 SandboxSession.ResolvePath 双锁，
+// 能力与射程同时受限；Policy.Timeout 压顶输入超时
+app := goagent.New(cfg,
+    goagent.WithSandbox(goagent.NewDirSandbox(""), goagent.Policy{Timeout: 30 * time.Second}),
+    goagent.WithBuiltinTools(), // run_js 经 builtin.CoreTools() 一并注册
+)
+```
+
+行为要点：
+- **顶层 return 语义**：code 包一层函数执行，直接写 `return {…}` 返回结果
+  （JS 函数无 return = undefined，非 REPL 完成值）
+- **资源限额**：超时默认 10s（`timeout_ms` 可调，上限 300s），到点
+  `vm.Interrupt` 强杀死循环；沙箱 `Policy.Timeout` 更小时以策略为准
+- **失败也是产出**：编译错误带行号、运行错误带 JS 调用栈、host 函数
+  路径违规带沙箱拒绝原因——全部结构化回传，喂「生成 → 执行 → 报错 →
+  修正」内循环
+- **console.log 捕获**：输出附在结果后（沙箱内没有标准流概念）
 
 ### L5（远期）：工具生成——agent 走完开发者的完整工作流
 
