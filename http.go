@@ -338,6 +338,29 @@ func newHTTPMux(app *App) *http.ServeMux {
 		}
 	})
 
+	// GET /pending-ask — 会话未决提问查询（前端重载/重连后恢复提问卡）。
+	// 提问未答时 run 仍阻塞在引擎内存里，回答通道（request_id）也只在
+	// 内存中——历史消息里没有这些。run 已结束 / 引擎重启过时无未决，
+	// 前端按历史渲染、不复活提问卡。
+	mux.HandleFunc("GET /pending-ask", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		sessionID := r.URL.Query().Get("session_id")
+		var pending *AskUserRequest
+		if sessionID != "" && app.askUserHandler != nil {
+			pending = app.askUserHandler.PendingBySession(sessionID)
+		}
+		if pending == nil {
+			json.NewEncoder(w).Encode(map[string]any{"pending": false})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"pending":    true,
+			"request_id": pending.RequestID,
+			"question":   pending.Question,
+			"payload":    pending.Payload,
+		})
+	})
+
 	// POST /plan/confirm — 计划确认端点
 	// 前端接收到 plan_confirm SSE 事件后，通过此端点返回用户确认。
 	mux.HandleFunc("POST /plan/confirm", func(w http.ResponseWriter, r *http.Request) {

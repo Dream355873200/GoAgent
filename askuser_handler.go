@@ -17,10 +17,17 @@ type AskUserRequest struct {
 	// Question 是向用户提问的问题。
 	Question string `json:"question"`
 
+	// SessionID 发起提问的会话（AskSession/AskSessionCtx 填写；无会话信息
+	// 的 Ask/AskStructured 为空）。前端恢复流程按会话查询未决提问。
+	SessionID string `json:"session_id,omitempty"`
+
 	// Payload 结构化交互载荷（可选）。通用库不感知领域语义——宿主工具
 	// 经 AskStructured 附加任意 JSON 对象（如确认卡的选项列表），随 SSE
 	// ask_user 帧原样下发，客户端按 payload 里的 kind 字段分发渲染。
 	Payload map[string]any `json:"payload,omitempty"`
+
+	// seq 请求序号（PendingBySession 在多条未决中取最新一条用）。
+	seq int64
 
 	// once 确保只能调用一次 Respond。
 	once sync.Once
@@ -157,7 +164,9 @@ func (h *AskUserHandler) AskSessionCtx(ctx context.Context, sessionID string, qu
 	req := &AskUserRequest{
 		RequestID: requestID,
 		Question:  question,
+		SessionID: sessionID,
 		Payload:   payload,
+		seq:       id,
 		ch:        responseCh,
 	}
 
@@ -182,6 +191,29 @@ func (h *AskUserHandler) AskSessionCtx(ctx context.Context, sessionID string, qu
 		h.pending.Delete(requestID)
 		return "", fmt.Errorf("ask 请求队列已满")
 	}
+}
+
+// PendingBySession 返回某会话当前未决的提问（多条时取最新）。
+// run 仍阻塞在提问上时请求存在于 pending map；答完 / run 中断即移除——
+// 返回 nil 表示无未决提问。宿主经 HTTP 暴露给前端，用于重载/重连后
+// 恢复提问卡：有未决 = run 还活着、可按 request_id 回答；无未决 = run
+// 已结束或宿主重启过，历史即真相，不复活已死的提问。
+func (h *AskUserHandler) PendingBySession(sessionID string) *AskUserRequest {
+	if sessionID == "" {
+		return nil
+	}
+	var best *AskUserRequest
+	h.pending.Range(func(_, v any) bool {
+		req := v.(*AskUserRequest)
+		if req.SessionID != sessionID {
+			return true
+		}
+		if best == nil || req.seq > best.seq {
+			best = req
+		}
+		return true
+	})
+	return best
 }
 
 // waitAnswer 等待前端回答，ctx 取消（run 被中断）时立即解除阻塞。

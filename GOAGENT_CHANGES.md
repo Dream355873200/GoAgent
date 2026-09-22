@@ -973,3 +973,21 @@ run 的取消），run 无法收尾，会话卡死在提问状态，只能重启
 
 **验证**：go build / go vet 全绿；引擎 exe 已重编译。
 
+
+## 2026-09-22（会话未决提问查询：提问跨重载/重连恢复的地基）
+
+**问题**：ask_user 弹出后用户没回答就关闭/重载前端，重开后提问卡消失
+但 run 仍阻塞在引擎内存里——回答通道（request_id）与阻塞中的 run 都
+只存在于运行时，历史消息里没有，前端无从恢复一张「还能回答」的提问卡。
+
+**修复**：
+1. `AskUserRequest` 新增 `SessionID`（AskSession/AskSessionCtx 填写）
+   与内部 `seq`（多条未决时取最新）。
+2. `AskUserHandler` 新增 `PendingBySession(sessionID)`：扫描 pending map
+   返回该会话当前未决的提问。答完 / run 中断即从 map 移除——返回 nil
+   表示无未决（历史即真相，前端不复活已死的提问）。
+3. RunHTTP 新增 `GET /pending-ask?session_id=`：返回 `{pending, request_id,
+   question, payload}` 或 `{pending: false}`。宿主前端在会话加载/重连
+   回放完成后查询，把引擎运行时的未决提问还原为可交互的提问卡。
+
+**验证**：go build / go vet 全绿。
