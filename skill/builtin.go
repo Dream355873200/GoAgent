@@ -96,14 +96,7 @@ func (p *FileBasedSkillProvider) DiscoverSkills(ctx context.Context) ([]*Skill, 
 		name := strings.TrimSuffix(entry.Name(), ".md")
 		content := string(data)
 
-		skills = append(skills, &Skill{
-			Name:        name,
-			Description: extractDescription(content),
-			Content:     content,
-			Source:      p.source,
-			Mode:        ModeInline,
-			FilePath:    filePath,
-		})
+		skills = append(skills, loadSkill(name, filePath, content, p.source))
 	}
 
 	return skills, nil

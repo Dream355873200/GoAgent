@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Dream355873200/GoAgent/agent"
 	"github.com/Dream355873200/GoAgent/analytics"
@@ -37,6 +38,7 @@ import (
 	"github.com/Dream355873200/GoAgent/executor"
 	"github.com/Dream355873200/GoAgent/hooks"
 	"github.com/Dream355873200/GoAgent/internal/loop"
+	"github.com/Dream355873200/GoAgent/reminder"
 	"github.com/Dream355873200/GoAgent/mcp"
 	"github.com/Dream355873200/GoAgent/memory"
 	"github.com/Dream355873200/GoAgent/message"
@@ -84,6 +86,11 @@ type App struct {
 	costTracker      *cost.Tracker            // 成本追踪器
 	analyticsTracker *analytics.Tracker       // 分析追踪器
 	obsRegistry      *observer.SyncObservable // Observer 注册表
+
+	// 权限模式运行时切换：-1 = 未覆写（沿用构造配置）；activeGate 指向最近
+	// 一次 run 构建的权限门，使模式切换即时作用于进行中的 run。
+	permModeOverride atomic.Int32
+	activeGate       atomic.Pointer[permission.Gate]
 }
 
 // registeredTool wraps a user-defined tool with its generated schema.
@@ -98,6 +105,7 @@ func New(opts ...Option) *App {
 		tools:  make(map[string]*registeredTool),
 		config: defaultConfig(),
 	}
+	app.permModeOverride.Store(-1) // -1 = 未覆写，沿用构造配置
 	for _, opt := range opts {
 		opt.apply(&app.config)
 	}
@@ -150,6 +158,20 @@ func New(opts ...Option) *App {
 		}
 		if bgTaskToolsProvider != nil {
 			app.UseTools(bgTaskToolsProvider(app.bgTaskMgr)...)
+		}
+		// 终态自动通知进主循环：任务完成/失败/终止 → steering queue
+		// 车道注入（RunSession 结束后自动续跑，模型立即知晓结果并跟进，
+		// 无需用户轮询催促；无活跃会话 ID 的任务由宿主自行处理）。
+		// 空闲会话的通知暂存队列，下次 RunSession 消费。
+		if app.config.steering != nil {
+			mgr := app.bgTaskMgr
+			hub := app.config.steering
+			mgr.OnTaskDone = func(t bgtask.TaskState) {
+				if t.SessionID == "" {
+					return
+				}
+				hub.Enqueue(t.SessionID, reminder.Wrap(reminder.SourceHost, bgTaskDoneText(t)))
+			}
 		}
 	}
 
@@ -220,6 +242,29 @@ func New(opts ...Option) *App {
 	}
 
 	return app
+}
+
+// bgTaskDoneText 后台任务终态通知正文（host 来源 system-reminder）。
+func bgTaskDoneText(t bgtask.TaskState) string {
+	desc := t.Description
+	if t.Command != "" {
+		desc = t.Command
+	}
+	switch t.Status {
+	case bgtask.StatusCompleted:
+		preview := t.Result
+		if len(preview) > 300 {
+			preview = preview[:300] + "…"
+		}
+		if preview == "" {
+			return fmt.Sprintf("后台任务「%s」已完成（task_id=%s），完整输出可用 TaskOutput 工具获取。", desc, t.ID)
+		}
+		return fmt.Sprintf("后台任务「%s」已完成（task_id=%s）。结果摘要：\n%s\n完整输出可用 TaskOutput 工具获取。", desc, t.ID, preview)
+	case bgtask.StatusKilled:
+		return fmt.Sprintf("后台任务「%s」已终止（task_id=%s）。", desc, t.ID)
+	default:
+		return fmt.Sprintf("后台任务「%s」已失败（task_id=%s）：\n%s\n详情可用 TaskOutput 工具获取。", desc, t.ID, t.Error)
+	}
 }
 
 // Tool registers a tool with the given name and definition.
@@ -455,6 +500,34 @@ func (a *App) RunWithHistory(ctx context.Context, history []message.Message, inp
 	return events
 }
 
+// RunWithSessionHistory 以真实会话身份运行，历史消息由宿主注入（不经 goagent
+// 会话持久化——宿主有自己的存储时用这个，而非 RunWithHistory 的 "ephemeral"
+// 虚拟会话）。会话 ID 真实化后，按 SessionID 路由的机制全部可用：
+// steering guide 车道（SessionID ≠ "ephemeral" 才启用）、queue 车道（本轮结束
+// 后依次消费排队消息自动续跑，语义与 RunSession 一致）、工具回调拿到的
+// Context.SessionID 也是真实值。
+func (a *App) RunWithSessionHistory(ctx context.Context, sessionID string, history []message.Message, input string) <-chan Event {
+	events := make(chan Event, 64)
+	go func() {
+		defer close(events)
+		sess := &session.Session{ID: sessionID, Messages: history}
+		a.run(ctx, input, sess, events)
+		// queue 车道续跑：本轮结束后依次消费排队消息（同一会话、同一事件流），
+		// 直到队列排空或 ctx 被取消（用户中断则停止消费，消息留在队列里）。
+		if a.config.steering != nil {
+			for ctx.Err() == nil {
+				next, ok := a.config.steering.claimQueued(sessionID)
+				if !ok {
+					break
+				}
+				events <- Event{Type: EventQueueRun, Text: next}
+				a.run(ctx, next, sess, events)
+			}
+		}
+	}()
+	return events
+}
+
 // RunSession 在指定会话中运行 agent，支持多轮对话。
 // 自动加载历史消息并在结束后持久化新消息（可通过 WithAutoPersist(false) 禁用）。
 // 需要先通过 WithSessionManager 配置会话管理器。
@@ -499,6 +572,21 @@ func (a *App) RunSession(ctx context.Context, sessionID string, input string) <-
 
 		// 运行 agent，传入历史消息。
 		a.run(ctx, input, sess, events)
+
+		// queue 车道续跑：本轮结束后依次消费排队消息（同一会话、同一
+		// 事件流），直到队列排空或 ctx 被取消（用户中断则停止消费，
+		// 消息留在队列里等下次 RunSession）。每次续跑前发 EventQueueRun，
+		// 前端把排队消息渲染为普通用户气泡并开新一轮。
+		if a.config.steering != nil {
+			for ctx.Err() == nil {
+				next, ok := a.config.steering.claimQueued(sessionID)
+				if !ok {
+					break
+				}
+				events <- Event{Type: EventQueueRun, Text: next}
+				a.run(ctx, next, sess, events)
+			}
+		}
 
 		// 更新状态为空闲。
 		_ = mgr.UpdateState(ctx, sessionID, sessionStateIdle)
@@ -570,6 +658,18 @@ func (a *App) PlanStore() plan.StoreInterface {
 // New(WithSuspend()) 之后经本方法取引用。
 func (a *App) SuspendGate() *loop.SuspendGate {
 	return a.config.suspendGate
+}
+
+// Steering 返回插话通道（如果启用了 WithSteering）。
+// 未启用返回 nil。
+//
+// 用法：
+//
+//	hub.Steer(sessionID, "插话内容")     // 活跃 run 的工具批边界注入
+//	hub.Enqueue(sessionID, "排队内容")   // run 结束后自动续跑
+//	hub.PendingQueued(sessionID)         // 查看排队积压
+func (a *App) Steering() *SteeringHub {
+	return a.config.steering
 }
 
 // Usage 返回成本追踪摘要（如果启用了 WithCostTracking）。
@@ -761,6 +861,45 @@ func (a *App) SetInterruptHandler(h *InterruptHandler) {
 	a.interruptHandler = h
 }
 
+// SetPermissionMode 运行时切换权限模式。立即生效：
+//   - 进行中的 run：直接改写其权限门的模式；
+//   - 后续 run：构造权限门时优先采用此覆写（高于构造时的 WithPermissionMode）。
+//
+// 典型用途是宿主在 UI 上提供模式切换（如 规划/自动编辑/全部放行）。
+func (a *App) SetPermissionMode(mode PermissionModeOption) {
+	a.permModeOverride.Store(int32(mode))
+	if g := a.activeGate.Load(); g != nil {
+		g.SetMode(permission.PermissionMode(mode))
+	}
+}
+
+// CurrentPermissionMode 返回当前生效的权限模式：运行时覆写优先，否则回退
+// 构造配置；两者都未设置时为 PermissionDefault。
+func (a *App) CurrentPermissionMode() PermissionModeOption {
+	if m := a.permModeOverride.Load(); m >= 0 {
+		return PermissionModeOption(m)
+	}
+	if a.config.permissionMode != nil {
+		return PermissionModeOption(*a.config.permissionMode)
+	}
+	return PermissionDefault
+}
+
+// SetThinkingEffort 运行时切换思考强度档位（off/low/medium/high）。
+// 自下一次 run 起随每次模型请求下发；进行中的轮次不回溯。
+func (a *App) SetThinkingEffort(effort string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.config.thinkingEffort = effort
+}
+
+// CurrentThinkingEffort 返回当前思考强度档位（空 = 不干预）。
+func (a *App) CurrentThinkingEffort() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.config.thinkingEffort
+}
+
 // run is the internal entry point that wires up all subsystems and starts the agent loop.
 // sess 为 nil 时创建无状态会话；非 nil 时使用已有历史消息。
 func (a *App) run(ctx context.Context, input string, sess *session.Session, out chan<- Event) {
@@ -777,6 +916,7 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	compCfg := compaction.Config{
 		AutoCompactThreshold: cfg.compaction.AutoCompactThreshold,
 		MaxResultSize:        cfg.compaction.MaxResultSize,
+		PostCompact:          cfg.postCompact,
 	}
 	if cfg.yoloPromptFile != "" {
 		compCfg.PromptFile = cfg.yoloPromptFile
@@ -792,10 +932,13 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	// 2. Permission Gate。
 	permGate := permission.NewGate(wrapApprover(cfg.approver))
 
-	// 应用权限模式（如有配置）。
-	if cfg.permissionMode != nil {
+	// 应用权限模式：运行时覆写（SetPermissionMode）优先于构造配置。
+	if m := a.permModeOverride.Load(); m >= 0 {
+		permGate.SetMode(permission.PermissionMode(m))
+	} else if cfg.permissionMode != nil {
 		permGate.SetMode(*cfg.permissionMode)
 	}
+	a.activeGate.Store(permGate)
 
 	// 应用权限规则（如有配置）。
 	if cfg.permissionRules != nil {
@@ -905,6 +1048,8 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		SystemPrompt: systemPrompt,
 		MaxTurns:     cfg.maxTurns,
 		Compaction:   compMgr,
+
+		ReasoningEffort: a.CurrentThinkingEffort(),
 		Permission:   permGate,
 		Memory:       memMgr,
 		Executor:     exec,
@@ -922,13 +1067,26 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		loopCfg.PlanChecker = &planCheckerAdapter{mgr: a.planMgr}
 	}
 
+	// 插话通道：仅真实会话（sess 非空且非 ephemeral）接线。beginRun
+	// 打开 guide 车道，run 结束（含 error/interrupt 退出）时 endRun
+	// 关闭并把未消费的插话降级进 queue 车道——插话永不丢失。
+	if a.config.steering != nil && sess != nil && sessionID != "" && sessionID != "ephemeral" {
+		loopCfg.Steering = steerSourceAdapter{hub: a.config.steering, sessionID: sessionID}
+		a.config.steering.beginRun(sessionID)
+		defer a.config.steering.endRun(sessionID)
+	}
+
 	// 注册 PostSampling hook（SessionMemory）。
 	if sessMem != nil {
 		loopCfg.PostSampling = &sessionMemHookAdapter{sm: sessMem}
 	}
 
 	// 如果有 session，传入历史消息。
+	// 先修复孤立的 tool_use（中断/异常退出残留）：assistant 消息带
+	// tool_calls 却没有配对的 tool 消息，上游 API 会整请求 400 拒绝——
+	// 会话从此每一轮都报错。修复后本次运行的落盘序列也是对齐的。
 	if sess != nil && len(sess.Messages) > 0 {
+		sess.Messages = session.EnsureToolResultPairing(sess.Messages)
 		loopCfg.InitialMessages = sess.Messages
 	}
 
@@ -1078,6 +1236,7 @@ func (a *App) buildToolSet() []loop.ToolEntry {
 			InputSchema:        rt.inputSchema,
 			Permission:         permission.Level(rt.def.Permission),
 			Concurrent:         rt.def.Concurrent,
+			Class:              rt.def.Effect,
 			MaxResultSizeChars: rt.def.MaxResultSizeChars,
 			InterruptBehavior:  rt.def.InterruptMode,
 			ExecuteFn: func(ctx context.Context, input json.RawMessage) (string, error) {

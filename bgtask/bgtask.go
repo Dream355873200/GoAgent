@@ -52,6 +52,7 @@ type TaskState struct {
 	Status      Status    `json:"status"`
 	Description string    `json:"description"`
 	ToolUseID   string    `json:"tool_use_id,omitempty"` // 创建此任务的 tool_use ID
+	SessionID   string    `json:"session_id,omitempty"`  // 创建此任务的会话（终态通知回注该会话）
 	StartTime   time.Time `json:"start_time"`
 	EndTime     time.Time `json:"end_time,omitempty"`
 	OutputFile  string    `json:"output_file"`
@@ -84,6 +85,11 @@ type Manager struct {
 	tasks     map[string]*TaskState
 	outputDir string // 输出文件目录
 	idSeq     int64  // ID 序列号
+
+	// OnTaskDone 任务进入终态（completed/failed/killed）时的回调
+	//（锁外调用，可安全调用 Manager 的查询方法）。App 自动接线为
+	// steering queue 注入；宿主可替换或置 nil 关闭。每任务只通知一次。
+	OnTaskDone func(state TaskState)
 }
 
 // NewManager 创建一个新的后台任务管理器。
@@ -109,8 +115,9 @@ func (m *Manager) generateID(taskType TaskType) string {
 }
 
 // RegisterAgent 注册并启动一个后台 agent 任务。
+// sessionID 是创建此任务的会话（终态通知回注该会话的 steering 队列）。
 // 返回任务 ID 和取消用的 context。
-func (m *Manager) RegisterAgent(description, prompt, agentType, model string, toolUseID string) (taskID string, ctx context.Context, cancel context.CancelFunc) {
+func (m *Manager) RegisterAgent(sessionID, description, prompt, agentType, model string, toolUseID string) (taskID string, ctx context.Context, cancel context.CancelFunc) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -125,6 +132,7 @@ func (m *Manager) RegisterAgent(description, prompt, agentType, model string, to
 		Status:      StatusRunning,
 		Description: description,
 		ToolUseID:   toolUseID,
+		SessionID:   sessionID,
 		StartTime:   time.Now(),
 		OutputFile:  outputFile,
 		AgentID:     taskID,
@@ -138,7 +146,7 @@ func (m *Manager) RegisterAgent(description, prompt, agentType, model string, to
 }
 
 // RegisterShell 注册并启动一个后台 shell 任务。
-func (m *Manager) RegisterShell(command, description, toolUseID string) (taskID string, ctx context.Context, cancel context.CancelFunc) {
+func (m *Manager) RegisterShell(sessionID, command, description string, toolUseID string) (taskID string, ctx context.Context, cancel context.CancelFunc) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -153,6 +161,7 @@ func (m *Manager) RegisterShell(command, description, toolUseID string) (taskID 
 		Status:      StatusRunning,
 		Description: description,
 		ToolUseID:   toolUseID,
+		SessionID:   sessionID,
 		StartTime:   time.Now(),
 		OutputFile:  outputFile,
 		Command:     command,
@@ -165,64 +174,64 @@ func (m *Manager) RegisterShell(command, description, toolUseID string) (taskID 
 // Complete 标记任务为成功完成。
 func (m *Manager) Complete(taskID, result string, messages []message.Message) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	t, ok := m.tasks[taskID]
-	if !ok || t.Status.IsTerminal() {
-		return
+	if ok && !t.Status.IsTerminal() {
+		t.Status = StatusCompleted
+		t.EndTime = time.Now()
+		t.Result = result
+		t.Messages = messages
 	}
-	t.Status = StatusCompleted
-	t.EndTime = time.Now()
-	t.Result = result
-	t.Messages = messages
+	done := takeDoneLocked(t)
+	m.mu.Unlock()
+	m.fireDone(done)
 }
 
 // Fail 标记任务为失败。
 func (m *Manager) Fail(taskID string, err error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	t, ok := m.tasks[taskID]
-	if !ok || t.Status.IsTerminal() {
-		return
+	if ok && !t.Status.IsTerminal() {
+		t.Status = StatusFailed
+		t.EndTime = time.Now()
+		if err != nil {
+			t.Error = err.Error()
+		}
 	}
-	t.Status = StatusFailed
-	t.EndTime = time.Now()
-	if err != nil {
-		t.Error = err.Error()
-	}
+	done := takeDoneLocked(t)
+	m.mu.Unlock()
+	m.fireDone(done)
 }
 
 // CompleteShell 标记 shell 任务完成并记录退出码。
 func (m *Manager) CompleteShell(taskID string, exitCode int, output string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	t, ok := m.tasks[taskID]
-	if !ok || t.Status.IsTerminal() {
-		return
+	if ok && !t.Status.IsTerminal() {
+		t.ExitCode = &exitCode
+		t.Result = output
+		t.EndTime = time.Now()
+		if exitCode == 0 {
+			t.Status = StatusCompleted
+		} else {
+			t.Status = StatusFailed
+			t.Error = fmt.Sprintf("进程退出码: %d", exitCode)
+		}
 	}
-	t.ExitCode = &exitCode
-	t.Result = output
-	t.EndTime = time.Now()
-	if exitCode == 0 {
-		t.Status = StatusCompleted
-	} else {
-		t.Status = StatusFailed
-		t.Error = fmt.Sprintf("进程退出码: %d", exitCode)
-	}
+	done := takeDoneLocked(t)
+	m.mu.Unlock()
+	m.fireDone(done)
 }
 
 // Kill 停止一个正在运行的任务。
 func (m *Manager) Kill(taskID string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	t, ok := m.tasks[taskID]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("任务 %s 不存在", taskID)
 	}
 	if t.Status.IsTerminal() {
+		m.mu.Unlock()
 		return fmt.Errorf("任务 %s 已处于终态: %s", taskID, t.Status)
 	}
 
@@ -232,7 +241,28 @@ func (m *Manager) Kill(taskID string) error {
 	}
 	t.Status = StatusKilled
 	t.EndTime = time.Now()
+	done := takeDoneLocked(t)
+	m.mu.Unlock()
+	m.fireDone(done)
 	return nil
+}
+
+// takeDoneLocked 取走终态通知快照（每任务一次；调用方需持锁）。
+// 未进入终态或已通知过返回 nil。
+func takeDoneLocked(t *TaskState) *TaskState {
+	if t == nil || !t.Status.IsTerminal() || t.notified {
+		return nil
+	}
+	t.notified = true
+	cp := *t
+	return &cp
+}
+
+// fireDone 锁外触发终态回调（回调可安全调用 Manager 查询方法）。
+func (m *Manager) fireDone(t *TaskState) {
+	if t != nil && m.OnTaskDone != nil {
+		m.OnTaskDone(*t)
+	}
 }
 
 // UpdateProgress 更新任务的进度信息。

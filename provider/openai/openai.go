@@ -40,6 +40,10 @@ type Config struct {
 	// DisableTools 为 true 时不发送 tools 参数。
 	// 用于不支持 function calling 的模型（如 RP 模型、旧模型等）。
 	DisableTools bool
+
+	// ExtraBody 原样合并进每个 chat/completions 请求体（浅合并，ExtraBody 优先）。
+	// 逃生舱：各后端的私有参数（如某些网关的思考开关）无需改库即可透传。
+	ExtraBody map[string]any
 }
 
 // Provider 实现 OpenAI 兼容的 provider.Provider 接口。
@@ -75,12 +79,13 @@ func New(cfg Config) *Provider {
 
 // chatRequest 是 OpenAI Chat Completions API 的请求体。
 type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Tools       []chatTool    `json:"tools,omitempty"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Stream      bool          `json:"stream"`
-	Temperature *float64      `json:"temperature,omitempty"`
+	Model           string        `json:"model"`
+	Messages        []chatMessage `json:"messages"`
+	Tools           []chatTool    `json:"tools,omitempty"`
+	MaxTokens       int           `json:"max_tokens,omitempty"`
+	Stream          bool          `json:"stream"`
+	Temperature     *float64      `json:"temperature,omitempty"`
+	ReasoningEffort string        `json:"reasoning_effort,omitempty"` // 思考强度（o-series 约定；后端不支持时会校验报错）
 }
 
 // chatMessage 是 OpenAI 格式的消息。
@@ -193,6 +198,24 @@ type streamFuncDelta struct {
 // ---------- Provider 接口实现 ----------
 
 // Stream 实现流式 API 调用。
+// applyExtraBody 把 Config.ExtraBody 浅合并进已序列化的请求体（ExtraBody 优先）。
+func (p *Provider) applyExtraBody(jsonBody []byte) ([]byte, error) {
+	p.mu.RLock()
+	extra := p.config.ExtraBody
+	p.mu.RUnlock()
+	if len(extra) == 0 {
+		return jsonBody, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(jsonBody, &m); err != nil {
+		return jsonBody, err
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	return json.Marshal(m)
+}
+
 func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan provider.StreamEvent, error) {
 	// 构建请求体。
 	body := p.buildChatRequest(req, true)
@@ -200,6 +223,9 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan pr
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("序列化请求失败: %w", err)
+	}
+	if jsonBody, err = p.applyExtraBody(jsonBody); err != nil {
+		return nil, fmt.Errorf("合并 ExtraBody 失败: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.config.BaseURL+"/chat/completions", bytes.NewReader(jsonBody))
@@ -232,6 +258,9 @@ func (p *Provider) Complete(ctx context.Context, req *provider.Request) (*provid
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("序列化请求失败: %w", err)
+	}
+	if jsonBody, err = p.applyExtraBody(jsonBody); err != nil {
+		return nil, fmt.Errorf("合并 ExtraBody 失败: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.config.BaseURL+"/chat/completions", bytes.NewReader(jsonBody))
@@ -322,6 +351,14 @@ func (p *Provider) buildChatRequest(req *provider.Request, stream bool) chatRequ
 	}
 	if req.MaxTokens > 0 {
 		cr.MaxTokens = req.MaxTokens
+	}
+
+	// 思考强度：off 映射为 "none"（关闭思考的通用约定），其余档位原样透传。
+	switch req.ReasoningEffort {
+	case "off":
+		cr.ReasoningEffort = "none"
+	case "low", "medium", "high":
+		cr.ReasoningEffort = req.ReasoningEffort
 	}
 
 	// 转换工具定义（仅在未禁用工具时）。

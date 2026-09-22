@@ -32,6 +32,7 @@ type Config struct {
 	Middlewares     []Middleware
 	SystemPrompt    string
 	MaxTurns        int
+	ReasoningEffort string // 思考强度档位（off/low/medium/high；空 = 不干预），随每次模型请求下发
 	Compaction      *compaction.Manager
 	Permission      *permission.Gate
 	Memory          *memory.Manager
@@ -41,6 +42,10 @@ type Config struct {
 	PlanChecker     PlanChecker       // plan mode 工具过滤（可选）
 	PostSampling    PostSamplingHook  // 采样后钩子（SessionMemory 等）
 	InitialMessages []message.Message // 历史消息（多轮对话恢复用）
+	// Steering 插话源（可选）。非 nil 时每个工具批结束边界调用
+	// DrainGuides 取走待注入消息，作为 user 消息追加进下一次模型
+	// 请求——运行中的模型流不受影响。见 steering.go。
+	Steering SteerSource
 	// Observer 接收循环中的可观测性事件（Token 用量、工具执行、权限决策等）。
 	// 可传入 observer.MultiObserver 广播给多个观察者。
 	// 如果为 nil，则不发送任何可观测性事件。
@@ -103,6 +108,8 @@ type ToolEntry struct {
 	InputSchema any
 	Permission  permission.Level
 	Concurrent  bool
+	// Class 副作用分级（executor.Class）。非 Unset 时优先于 Concurrent。
+	Class executor.Class
 	ExecuteFn   func(ctx context.Context, input json.RawMessage) (string, error)
 
 	// InterruptBehavior 中断行为："cancel" 或 "block"。默认 "cancel"。
@@ -155,7 +162,17 @@ const (
 	EvtCompaction   = 10
 	// EvtInterrupted = 15 对齐公共 EventInterrupted：用户主动终止。
 	EvtInterrupted = 15
+	// 公共 EventRetrieval = 16（检索事件不经过 loop，跳过该数值）。
+	// EvtSteer = 17 对齐公共 EventSteer：guide 车道消息已注入模型上下文。
+	EvtSteer = 17
+	// 公共 EventQueueRun = 18（queue 车道消费由 RunSession 在 loop 外
+	// 直接发射，不经过 loop；后续 loop 新增类型须跳过该数值）。
 )
+
+// maxStreamRetries 流中断锚点恢复的连续重试上限（熔断）。流正常结束即
+// 清零；连续超限说明网络/provider 持续异常，果断报错给宿主而不是
+// 无限重试。
+const maxStreamRetries = 3
 
 // Transition 描述循环继续到下一次迭代的原因。
 type Transition int
@@ -187,6 +204,10 @@ type loopState struct {
 	lastInputTokens int
 	// toolStartTimes 记录每个工具调用的开始时间，用于计算执行时长。
 	toolStartTimes map[string]time.Time
+	// streamRetryCount 流中断锚点恢复的连续失败计数（熔断用）。
+	// 流正常结束时清零——只对「连续中断」计数，偶发一次网络抖动
+	// 不该让整轮报废。
+	streamRetryCount int
 }
 
 // Loop 是核心 agent 状态机。
@@ -361,6 +382,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 	}
 
 	// ====== 主循环 ======
+mainLoop:
 	for {
 		// 检查最大轮次。
 		if state.turnCount >= l.cfg.MaxTurns {
@@ -463,9 +485,10 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 
 		// 构建请求：优先使用 SystemBlocks（带 cache_control），否则回退到 SystemPrompt。
 		req := &provider.Request{
-			Messages:  state.messages,
-			Tools:     toolDefs,
-			MaxTokens: maxTokens,
+			Messages:        state.messages,
+			Tools:           toolDefs,
+			MaxTokens:       maxTokens,
+			ReasoningEffort: l.cfg.ReasoningEffort,
 		}
 		if caps.SupportsCaching {
 			// 将 system prompt 包装为 SystemBlocks，最后一个 block 标记缓存。
@@ -661,7 +684,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 							},
 						})
 					} else {
-						concurrent := tool.Concurrent
+						// 副作用分级：显式 Class 优先，兼容字段 Concurrent 兜底。
 
 						// 构建 PreCheck 闭包：包含完整的权限检查链。
 						// 对齐 Claude Code StreamingToolExecutor.executeTool() 的内置权限检查。
@@ -675,7 +698,8 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 							ID:         tc.ID,
 							Name:       tc.Name,
 							Input:      tc.Input,
-							Concurrent: concurrent,
+							Class:      tool.Class,
+							Concurrent: tool.Concurrent,
 							Execute:    tool.ExecuteFn,
 							PreCheck:   preCheck,
 						})
@@ -716,36 +740,92 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 					out <- Event{Type: EvtInterrupted, Text: "用户中断"}
 					return
 				}
-				l.logError("流中断，循环终止: %v", ev.Error)
-				if o, ok := l.cfg.Observer.(observer.LLMObserver); ok {
-					o.OnLLMError(ctx, llmInfo, ev.Error)
+
+				// 流中断锚点恢复（网络断/SSE 断）：不整轮报错。已到达的
+				// 部分内容固化为完整消息（部分正文 + 已派发工具的真实结果
+				// + 兜底合成结果），消息序列保持 API 对齐——这就是「最后
+				// 安全锚点」；注入续跑提示后重开流。熔断：连续中断超过
+				// 上限才放弃（streamRetryCount 在流正常结束时清零）。
+				if state.streamRetryCount >= maxStreamRetries {
+					l.logError("流中断且连续 %d 次恢复失败，循环终止: %v", maxStreamRetries, ev.Error)
+					if o, ok := l.cfg.Observer.(observer.LLMObserver); ok {
+						o.OnLLMError(ctx, llmInfo, ev.Error)
+					}
+					out <- Event{Type: EvtError, Error: ev.Error}
+					if l.cfg.Observer != nil {
+						l.cfg.Observer.OnError(ctx, ev.Error)
+					}
+					return
 				}
-				out <- Event{Type: EvtError, Error: ev.Error}
-				if l.cfg.Observer != nil {
-					l.cfg.Observer.OnError(ctx, ev.Error)
+				state.streamRetryCount++
+				l.logWarn("流中断，锚点恢复重试 %d/%d: %v", state.streamRetryCount, maxStreamRetries, ev.Error)
+				out <- Event{Type: EvtProgress, Text: fmt.Sprintf("流中断，正在恢复 (%d/%d)", state.streamRetryCount, maxStreamRetries)}
+
+				// 已派发工具的真实结果必须保留（副作用已发生）：等待跑完并上报。
+				// Wait 会把剩余 pending 全部启动并等齐，Poll 兜住流中断前
+				// 已完成但尚未上报的结果。
+				gotResults := append(streamingExec.Poll(), streamingExec.Wait(ctx)...)
+				l.reportToolResults(ctx, state, gotResults, out)
+
+				if assistantText != "" || len(toolCalls) > 0 {
+					// 部分思考块丢弃：不完整且无签名回传价值，锚点只需正文
+					// 与工具调用。正文按「已流出的原样」固化——模型续跑时
+					// 能看到自己停在哪。
+					anchorMsg := message.Message{Role: message.RoleAssistant}
+					if assistantText != "" {
+						anchorMsg.Content = append(anchorMsg.Content, message.ContentBlock{
+							Type: "text",
+							Text: assistantText,
+						})
+					}
+					for _, tc := range toolCalls {
+						anchorMsg.Content = append(anchorMsg.Content, message.ContentBlock{
+							Type:      "tool_use",
+							ToolUseID: tc.ID,
+							ToolName:  tc.Name,
+							Input:     tc.Input,
+						})
+					}
+					state.messages = append(state.messages, anchorMsg)
+
+					// 工具结果成对补齐：有真实结果用真实结果，没有的（极
+					// 少见——所有已上报 tool_use 都已派发执行）合成错误结果，
+					// 维持 tool_use/tool_result 消息对齐。
+					byID := make(map[string]executor.ToolResult, len(gotResults))
+					for _, r := range gotResults {
+						byID[r.ToolUseID] = r
+					}
+					for _, tc := range toolCalls {
+						if r, ok := byID[tc.ID]; ok {
+							state.messages = append(state.messages,
+								message.NewToolResultMessage(tc.ID, r.Content, r.IsError),
+							)
+						} else {
+							state.messages = append(state.messages,
+								message.NewToolResultMessage(tc.ID, "流中断，该工具调用未收到结果", true),
+							)
+						}
+					}
+
+					state.messages = append(state.messages, message.NewMetaMessage(
+						"Your previous response was interrupted by a network error mid-stream. "+
+							"The partial content above is preserved as-is. Continue seamlessly from "+
+							"where it stopped — no apology, no recap, no repetition.",
+					))
 				}
-				return
+				// 无任何部分内容（流刚建立就断）：状态无需修复，直接重开流。
+				// 注意 continue mainLoop：此处处于流消费的 range 循环内，
+				// 裸 continue 只会结束本流（被当作正常结束），必须重开
+				// 的是主循环的模型请求。
+				continue mainLoop
 			}
 
 			// 轮询已完成的流式工具。
-			for _, result := range streamingExec.Poll() {
-				l.logDebug("tool_done: %s id=%s err=%v content_len=%d", result.Name, result.ToolUseID, result.IsError, len(result.Content))
-				out <- Event{Type: EvtToolDone, ToolName: result.Name, ToolResult: result.Content, ToolUseID: result.ToolUseID}
-				// Observer: 通知工具执行完成。
-				if l.cfg.Observer != nil {
-					var duration time.Duration
-					if startTime, ok := state.toolStartTimes[result.ToolUseID]; ok {
-						duration = time.Since(startTime)
-						delete(state.toolStartTimes, result.ToolUseID)
-					}
-					if result.IsError {
-						l.cfg.Observer.OnToolError(ctx, result.Name, nil, fmt.Errorf("%s", result.Content), duration)
-					} else {
-						l.cfg.Observer.OnToolDone(ctx, result.Name, nil, result.Content, duration)
-					}
-				}
-			}
+			l.reportToolResults(ctx, state, streamingExec.Poll(), out)
 		}
+
+		// 流正常结束：连续中断计数清零（熔断只针对连续失败）。
+		state.streamRetryCount = 0
 
 		// 流消费完毕：LLM 调用级 observer 触发 OnLLMDone（本轮响应完整落地）。
 		if o, ok := l.cfg.Observer.(observer.LLMObserver); ok {
@@ -917,23 +997,7 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 		// 此处只需等待剩余结果。对齐 Claude Code query.ts 的
 		// streamingToolExecutor.getRemainingResults() 路径。
 		remaining := streamingExec.Wait(ctx)
-		for _, result := range remaining {
-			l.logDebug("tool_done: %s id=%s err=%v content_len=%d", result.Name, result.ToolUseID, result.IsError, len(result.Content))
-			out <- Event{Type: EvtToolDone, ToolName: result.Name, ToolResult: result.Content, ToolUseID: result.ToolUseID}
-			// Observer: 通知工具执行完成。
-			if l.cfg.Observer != nil {
-				var duration time.Duration
-				if startTime, ok := state.toolStartTimes[result.ToolUseID]; ok {
-					duration = time.Since(startTime)
-					delete(state.toolStartTimes, result.ToolUseID)
-				}
-				if result.IsError {
-					l.cfg.Observer.OnToolError(observer.WithToolCallID(ctx, result.ToolUseID), result.Name, nil, fmt.Errorf("%s", result.Content), duration)
-				} else {
-					l.cfg.Observer.OnToolDone(observer.WithToolCallID(ctx, result.ToolUseID), result.Name, nil, result.Content, duration)
-				}
-			}
-		}
+		l.reportToolResults(ctx, state, remaining, out)
 
 		// 收集所有结果。
 		allResults := append(streamingExec.Poll(), remaining...)
@@ -971,6 +1035,18 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 			)
 		}
 
+		// 工具批结束边界：注入 guide 车道的插话消息。选此边界是因为
+		// 助手消息与工具结果此刻已成对落定，消息序列处于一致状态；
+		// 插话作为 user 消息追加后随下一次模型请求进入上下文——
+		// 运行中的模型流不受影响。run 结束时仍未消费的插话由
+		// SteeringHub.endRun 降级进 queue 车道，不会丢失。
+		if l.cfg.Steering != nil && l.cfg.SessionID != "" {
+			for _, g := range l.cfg.Steering.DrainGuides(l.cfg.SessionID) {
+				state.messages = append(state.messages, message.NewUserMessage(g))
+				out <- Event{Type: EvtSteer, Text: g}
+			}
+		}
+
 		// ⑨ 后处理。
 		state.turnCount++
 		state.hasAttemptedReactiveCompact = false
@@ -1005,6 +1081,29 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 
 		out <- Event{Type: EvtTurnComplete}
 		// continue → 下一次迭代
+	}
+}
+
+// reportToolResults 上报工具结果：事件流 + Observer + 开始时间清理。
+// 流式消费中 Poll 的增量上报、轮末 Wait 的收尾上报与流中断恢复的
+// 收集上报共用此路径。
+func (l *Loop) reportToolResults(ctx context.Context, state *loopState, results []executor.ToolResult, out chan<- Event) {
+	for _, result := range results {
+		l.logDebug("tool_done: %s id=%s err=%v content_len=%d", result.Name, result.ToolUseID, result.IsError, len(result.Content))
+		out <- Event{Type: EvtToolDone, ToolName: result.Name, ToolResult: result.Content, ToolUseID: result.ToolUseID}
+		if l.cfg.Observer == nil {
+			continue
+		}
+		var duration time.Duration
+		if startTime, ok := state.toolStartTimes[result.ToolUseID]; ok {
+			duration = time.Since(startTime)
+			delete(state.toolStartTimes, result.ToolUseID)
+		}
+		if result.IsError {
+			l.cfg.Observer.OnToolError(observer.WithToolCallID(ctx, result.ToolUseID), result.Name, nil, fmt.Errorf("%s", result.Content), duration)
+		} else {
+			l.cfg.Observer.OnToolDone(observer.WithToolCallID(ctx, result.ToolUseID), result.Name, nil, result.Content, duration)
+		}
 	}
 }
 

@@ -17,12 +17,18 @@ import (
 )
 
 // readState 全局读取状态表：sessionID → (绝对路径 → 内容 hash)。
+// order 记录各会话的读取顺序（后读在前不保证——追加序），供压缩后
+// 重注入按「最近读的优先」挑选文件（readstate_rehydrate.go）。
 type readState struct {
 	mu    sync.Mutex
 	files map[string]map[string]string
+	order map[string][]string
 }
 
-var reads = &readState{files: make(map[string]map[string]string)}
+var reads = &readState{
+	files: make(map[string]map[string]string),
+	order: make(map[string][]string),
+}
 
 // sessionKey 会话键（空 session 归入 "" 分区）。
 // 参数直接用 string 避免接口抽象。
@@ -38,6 +44,14 @@ func markRead(sessionID, path, content string) {
 		reads.files[sessionID] = m
 	}
 	m[path] = hashOf(content)
+	// 顺序表：先移除旧位置再追加——重复读的文件排到最后（最新）。
+	for i, p := range reads.order[sessionID] {
+		if p == path {
+			reads.order[sessionID] = append(reads.order[sessionID][:i], reads.order[sessionID][i+1:]...)
+			break
+		}
+	}
+	reads.order[sessionID] = append(reads.order[sessionID], path)
 }
 
 // hasRead 本会话是否读取过该文件（任意版本）。
@@ -59,9 +73,10 @@ func unchangedSinceRead(sessionID, path, currentContent string) bool {
 
 // contentMismatchedSinceRead 文件当前内容是否与会话上次 Read/Write 时
 // **不同**（外部修改检测）。三态区分：
-//   未读取过     → false（「没读过」由 hasRead 单独拦，不在这误报）
-//   读取过且一致 → false
-//   读取过但变了 → true（Write 覆盖前拦截：外部改动会被静默抹掉）
+//
+//	未读取过     → false（「没读过」由 hasRead 单独拦，不在这误报）
+//	读取过且一致 → false
+//	读取过但变了 → true（Write 覆盖前拦截：外部改动会被静默抹掉）
 func contentMismatchedSinceRead(sessionID, path, currentContent string) bool {
 	reads.mu.Lock()
 	defer reads.mu.Unlock()

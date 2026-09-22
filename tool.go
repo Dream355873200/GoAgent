@@ -5,6 +5,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+
+	"github.com/Dream355873200/GoAgent/executor"
+)
+
+// 工具副作用分级（executor.Class 别名）——决定并行编排策略：
+//
+//	EffectReadOnly   只读：任何场景可并行（含独占工具运行期间）
+//	EffectParallel   并行安全：可与并行/只读工具并行，不能与独占重叠
+//	EffectExclusive  独占：必须独占执行（默认兜底）
+const (
+	EffectDefault   = executor.ClassUnset
+	EffectExclusive = executor.ClassExclusive
+	EffectParallel  = executor.ClassParallel
+	EffectReadOnly  = executor.ClassReadOnly
 )
 
 // Permission 定义工具的安全级别。
@@ -83,7 +97,15 @@ type ToolDef struct {
 
 	// Concurrent 标识此工具是否可以与其他并发安全的工具并行运行。
 	// 默认 false（串行执行）。
+	// Deprecated: 使用 Effect 三级分级（只读/并行安全/独占）；
+	// Effect 非 Unset 时本字段被忽略。
 	Concurrent bool
+
+	// Effect 副作用分级（元数据）：只读 / 并行安全 / 独占。
+	// 决定执行器的并行编排——只读工具可与任何工具并行（含独占工具
+	// 运行期间），并行安全工具互不冲突地并行，独占工具串行。
+	// 零值 EffectDefault 时按 Concurrent 推导（true→并行安全，false→独占）。
+	Effect executor.Class
 
 	// Execute 是工具的实现函数。
 	// 必须具有签名：func(Context, T) (string, error)

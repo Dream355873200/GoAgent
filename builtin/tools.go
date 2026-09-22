@@ -208,6 +208,7 @@ func ReadTool() goagent.ToolDef {
 		Input:      ReadInput{},
 		Permission: goagent.ReadOnly,
 		Concurrent: true,
+		Effect:     goagent.EffectReadOnly,
 		Execute: func(ctx goagent.Context, in ReadInput) (string, error) {
 			p, err := resolvePathChecked(ctx, in.FilePath, goagent.OpRead)
 			if err != nil {
@@ -498,6 +499,7 @@ func GlobTool() goagent.ToolDef {
 		Input:              GlobInput{},
 		Permission:         goagent.ReadOnly,
 		Concurrent:         true,
+		Effect:             goagent.EffectReadOnly,
 		MaxResultSizeChars: 50000,
 		Execute: func(ctx goagent.Context, in GlobInput) (string, error) {
 			return executeGlob(ctx, in)
@@ -640,6 +642,7 @@ func GrepTool() goagent.ToolDef {
 		Input:              GrepInput{},
 		Permission:         goagent.ReadOnly,
 		Concurrent:         true,
+		Effect:             goagent.EffectReadOnly,
 		MaxResultSizeChars: 50000,
 		Execute: func(ctx goagent.Context, in GrepInput) (string, error) {
 			return executeGrep(ctx, in)

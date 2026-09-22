@@ -341,11 +341,28 @@ func (p *Provider) buildParams(req *provider.Request) (anthropic.MessageNewParam
 	}
 
 	// Extended Thinking。
+	// 显式 ThinkingConfig 优先；否则 ReasoningEffort 档位映射为思考预算
+	// （low=8k / medium=16k / high=32k，off=不启用思考）。
 	if req.Thinking != nil && req.Thinking.BudgetTokens > 0 {
 		params.Thinking = anthropic.ThinkingConfigParamUnion{
 			OfEnabled: &anthropic.ThinkingConfigEnabledParam{
 				BudgetTokens: int64(req.Thinking.BudgetTokens),
 			},
+		}
+	} else {
+		var budget int64
+		switch req.ReasoningEffort {
+		case "low":
+			budget = 8192
+		case "medium":
+			budget = 16384
+		case "high":
+			budget = 32768
+		}
+		if budget > 0 {
+			params.Thinking = anthropic.ThinkingConfigParamUnion{
+				OfEnabled: &anthropic.ThinkingConfigEnabledParam{BudgetTokens: budget},
+			}
 		}
 	}
 

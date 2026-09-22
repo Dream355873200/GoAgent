@@ -39,10 +39,18 @@ type Skill struct {
 	// Name 是 skill 名称（对应文件名，不含扩展名）。
 	Name string `json:"name"`
 
-	// Description 是 skill 的简短描述（取自文件首行注释）。
+	// Description 是 skill 的简短描述（frontmatter 的 description，缺省回落首行非注释文本）。
 	Description string `json:"description,omitempty"`
 
-	// Content 是 skill 的完整内容（Markdown prompt）。
+	// WhenToUse 是触发时机说明（frontmatter 的 when-to-use）——供发现层
+	// 判断「什么任务该调用本 skill」，不注入执行 prompt。
+	WhenToUse string `json:"when_to_use,omitempty"`
+
+	// AllowedTools 是本 skill 预期用到的工具名列表（frontmatter 的
+	// allowed-tools，逗号分隔原始串）——供宿主做工具预授权/裁剪提示。
+	AllowedTools string `json:"allowed_tools,omitempty"`
+
+	// Content 是 skill 的完整内容（Markdown prompt，不含 frontmatter）。
 	Content string `json:"content"`
 
 	// Source 是 skill 的来源。
@@ -134,23 +142,15 @@ func (r *Registry) scanDir(dir string, source Source) error {
 		name := strings.TrimSuffix(entry.Name(), ".md")
 		content := string(data)
 
-		// 提取描述（第一行非空行）。
-		desc := extractDescription(content)
-
-		skill := &Skill{
-			Name:        name,
-			Description: desc,
-			Content:     content,
-			Source:      source,
-			Mode:        ModeInline,
-			FilePath:    filePath,
-		}
+		skill := loadSkill(name, filePath, content, source)
+		// frontmatter 显式给出 name 时以它为准（注册键同步）。
+		key := skill.Name
 
 		// 项目 skill 不覆盖内置 skill。
-		if existing, ok := r.skills[name]; ok && existing.Source == SourceBuiltin {
+		if existing, ok := r.skills[key]; ok && existing.Source == SourceBuiltin {
 			continue
 		}
-		r.skills[name] = skill
+		r.skills[key] = skill
 	}
 
 	return nil
@@ -191,7 +191,8 @@ func (r *Registry) Execute(name string, args string) (string, error) {
 	return content, nil
 }
 
-// extractDescription 从 skill 内容中提取描述。
+// extractDescription 从 skill 内容中提取描述（无 frontmatter 时的兜底：
+// 首个非空且非标题的行，截断到 100 字符）。
 func extractDescription(content string) string {
 	lines := strings.Split(content, "\n")
 	for _, line := range lines {
@@ -206,6 +207,82 @@ func extractDescription(content string) string {
 		return line
 	}
 	return ""
+}
+
+// skillMeta 是 skill 文件 YAML frontmatter 的关键字段。
+type skillMeta struct {
+	Name         string
+	Description  string
+	WhenToUse    string
+	AllowedTools string
+}
+
+// parseFrontmatter 解析 skill 文件头部的 YAML frontmatter 块。
+// 首行为 `---` 且存在闭合 `---` 行时，块内按行做宽松 `key: value` 解析
+//（只取所需字段，不引入完整 YAML 依赖）；返回 meta 与剥掉 frontmatter
+// 的正文——正文才是注入执行用的 prompt，YAML 头不应随之进入上下文。
+// 无 frontmatter 时返回零值 meta 与原文。
+func parseFrontmatter(content string) (skillMeta, string) {
+	lines := strings.Split(content, "\n")
+	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "---" {
+		return skillMeta{}, content
+	}
+	end := -1
+	for i := 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "---" {
+			end = i
+			break
+		}
+	}
+	if end < 0 {
+		return skillMeta{}, content
+	}
+	meta := skillMeta{}
+	for _, line := range lines[1:end] {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(strings.Trim(strings.TrimSpace(v), `"'`))
+		// 键名归一：小写、下划线/空格折线（兼容 when_to_use/whenToUse）。
+		k = strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(k, "_", "-"), " ", "-"))
+		switch k {
+		case "name":
+			meta.Name = v
+		case "description":
+			meta.Description = v
+		case "when-to-use", "whentouse":
+			meta.WhenToUse = v
+		case "allowed-tools", "allowedtools":
+			meta.AllowedTools = v
+		}
+	}
+	return meta, strings.TrimSpace(strings.Join(lines[end+1:], "\n"))
+}
+
+// loadSkill 从文件内容构建 Skill：frontmatter 提供元数据与剥离后的
+// 正文，description 缺省回落正文首行。
+func loadSkill(name, filePath, content string, source Source) *Skill {
+	meta, body := parseFrontmatter(content)
+	desc := meta.Description
+	if desc == "" {
+		desc = extractDescription(body)
+	}
+	sname := meta.Name
+	if sname == "" {
+		sname = name
+	}
+	return &Skill{
+		Name:         sname,
+		Description:  desc,
+		WhenToUse:    meta.WhenToUse,
+		AllowedTools: meta.AllowedTools,
+		Content:      body,
+		Source:       source,
+		Mode:         ModeInline,
+		FilePath:     filePath,
+	}
 }
 
 // Names 返回所有 skill 名称。

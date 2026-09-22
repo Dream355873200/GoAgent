@@ -100,6 +100,14 @@ func (m *Manager) Release(sessionID string) {
 	delete(m.active, sessionID)
 }
 
+// IsBusy 查询会话是否正在运行（Acquire/Release 之间的窗口）。
+// 供 HTTP 层做 /chat 准入分流：忙 → 插话通道，空闲 → 新 run。
+func (m *Manager) IsBusy(sessionID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.active[sessionID]
+}
+
 // GetOrCreate 获取会话，如果不存在则创建。
 // 适用于前端不区分"新建"和"继续"的场景。
 func (m *Manager) GetOrCreate(ctx context.Context, sessionID string, metadata map[string]string) (*Session, error) {

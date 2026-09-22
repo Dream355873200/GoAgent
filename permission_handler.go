@@ -87,6 +87,7 @@ func (r *PermissionRequest) Deny(reason string) {
 type PermissionHandler struct {
 	requests chan *PermissionRequest
 	pending  sync.Map // requestID → *PermissionRequest
+	streams  *streamBus[*PermissionRequest]
 	nextID   atomic.Int64
 	mu       sync.Mutex
 	closed   bool
@@ -97,13 +98,22 @@ type PermissionHandler struct {
 func NewPermissionHandler() *PermissionHandler {
 	return &PermissionHandler{
 		requests: make(chan *PermissionRequest, 16),
+		streams:  newStreamBus[*PermissionRequest](),
 	}
 }
 
 // Requests 返回权限请求 channel。
-// 前端应持续消费此 channel 以接收需要审批的工具调用。
+// 直连消费模式（SDK/嵌入式宿主）持续消费此 channel 接收审批请求。
+// HTTP/SSE 宿主应改用 Subscribe：按会话路由到活跃连接。
 func (h *PermissionHandler) Requests() <-chan *PermissionRequest {
 	return h.requests
+}
+
+// Subscribe 把一条连接按会话绑定为审批下发通道（/chat handler 每请求
+// 调用一次，defer 注销）。返回的 channel 在注销后关闭——消费 goroutine
+// 用 range 消费即可随解绑自动退出，生命周期与连接严格绑定。
+func (h *PermissionHandler) Subscribe(sessionID string) (<-chan *PermissionRequest, func()) {
+	return h.streams.Subscribe(sessionID)
 }
 
 // Resolve 通过 requestID 解决一个待处理的权限请求。
@@ -165,7 +175,21 @@ func (h *PermissionHandler) ApproveWithContext(ctx context.Context, toolName str
 	// 注册到 pending map。
 	h.pending.Store(requestID, req)
 
-	// 发送到前端。
+	// 优先路由到该会话绑定的活跃连接；未命中再走共享 channel 兜底。
+	// 审批门在 agent 运行 ctx 内发起，ctx 里带会话标识。
+	if h.streams.Send(SessionIDFromContext(ctx), req) {
+		// 等待前端回复。
+		select {
+		case resp := <-responseCh:
+			h.pending.Delete(requestID)
+			return resp.allow, resp.always
+		case <-ctx.Done():
+			h.pending.Delete(requestID)
+			return false, false
+		}
+	}
+
+	// 兜底：发到共享 channel（直连消费模式）。
 	select {
 	case h.requests <- req:
 	case <-ctx.Done():

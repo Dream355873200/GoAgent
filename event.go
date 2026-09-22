@@ -73,6 +73,19 @@ const (
 	// Text 携带摘要（query 前 60 字符 / 命中条数 / 注入字符数），
 	// 供宿主观测检索开销与命中情况。信息性事件，无需前端反应。
 	EventRetrieval
+
+	// EventSteer — guide 车道消息已注入模型上下文（WithSteering）。
+	// Text 携带注入的内容，前端渲染为提示行。
+	// 注入时机：工具批结束边界追加进当前 run。
+	// 车道语义由宿主决定：可以是用户插话，也可以是宿主/环境通知
+	// （本引擎仅后者——用户输入走 queue 车道）。
+	EventSteer
+
+	// EventQueueRun — queue 车道消费：排队消息作为新一轮输入开跑
+	// （WithSteering，run 结束后自动续跑，新 run 开始前发出）。
+	// 与 EventSteer 分离：排队消息是用户真实输入（渲染为普通用户气泡、
+	// 开新一轮），插话是运行中注入（渲染带插话标记、归属当前轮）。
+	EventQueueRun
 )
 
 // Event is emitted by the agent loop for the consumer to react to.

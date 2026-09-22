@@ -18,10 +18,21 @@ type AskUserInput struct {
 // 默认 nil 时 fallback 到 stdin 直接读取。
 var askUserCallback func(question string) (string, error)
 
+// askUserCallbackCtx 是 ctx 感知的提问回调（优先级高于 askUserCallback）。
+// 多 App / 多会话宿主（HTTP 服务等）用它拿 Context.SessionID 做答案路由——
+// 全局单槽回调无法区分是哪个会话在提问。
+var askUserCallbackCtx func(goagent.Context, string) (string, error)
+
 // SetAskUserCallback 设置 AskUser 工具的外部回调。
 // TUI 模式下调用此函数注册通道桥接，替换默认的 stdin 读取。
 func SetAskUserCallback(fn func(string) (string, error)) {
 	askUserCallback = fn
+}
+
+// SetAskUserCallbackCtx 设置 ctx 感知的提问回调（优先于 SetAskUserCallback）。
+// 第二个参数是用户对提问的回答文本。
+func SetAskUserCallbackCtx(fn func(goagent.Context, string) (string, error)) {
+	askUserCallbackCtx = fn
 }
 
 // AskUserTool 返回一个允许 LLM 主动向用户提问的工具。
@@ -32,17 +43,22 @@ func AskUserTool() goagent.ToolDef {
 		Input:       AskUserInput{},
 		Permission:  goagent.ReadOnly,
 		Execute: func(ctx goagent.Context, in AskUserInput) (string, error) {
-			return executeAskUser(in)
+			return executeAskUser(ctx, in)
 		},
 	}
 }
 
-func executeAskUser(in AskUserInput) (string, error) {
+func executeAskUser(ctx goagent.Context, in AskUserInput) (string, error) {
 	if in.Question == "" {
 		return "", fmt.Errorf("question 不能为空")
 	}
 
-	// 优先使用外部回调（TUI 模式）。
+	// ctx 感知回调优先（多会话宿主按 SessionID 路由答案）。
+	if askUserCallbackCtx != nil {
+		return askUserCallbackCtx(ctx, in.Question)
+	}
+
+	// 其次使用外部回调（TUI 模式）。
 	if askUserCallback != nil {
 		return askUserCallback(in.Question)
 	}

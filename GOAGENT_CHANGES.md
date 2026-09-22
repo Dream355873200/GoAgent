@@ -5,6 +5,273 @@ Dream355873200/GoAgent 的本地增强副本。amobileCreater 的 engine 通过
 go.mod `replace` 指向此处。**每次向 GitHub 推送前**：把下面对应条目
 整理进正式 commit，然后移除 replace 升级版本号。
 
+## 2026-09-22（思考强度 + 运行时切模型）
+
+- **思考强度链路（全链打通）**：
+  - `provider.Request` 新增 `ReasoningEffort string`（off/low/medium/high；空 = 不干预）。
+    原有 `Thinking`（Anthropic 风格 BudgetTokens）此前两条实现链均未消费。
+  - OpenAI 兼容实现：`chatRequest` 新增 `reasoning_effort` 字段；映射 off → "none"，
+    low/medium/high 原样透传（经实测中转端点会校验枚举 none/low/medium/high/xhigh/max）。
+  - Anthropic 实现：`ReasoningEffort` 档位映射为 Extended Thinking 预算
+    （low=8k / medium=16k / high=32k，off = 不启用；显式 ThinkingConfig 优先）。
+  - loop：`Config.ReasoningEffort` → 每次模型请求下发（loop.go 请求构造处）。
+  - App：`WithThinkingEffort(string)` option + `SetThinkingEffort`/`CurrentThinkingEffort`
+    （下一轮 run 生效，不回溯进行中轮次）。
+  - HTTP：`GET /thinking` → `{effort}`；`POST /thinking {effort}`（枚举校验）。
+- **运行时切模型（零重启）**：
+  - HTTP：`GET /model` → `{model}`（Capabilities.ModelID）；`POST /model {model}`
+    → `App.SetModel`（openai/anthropic provider 均已实现 ModelSwitcher，
+   下一次模型请求即用新模型）。此前 App.SetModel 存在但无 HTTP 出口。
+- **OpenAI Provider 逃生舱**：`Config.ExtraBody map[string]any` —— 原样浅合并进
+  每个 chat/completions 请求体（ExtraBody 优先），后端私有参数无需改库即可透传。
+- **测试**：provider/openai 新增映射与 ExtraBody 合并单测。
+
+## 2026-09-22（权限模式运行时切换：SetPermissionMode + /mode 端点）
+
+- **App 新 API**：
+  - `SetPermissionMode(PermissionModeOption)`——运行时切换权限模式，立即生效：
+    进行中的 run 直接改写其权限门（App 记录 activeGate 指针），后续 run 在
+    构造权限门时优先采用此覆写（高于构造时的 `WithPermissionMode`）。
+  - `CurrentPermissionMode()`——当前生效模式（覆写 > 构造配置 > default）。
+  - App 结构新增 `permModeOverride atomic.Int32`（-1 = 未覆写）与
+    `activeGate atomic.Pointer[permission.Gate]`。
+- **HTTP 端点**：
+  - `GET /mode` → `{mode: "default|accept_edits|plan|bypass|deny_all"}`；
+  - `POST /mode {mode}` → 400 非法值，200 `{status:"ok", mode}`。
+  - http.go 尾部新增 `permissionModeString` / `permissionModeFromString` 双向映射。
+- **协议自描述**：Describe() Endpoints 补 /mode 两行。
+- 用途：宿主 UI 提供模式切换（规划/自动编辑/手动审批/全部放行）；
+  模式在权限门 CheckResult 中先于 Approver 检查，plan 模式硬拒写操作。
+
+## 2026-09-21（消息队列升级：条目管理 + queue_run 事件）
+
+- **queue 车道条目化**：`steerLane.queue` 从 `[]string` 升级为
+  `[]*queuedItem{ID, Text}`——每条排队消息有进程内唯一 ID
+  （`q-<seq>`，atomic 发号器），宿主可做单项管理。
+- **SteeringHub 新 API**：
+  - `Enqueue(sessionID, text) QueueItem`——**签名破坏性变更**：返回值
+    从积压数（int）改为排队项（含 ID）；公开结构 `QueueItem{ID, Text}`。
+  - `ListQueued(sessionID) []QueueItem`——队列快照（队头在前）。
+  - `RemoveQueued(sessionID, itemID) (string, bool)`——按 ID 取走排队
+    消息并返回原文（宿主「撤回输入框编辑」「立即发送」都靠它拿回内容）。
+  - `DrainQueued` / `claimQueued` / `endRun`（guide 降级）适配新存储；
+    `claimQueued` 签名不变（仍返回文本）。
+- **EventQueueRun（=18，iota 末尾追加）**：queue 车道消费改为发
+  `EventQueueRun`（`protocol.TypeQueueRun = "queue_run"`），与
+  `EventSteer`（=17，guide 车道注入回执）分离——排队消息是用户真实
+  输入（渲染为普通用户气泡、独立成轮），guide 注入是宿主/环境通知
+  （渲染为提示行）。RunSession drain 循环同步切换；internal/loop 的
+  `EvtSteer=17` 对齐关系不变，注释标注 18 已被公共面占用（loop 不产
+  生该类型）。EventType 数值直转映射不受追加影响。
+- **HTTP 端点**：`POST /queue` 返回 `{id, pending}`；`GET /queue`
+  返回 `{pending, items:[{id,text}]}`；新增 `POST /queue/remove`
+  `{session_id, item_id}` → `{text}`（404 = 已消费/不存在）。/protocol
+  描述同步更新。
+- **测试**：steering_test.go——队列续跑断言切到 EventQueueRun、
+  Enqueue 返回项校验、新增 TestQueueItemListRemove（List 顺序 /
+  Remove 取原文 / 不存在 ID false / 删中间项后队头可消费）。
+  goagent 与 flai-engine 全量回归绿。
+- **宿主迁移**（amobileCreater）：desktop v2 渲染层 busy 发送从
+  /chat（自动转 guide）切到 POST /queue；vendor goagent-client 帧表
+  补 queue_run。
+
+## 2026-09-21（skill 加载对齐标准格式：YAML frontmatter）
+
+- **parseFrontmatter / loadSkill（skill 包）**：skill 文件头部支持
+  YAML frontmatter 块（`---` 围栏，宽松行式 key: value，不引入完整
+  YAML 依赖）——提取 name / description / when-to-use（兼容
+  when_to_use、whenToUse）/ allowed-tools；**正文剥离 frontmatter 后
+  再作为注入 prompt**。description 缺省回落正文首个非标题行（原行为），
+  name 缺省回落文件名；frontmatter 显式 name 时以它为注册键。
+- **Skill 结构新增字段**：`WhenToUse`（json: `when_to_use`）与
+  `AllowedTools`（json: `allowed_tools`）——供发现层做触发时机判断
+  与工具预授权提示，不注入执行 prompt。
+- **测试**：skill_test.go（无 frontmatter 兜底 / 标准解析与键名归一 /
+  驼峰兼容与未闭合容错 / loadSkill 回落 / 扫描目录集成）。全量回归绿。
+
+## 2026-09-21（流中断锚点恢复）
+
+- **loop 流中断恢复**：provider 流中断（网络断/SSE 断，非用户取消）
+  不再整轮报错——已到达的部分内容固化为「安全锚点」后重开流：
+  - 已派发工具等待跑完（副作用已发生，真实结果保留并上报）；
+  - 部分正文 + tool_use 固化为 assistant 消息，tool_result 成对补齐
+    （无结果的调用合成错误结果兜底），消息序列保持 API 对齐；
+  - 部分思考块丢弃（不完整、无签名回传价值）；注入「从中断处无缝
+    续跑」meta 提示后重试同一请求上下文。
+- **熔断**：连续中断超过 3 次（`maxStreamRetries`）放弃并报错给宿主；
+  流正常结束即清零计数——只对连续失败计数，偶发抖动不累积。
+- **实现要点**：恢复分支处于流消费 range 循环内，重开流必须
+  `continue` 到主循环标签（裸 continue 只是结束本流，会被当作正常
+  完成——首个实现踩过此坑，由测试抓出）。工具结果上报三处重复块
+  收敛为 `reportToolResults` 助手。
+- **测试**：streamrecovery_test.go（部分正文锚点进重开流 / 工具结果
+  保留成对 / 熔断 4 次后报错 / 非连续中断不熔断）。全量回归绿。
+
+## 2026-09-21（后台任务终态通知进主循环）
+
+- **bgtask.Manager 终态回调（OnTaskDone）**：任务进入终态
+  （completed/failed/killed）时锁外触发一次（`takeDoneLocked` 快照 +
+  `notified` 每任务恰好一次），回调内可安全调用 Manager 查询方法。
+- **签名破坏性变更**：`RegisterAgent` / `RegisterShell` 首参新增
+  `sessionID`——记录创建任务的会话，终态通知回注该会话；
+  `TaskState` 新增 `SessionID` 字段（json: `session_id,omitempty`）。
+  `StoreInterface` 同步更新（自定义存储实现需改签名）。
+- **App 自动接线**：`WithBgTaskTools` + `WithSteering` 同时启用时，
+  OnTaskDone 自动桥接 steering queue 车道——`hub.Enqueue(sessionID,
+  reminder.Wrap(host, 终态正文))`。长命令（flutter test/build）后台
+  跑完后模型在下一轮自动收到结果摘要（completed 带 300 字符预览 /
+  failed 带错误），随即跟进修复，无需用户轮询 TaskOutput 催促；queue
+  车道由 RunSession 结束后自动续跑消费，空闲会话的通知暂存至下次
+  RunSession。无 SessionID 的任务不通知（由宿主自行处理）。
+- **宿主迁移**（amobileCreater flai-engine）：bgexec.go 后台 shell
+  注册传入 ctx.SessionID。
+- 全量回归绿。
+
+## 2026-09-21（工具副作用分级 + 并发调度升级）
+
+- **executor 包三级副作用分级（executor.Class）**：`Concurrent bool`
+  升级为 `Class Class`（readOnly / parallel / exclusive）：
+  - `ClassReadOnly` 只读（Read/Glob/Grep/WebSearch…）：无副作用，
+    任何场景可并行——包括独占工具运行期间（流式执行器中长构建进行时
+    搜索不再被卡住）；
+  - `ClassParallel` 并行安全（TaskCreate、独立网络请求…）：可与并行/
+    只读工具并行，不能与独占工具重叠；
+  - `ClassExclusive` 独占（Write/Edit/Bash/git/构建）：有全局副作用，
+    必须独占执行。
+  兼容：`Concurrent bool` 保留为 deprecated 字段，`ToolCall.effect()`
+  按显式 Class 优先、bool 推导兜底（true→Parallel，false→Exclusive），
+  旧宿主代码零改动继续工作。
+- **调度**：Executor.partition 按 effect 分批（独占各自成批，只读/并行
+  连续合批）；StreamingExecutor.canStartNow 分级判定——只读只受全局
+  并发上限（MaxConcurrency，App 级全局生效）约束，并行安全需无独占
+  在跑，独占需全部空闲。Add() 遇独占工具置 allConcurrent=false。
+- **接线**：ToolDef 新增 `Effect executor.Class` 字段 + goagent 级常量
+  （EffectReadOnly/EffectParallel/EffectExclusive/EffectDefault）；
+  loop.ToolEntry 透传；buildToolSet 接线。库内只读工具已打标：
+  Read/Glob/Grep/WebSearch/WebFetch/TaskGet/TaskList/CronList。
+- **测试**：executor_test.go（兼容推导 / 分级分批 / 只读与独占重叠 /
+  独占等待）。全量回归绿。
+
+## 2026-09-21（统一 system-reminder 通道）
+
+- **reminder 包新增（reminder/reminder.go）**：注入给模型的非对话文本
+  （运行中插话、压缩后重注入、工具结果内联提醒）统一经 `Wrap(source,
+  text)` 打上 `<system-reminder source="…">` 标记——模型可辨识其工具
+  性质（不是用户发言），回放/前端可按标记过滤，注入点不必各自发明
+  文本前缀协议（废弃 "[系统通知]"、"[confirm]{json}" 类约定）。来源
+  常量：steer / post-compact / tool / host。防嵌套：内容中的闭合标签
+  （大小写不敏感）一律转义为 `<\/system-reminder>`，模型可读但无法
+  提前闭合外层标记。`Inline(result, text)` 把提醒追加在工具结果尾部。
+  注入位置规范：仅允许工具批边界的 user 消息（steer）、压缩边界的
+  user 消息（post-compact）、工具结果尾部（tool）三类位置。
+- **接线点**：steering.go——guide 消息在 DrainGuides（注入上下文前）
+  与 endRun 降级进 queue 时分别包装（queue 车道混有用户真实排队消息，
+  降级的插话必须可区分）；compaction/reminder.go——ReminderSource 返回
+  的提醒统一以 source=post-compact 包装后追加。EvtSteer 事件携带与
+  模型上下文一致的标记文本，展示层（宿主前端）剥壳渲染。
+- **宿主迁移**（amobileCreater flai-engine）：设备空闲通知去除
+  "[系统通知]" 前缀（steer 路径由通道包装、空闲直注路径打 host 标记）；
+  测试工具「设备忙排队」拒绝信息以 source=tool 包装后返回（时间线
+  日志仍记原文）。
+- **测试**：reminder_test.go（包装格式 / 防嵌套转义 / Inline）；steering
+  两处断言更新为标记格式。全量回归绿。
+
+## 2026-09-21（协议层统一信封 + TypeScript SDK）
+
+- **protocol 包新增（protocol/protocol.go）**：线上协议收敛为单一
+  `Envelope` 信封——所有 SSE data 帧共用 `{seq, v, type, session_id,
+  ...载荷}`，`seq` 连接内从 1 严格单调递增（跳号 = 丢帧，客户端应走
+  sessions.messages 回放补齐），`v` 盖章协议版本（Version=1）。三类帧
+  共享信封：流事件（text_delta/tool_start/steer/…）、交互原语
+  （permission_request/ask_user/plan_confirm，带 request_id）、生命
+  周期帧（首帧 run_start / 末帧 metadata 带 elapsed_ms/steered）。
+  字段集是历史线上格式的超集，旧客户端忽略新字段即可兼容。
+- **GET /protocol 协议自描述**：`protocol.Describe()` 返回版本 + 帧类型
+  表 + 端点表，客户端启动时拉取做兼容性校验。
+- **AskStructured（askuser_handler.go）**：AskUserRequest 新增
+  `Payload map[string]any`，随 ask_user 帧下发，客户端按 payload.kind
+  分发渲染——取代旧的文本前缀协议（[confirm]{json}\n问题）。旧前缀
+  解析降级为历史会话回放兼容层（宿主侧保留 DecodeConfirmPayload）。
+- **http.go 重构**：writeFrame 统一盖章 seq/version 后写出；run 循环前
+  发 run_start、结束发 metadata（含耗时/steered）；steer-ack 走
+  TypeSteer + TypeMetadata{Steered:true} 双帧；
+  `envelopeFromEvent` 统一 Event→Envelope 映射（补上
+  subagent_progress 落 "unknown" 的漏映射）。EventNeedApproval 线上名
+  保持 "need_approval"（HTTP 审批转发仍用 "permission_request"，双名
+  并存是历史现状）。
+- **sdk/typescript 新增 goagent-client（0.1.0）**：零依赖 TS 客户端
+  （fetch + ReadableStream SSE 解析，Node 18+/Electron/浏览器通用），
+  ESM+CJS 双构建 + d.ts。`GoAgentClient.chat()` 返回
+  AsyncGenerator<Envelope>；approve/answer/confirmPlan/interrupt/
+  steer/enqueue 与 sessions/messages/tasks/plan/bgtasks/usage 等 REST
+  全部类型化封装。宿主（amobileCreater 桌面壳）的 engine.js streamChat
+  已迁移到 SDK，删除手写 SSE 行解析。
+- **测试**：protocol_test.go（信封首帧 run_start/seq 严格递增/v 盖章/
+  末帧 metadata/无 unknown 类型 + /protocol 自描述 + ask_user 载荷
+  透传）。全量回归绿。
+
+## 2026-09-21（压缩后重注入——post-compact reminder）
+
+- **compaction 包新增 ReminderSource 扩展点**（reminder.go）：全量压缩
+  把旧轮次连同文件内容一起折叠成摘要，模型会失忆——再编辑已读文件时
+  凭摘要残句拼 old_string 失败率大增，宿主维护的关键工件（任务规范、
+  最新报告）也随原文消失。`ReminderSource`（Reminders(ctx) []string）
+  在每次实际压缩完成后被调用，返回文本各自独立成 user 消息追加在压缩
+  边界之后，随事件流正常持久化。
+- **接线点**：Manager.Apply 的 Layer 4（模型摘要）成功路径 +
+  HandleOverflow 的 413 恢复成功路径。未实际压缩（token 未超阈值）
+  不调用。Config 新增 `PostCompact []ReminderSource`，可注册多个源。
+- **Option**：`WithPostCompactReminder(rs)` 可多次调用全部生效，
+  App.run 透传给 compMgr。
+- **库内实现**：builtin 包新增 ReadStateRehydrater
+  （readstate_rehydrate.go）——压缩后按「最近读的优先」重注最多 5 个
+  已读文件：小文件（≤12k 字符，总预算 40k）以 Read 工具调用回放格式
+  带行号重注全文（指纹随之更新，Edit/Write 前置校验照常放行）；
+  大文件退化为「内容已移出上下文，操作前必须重新 Read」提醒；已删除
+  文件提示确认状态。会话标识经 SessionIDFromContext 提取。
+  readstate.go 配套增加读取顺序表（order map，markRead 维护最新序）。
+- **测试**：compaction/reminder_test.go（Apply 触发注入/未压缩不触发/
+  413 恢复注入）+ builtin/readstate_rehydrate_test.go（重水合分支：
+  小文件全文/大文件提醒/已删除/无会话隔离）。全量回归绿。
+- **宿主用法**（amobileCreater flai-engine）：注册 ReadStateRehydrater
+  （重注最近已读文件）+ 自定义 ReminderSource（重注项目 SPEC.md 与
+  最新测试报告，超长截断）。
+
+## 2026-09-21（Steering 双车道——运行中插话通道）
+
+- **根包 steering.go 新增 SteeringHub**：agent 跑长任务期间，宿主/用户
+  需要补充信息或通知外部事件（编辑器保存、后台任务完成），此前只有
+  「中断」或「等下一轮」两个极端。双车道补齐中间态：
+  - `guide` 车道：`hub.Steer(sessionID, text)` 注入活跃 run。loop 在
+    工具批结束边界（助手消息与 tool_result 成对落定之后、下一次模型
+    请求之前）把插话作为 user 消息追加进上下文——不打断模型流、不丢
+    上下文、消息序列保持一致。
+  - `queue` 车道：`hub.Enqueue(sessionID, text)` 排队。RunSession 在
+    每次 run 结束后自动取队首续跑（同一会话、同一事件流，EventSteer
+    先行通知），直到排空或 ctx 被取消。
+  - 无活跃 run 时 Steer 返回 ErrNotSteerable（消息不入任何队列，宿主
+    自行决定走新 run 或改投 queue）；run 结束时未消费的 guide 自动
+    降级进 queue——插话永不丢失。
+  - `PendingGuides/PendingQueued/DrainQueued` 查询与手动消费。
+- **loop 接线**（internal/loop）：Config 加 `Steering SteerSource` 接口
+  （DrainGuides），根包经 steerSourceAdapter 桥接（internal 不 import
+  根包）。注入点在工具结果追加之后，EventSteer 随发。
+- **事件**：EventSteer=17（数值对齐 toPublicEvent 直转；16 留给检索类
+  不经过 loop 的事件）。SSE 类型名 `steer`，Text 携带插话内容。
+- **HTTP**：`POST /chat` 准入分流——会话忙（session.Manager.IsBusy，
+  新增）且启用插话时自动改走 guide 车道，立即返回 steer 确认（前端
+  无需排队 SSE）；`POST /queue` 排队、`GET /queue` 查积压。
+- **Option**：`WithSteering()`，`app.Steering()` 取回 hub。仅真实会话
+  （sess 非空非 ephemeral）接线，未启用时行为零变化。
+- **测试**：steering_test.go（端到端 guide 边界注入：门闩工具制造
+  确定性「工具批执行中」窗口；无活跃 run 拒绝；endRun 降级；Enqueue
+  自动续跑 FIFO）+ internal/loop/steering_test.go（慢工具窗口注入与
+  消息序列校验、迟到插话不阻塞正常退出）。全量回归绿（-race）。
+- **宿主迁移**（amobileCreater flai-engine）：WithSteering 启用；
+  编辑器写回通知（/notify/user-edit）与设备锁轮转通知改走 guide 车道
+  （任务运行中即时注入，替代旧的「排队等下一条消息前缀注入」补丁）；
+  前端 useChat 处理 steer 事件渲染用户气泡（与本地已推气泡按文去重）。
+
 ## 2026-09-08（AgentTool 转接头——agent 包成 ToolDef 的组合零件）
 
 - **根包 agenttool.go**：`AgentToolOf(def, prov)` 把 agent.Definition +
@@ -613,3 +880,96 @@ go.mod `replace` 指向此处。**每次向 GitHub 推送前**：把下面对应
 - builtin/skill_list_test.go：清单合并/项目覆盖/描述内嵌
 - builtin/filetools_test.go：Read 截断/二进制/短路、Edit 前置校验/诊断、
   Write 覆盖保护、会话隔离（7 用例全过）
+
+## 2026-09-22（宿主自管历史的真实会话运行 + ctx 感知提问回调）
+
+两个面向多会话宿主（自建会话存储的 HTTP/WS 服务）的通用增强：
+
+1. **App.RunWithSessionHistory(ctx, sessionID, history, input)**——以真实会话
+   身份运行、历史由宿主注入（不经 goagent 会话持久化）。此前 RunWithHistory
+   一律用 "ephemeral" 虚拟会话，导致按 SessionID 路由的机制全部失效：
+   - steering guide 车道（run() 里 SessionID=="ephemeral" 不启用）
+   - queue 车道续跑（本轮结束依次消费排队消息自动续跑，语义与 RunSession
+     一致；宿主无 session manager 也能用）
+   - 工具回调拿到的 Context.SessionID 是真实值
+2. **builtin.SetAskUserCallbackCtx(fn func(goagent.Context, string) (string, error))**
+   ——ctx 感知提问回调，优先于全局单槽的 SetAskUserCallback。多 App/多会话
+   宿主借此按 Context.SessionID 路由 AskUser 工具的答案（全局回调无法区分
+   提问来源会话）；未设置时行为不变（全局回调 → stdin fallback）。
+
+## 2026-09-22（孤立 tool_use 自愈：修复「之后每轮都 400」的会话毒化）
+
+**问题**：会话历史里出现 assistant 消息带 tool_calls 却没有配对 tool 消息时
+（触发场景：工具执行期间用户中断 / 运行异常退出，assistant 消息已提前落盘
+而工具结果未落定），上游 OpenAI 系 API 会整请求 400 拒绝
+（insufficient tool messages following tool_calls message）——该会话之后
+每一轮对话都报错，无法自愈。
+
+**修复**：
+1. `session.EnsureToolResultPairing` 重写：合成 tool_result 从「追加到历史
+   末尾」改为「紧随所属 assistant 消息插入」——OpenAI 系 API 校验 tool 消息
+   与 tool_calls 消息的相邻性，追加到末尾照样被拒；同时加快路径（无孤立时
+   返回原 slice，不拷贝）。
+2. `goagent.go` 运行路径接入：以会话历史为 InitialMessages 前，先跑一遍
+   pairing 修复。此前该修复只在 CLI 的 session.Restore 路径生效，HTTP/宿主
+   注入历史的路径（RunWithSessionHistory / RunHTTP chat）不带自愈，带毒
+   历史原样进 loop。
+
+**验证**：go build / go vet / go test ./session/ 全绿。
+
+## 2026-09-22（提问/审批帧路由修复：多轮后 ask_user 帧被历史连接抢走）
+
+**问题**：多轮会话中 AskUser / confirm 工具触发后，当前 SSE 流收不到 ask_user
+帧，工具在引擎侧无限期阻塞，前端工具卡停在运行中，连接空闲约 300 秒后
+HTTP 客户端杀掉流（fetch body 抛 terminated）。多轮对话必现，第一轮正常。
+
+**根因**：/chat handler 每请求 spawn 一个转发 goroutine 消费 App 级共享的
+`AskUserHandler.Requests()` channel；请求结束后 goroutine 仍阻塞在该
+channel 的接收上永不退出（泄漏）。Go channel 唤醒按接收队列 FIFO——
+历史请求留下的 stale 转发器总是最先被唤醒，新运行的 ask_user 帧被它
+抢走、写进早已断开的旧连接；当前流收不到帧，工具在引擎侧无限期阻塞。
+PermissionHandler 的审批转发同构同病。
+
+**修复**：
+1. 新增 `streambus.go`：泛型按会话绑定的下发通道注册表（streamBus）。
+   绑定生命周期与 HTTP 请求严格一致（handler defer 注销并关闭通道，
+   range 消费 goroutine 随之退出），消除 stale 消费者与 goroutine 泄漏；
+   路由规则：sessionID 精确命中 → 该连接；否则最近绑定的连接；无绑定
+   连接 → false（调用方落到共享 channel，SDK 直连消费模式向后兼容）。
+2. `AskUserHandler`：新增 `Subscribe(sessionID)` 与 `AskSession(sessionID,
+   question, payload)`；`AskStructured`/`Ask` 保持原签名、语义改为经
+   streamBus 路由 + 共享 channel 兜底。
+3. `PermissionHandler`：同上 Subscribe；`ApproveWithContext` 发布前经
+   `SessionIDFromContext(ctx)` 按会话路由（审批门在运行 ctx 内发起，
+   ctx 带会话标识）。
+4. `http.go` /chat：ask 与 permission 两处转发 goroutine 从「消费共享
+   channel」改为「Subscribe(sessionID) + defer 注销」，生命周期与请求
+   严格绑定。
+5. PlanConfirmHandler 未动（requests channel 无人发布，/chat 转发为
+   空转泄漏但无抢帧面）。
+
+**验证**：go build / go vet 全绿。
+
+## 2026-09-22（提问等待感知 run 取消：修复「提问期间点终止无效」）
+
+**问题**：AskUser / confirm 弹出提问后，用户点终止无效——工具阻塞在
+`AskSession` 的 `answer := <-responseCh` 上（纯 channel 接收，不感知
+run 的取消），run 无法收尾，会话卡死在提问状态，只能重启。
+
+**根因**：AskSession 等待回答的阻塞点没有接 run 的取消信号。/interrupt
+取消的是 run 的 bgCtx，但提问等待只 select 了 responseCh——ctx.Done 与
+回答二选一的 select 缺一边。
+
+**修复**：
+1. `AskUserHandler` 新增 `AskSessionCtx(ctx, sessionID, question, payload)`：
+   与 AskSession 同一管道（streamBus 路由优先、共享 channel 兜底），等待
+   回答改为 select `responseCh` / `ctx.Done()`——run 被中断时阻塞立即解除，
+   pending 清理（迟到的回答被 Resolve 丢弃）；共享 channel 满的兜底分支
+   同样感知取消。`AskSession` 变为 `AskSessionCtx(context.Background(), …)`
+   的薄封装，原签名不变。
+2. 宿主接线（flai-engine）：AskUser 回调与 confirm 闭包把 run 的
+   `goagent.Context`（内嵌 context.Context）传给 AskSessionCtx——中断
+   cancel 沿 ctx 链传导到提问等待。
+
+**验证**：go build / go vet 全绿；引擎 exe 已重编译。
+

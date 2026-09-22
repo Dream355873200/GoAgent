@@ -6,6 +6,7 @@ import (
 
 	"github.com/Dream355873200/GoAgent/agent"
 	"github.com/Dream355873200/GoAgent/bgtask"
+	"github.com/Dream355873200/GoAgent/compaction"
 	"github.com/Dream355873200/GoAgent/hooks"
 	"github.com/Dream355873200/GoAgent/internal/loop"
 	"github.com/Dream355873200/GoAgent/observer"
@@ -48,6 +49,7 @@ type appConfig struct {
 	autoPersist         *bool                         // nil 表示使用默认（true）
 	permissionMode      *permission.PermissionMode    // nil 表示使用默认
 	permissionRules     *permission.RuleSet
+	thinkingEffort      string // 思考强度档位（off/low/medium/high；空 = 不干预）
 	hooks               []hooks.Hook       // 用户注册的 hooks
 	subAgentDefs        []agent.Definition // 子 agent 定义
 	sessionMemoryCfg    *sessionmem.Config // 会话记忆配置（nil 表示禁用）
@@ -97,6 +99,16 @@ type appConfig struct {
 	// 注册的额外端点（如领域通知端点）。路由表已含 /chat /tasks 等，
 	// 宿主路由与之冲突时后注册者生效（ServeMux 语义）。nil = 无扩展。
 	httpRoutes map[string]func(http.ResponseWriter, *http.Request)
+
+	// 插话通道（WithSteering）：非 nil 时 RunSession 在 run 结束后自动
+	// 消费 queue 车道续跑，loop 在工具批结束边界注入 guide 车道，
+	// /chat 在会话忙时自动改走插话。nil = 不启用（默认，行为零变化）。
+	steering *SteeringHub
+
+	// 压缩后重注入源（WithPostCompactReminder）：每次实际压缩完成后
+	// 调用其 Reminders，把关键上下文（已读文件/宿主固定资产）重新
+	// 注入。nil = 不注入（默认）。
+	postCompact []compaction.ReminderSource
 }
 
 // ProviderConfig 是 LLM Provider 的配置，可直接传给 New()。
@@ -403,6 +415,21 @@ func WithPermissionMode(mode PermissionModeOption) Option {
 	return optionFunc(func(c *appConfig) {
 		m := permission.PermissionMode(mode)
 		c.permissionMode = &m
+	})
+}
+
+// WithThinkingEffort 设置思考强度档位（默认档；运行时可经 SetThinkingEffort 切换）。
+//
+// 取值：
+//   - "off"     — 关闭思考（OpenAI 兼容端映射 reasoning_effort="none"；
+//     Anthropic 端不启用 Extended Thinking）
+//   - "low"/"medium"/"high" — 思考强度档位
+//   - ""（缺省）— 不干预，跟随模型端默认行为
+//
+// 生效与否取决于模型/端点是否支持该参数（不支持时端点可能校验报错）。
+func WithThinkingEffort(effort string) Option {
+	return optionFunc(func(c *appConfig) {
+		c.thinkingEffort = effort
 	})
 }
 
@@ -904,6 +931,41 @@ func WithDebugMode() Option {
 func WithSuspend() Option {
 	return optionFunc(func(c *appConfig) {
 		c.suspendGate = loop.NewSuspendGate()
+	})
+}
+
+// WithSteering 启用运行中插话通道（双车道）。
+//
+// 启用后：
+//   - hub.Steer(id, text)：向活跃 run 的 guide 车道插话，在工具批结束
+//     边界进入模型上下文（不打断模型流）；无活跃 run 返回 ErrNotSteerable
+//   - hub.Enqueue(id, text)：排队，run 结束后 RunSession 自动续跑
+//   - HTTP /chat 在会话忙时自动改走插话；新增 POST /queue 排队端点
+//
+// 用法（hub 由 App 创建并接线，New 之后取回引用）：
+//
+//	app := goagent.New(..., goagent.WithSteering())
+//	hub := app.Steering()
+func WithSteering() Option {
+	return optionFunc(func(c *appConfig) {
+		c.steering = NewSteeringHub()
+	})
+}
+
+// WithPostCompactReminder 注册压缩后重注入源（可多次调用，全部生效）。
+//
+// 压缩把旧轮次连同文件内容一起折叠成摘要，模型会「失忆」：再编辑
+// 已读文件时凭摘要残句拼 old_string 失败率大增；宿主维护的关键工件
+// （任务规范、最新报告）也随原文消失。注册的源在每次实际压缩完成后
+// 被调用，返回的文本各自独立成 user 消息重新注入上下文。
+//
+// 库内已提供 builtin.NewReadStateRehydrater()（最近已读文件重水合）；
+// 宿主固定资产（SPEC/报告等）用 compaction.ReminderSourceFunc 自定义。
+func WithPostCompactReminder(rs compaction.ReminderSource) Option {
+	return optionFunc(func(c *appConfig) {
+		if rs != nil {
+			c.postCompact = append(c.postCompact, rs)
+		}
 	})
 }
 

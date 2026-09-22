@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/Dream355873200/GoAgent/protocol"
 	"github.com/Dream355873200/GoAgent/session"
 	"github.com/Dream355873200/GoAgent/task"
 )
@@ -68,6 +70,7 @@ func runHTTP(app *App, addr string) error {
 	fmt.Printf("  POST /bgtasks/{id}/stop — 停止后台任务\n")
 	fmt.Printf("  GET  /usage     — Token 使用统计\n")
 	fmt.Printf("  GET  /audit     — 工具执行分析\n")
+	fmt.Printf("  GET  /protocol  — 协议自描述（版本/帧类型/端点表）\n")
 
 	// 宿主扩展路由（WithHTTPRoutes）：领域端点注册进同一 mux，
 	// 与内置路由共用 App/会话上下文。仅 RunHTTP 模式生效。
@@ -94,7 +97,7 @@ func newHTTPMux(app *App) *http.ServeMux {
 
 	// POST /chat — SSE 流式端点
 	mux.HandleFunc("POST /chat", func(w http.ResponseWriter, r *http.Request) {
-		var req chatRequest
+		var req protocol.ChatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "无效的请求体", http.StatusBadRequest)
 			return
@@ -117,7 +120,15 @@ func newHTTPMux(app *App) *http.ServeMux {
 		}
 
 		sw := &sseWriter{w: w, flusher: flusher}
-
+		// 协议信封写出口：统一盖章 seq（连接内单调）与 v（协议版本）。
+		seq := &atomic.Int64{}
+		writeFrame := func(env protocol.Envelope) {
+			env.Seq = seq.Add(1)
+			env.Version = protocol.Version
+			data, _ := json.Marshal(env)
+			sw.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", data)))
+		}
+		// 活跃会话计数。
 		activeSessions.Add(1)
 		defer activeSessions.Done()
 
@@ -130,25 +141,27 @@ func newHTTPMux(app *App) *http.ServeMux {
 		// 检查 App 的 approver 是否为 PermissionHandler。
 		permHandler, isAsyncPerm := app.config.approver.(*PermissionHandler)
 
-		// 如果是异步权限模式，启动协程将权限请求推送到 SSE 流。
+		// 如果是异步权限模式，按会话绑定本连接的审批下发通道并起协程转发。
+		// 绑定生命周期与请求一致：handler 退出注销并关闭通道，转发协程
+		// 随 range 退出——不会遗留 stale 消费者与后续连接抢帧。
 		if isAsyncPerm {
 			permHandlers.Store(sessionID, permHandler)
 			defer func() {
 				permHandlers.Delete(sessionID)
 			}()
 
-			// 在 goroutine 中转发权限请求到 SSE 流。
+			permCh, unbindPerm := permHandler.Subscribe(sessionID)
+			defer unbindPerm()
 			go func() {
-				for req := range permHandler.Requests() {
-					data, _ := json.Marshal(ssePermissionRequest{
-						Type:       "permission_request",
-						RequestID:  req.RequestID,
+				for req := range permCh {
+					writeFrame(protocol.Envelope{
+						Type:       protocol.TypeNeedApproval,
 						SessionID:  sessionID,
+						RequestID:  req.RequestID,
 						ToolName:   req.ToolName,
 						ToolInput:  req.ToolInput,
 						Permission: req.Permission,
 					})
-					sw.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", data)))
 				}
 			}()
 		}
@@ -179,17 +192,22 @@ func newHTTPMux(app *App) *http.ServeMux {
 		askUserHandler := app.askUserHandler
 		planConfirmHandler := app.planConfirmHandler
 
-		// 如果有 askUserHandler，启动 goroutine 转发请求到 SSE
+		// 如果有 askUserHandler，按会话绑定本连接的提问下发通道并起协程
+		// 转发（AskSession 命中本会话 → 帧写进本连接）。绑定生命周期与
+		// 请求一致，不与其它连接共享消费——多轮之后旧连接的转发器不会
+		// 残留抢帧（抢走 = 当前流收不到提问帧，工具在引擎侧无限阻塞）。
 		if askUserHandler != nil {
+			askCh, unbindAsk := askUserHandler.Subscribe(sessionID)
+			defer unbindAsk()
 			go func() {
-				for req := range askUserHandler.Requests() {
-					data, _ := json.Marshal(sseAskUserRequest{
-						Type:      "ask_user",
-						RequestID: req.RequestID,
+				for req := range askCh {
+					writeFrame(protocol.Envelope{
+						Type:      protocol.TypeAskUser,
 						SessionID: sessionID,
+						RequestID: req.RequestID,
 						Question:  req.Question,
+						Payload:   req.Payload, // 结构化交互载荷（确认卡选项等），客户端按 kind 分发
 					})
-					sw.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", data)))
 				}
 			}()
 		}
@@ -198,13 +216,12 @@ func newHTTPMux(app *App) *http.ServeMux {
 		if planConfirmHandler != nil {
 			go func() {
 				for req := range planConfirmHandler.Requests() {
-					data, _ := json.Marshal(ssePlanConfirmRequest{
-						Type:        "plan_confirm",
-						RequestID:   req.RequestID,
+					writeFrame(protocol.Envelope{
+						Type:        protocol.TypePlanConfirm,
 						SessionID:   sessionID,
+						RequestID:   req.RequestID,
 						PlanContent: req.PlanContent,
 					})
-					sw.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", data)))
 				}
 			}()
 		}
@@ -212,12 +229,38 @@ func newHTTPMux(app *App) *http.ServeMux {
 		// 多轮对话：session_id 命中已有会话则自动加载历史并在结束后持久化；
 		// 未传 session_id 或未配置会话管理器时退化为无状态单轮（旧行为）。
 		// 用 bgCtx（与连接解耦）：SSE 断开不取消任务，/interrupt 才取消。
+		// 准入分流：会话忙且启用插话通道时，消息改走 guide 车道——任务在
+		// 最近的工具批结束边界收到，前端立即收到确认（无需排队 SSE）。
+		// Steer 竞态失败（检查后任务恰好结束）则落回普通新 run 路径。
 		var events <-chan Event
 		if req.SessionID != "" && app.config.sessionManager != nil {
+			if app.config.steering != nil && app.config.sessionManager.IsBusy(req.SessionID) {
+				if err := app.config.steering.Steer(req.SessionID, req.Message); err == nil {
+					writeFrame(protocol.Envelope{
+						Type:      protocol.TypeSteer,
+						SessionID: req.SessionID,
+						Text:      req.Message,
+					})
+					writeFrame(protocol.Envelope{
+						Type:      protocol.TypeMetadata,
+						SessionID: req.SessionID,
+						Steered:   true,
+					})
+					return
+				}
+			}
 			events = app.RunSession(bgCtx, req.SessionID, req.Message)
 		} else {
 			events = app.Run(bgCtx, req.Message)
 		}
+
+		// 生命周期帧：run 开始（流内第一个数据帧，客户端据此绑定会话并
+		// 把 UI 切到「运行中」；seq 从本帧起计数）。
+		writeFrame(protocol.Envelope{
+			Type:      protocol.TypeRunStart,
+			SessionID: sessionID,
+		})
+
 		for ev := range events {
 			// 连接已断（前端离开）则停止转发，任务在后台继续；
 			// 但必须排空事件 channel，否则 channel 缓冲填满后 agent 循环
@@ -227,36 +270,22 @@ func newHTTPMux(app *App) *http.ServeMux {
 				}
 				break
 			}
-			data, _ := json.Marshal(sseEvent{
-				Type:       ev.Type.String(),
-				SessionID:  sessionID,
-				Text:       ev.Text,
-				StatusKey:  ev.StatusKey, // 非空=状态行原地更新（429 重试倒计时等）
-				Thinking:   ev.Thinking,
-				ToolName:   ev.ToolName,
-				ToolUseID:  ev.ToolUseID,
-				ToolInput:  ev.ToolInput,
-				ToolResult: ev.ToolResult,
-				Error:      errString(ev.Error),
-				Usage:      usageFromEvent(ev),
-			})
-			sw.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", data)))
+			writeFrame(envelopeFromEvent(ev, sessionID))
 		}
 
-		// 发送完成元数据。
-		elapsed := time.Since(startTime)
-		meta, _ := json.Marshal(map[string]any{
-			"type":       "metadata",
-			"elapsed_ms": elapsed.Milliseconds(),
+		// 生命周期帧：run 结束元数据（流内最后一个帧）。
+		writeFrame(protocol.Envelope{
+			Type:      protocol.TypeMetadata,
+			SessionID: sessionID,
+			ElapsedMs: time.Since(startTime).Milliseconds(),
 		})
-		sw.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", meta)))
 	})
 
 	// POST /approve — 权限审批响应端点
 	// 前端接收到 permission_request SSE 事件后，
 	// 通过此端点返回用户的审批决定。
 	mux.HandleFunc("POST /approve", func(w http.ResponseWriter, r *http.Request) {
-		var req approveRequest
+		var req protocol.ApproveRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "无效的请求体", http.StatusBadRequest)
 			return
@@ -288,7 +317,7 @@ func newHTTPMux(app *App) *http.ServeMux {
 	// POST /askuser — AskUser 响应端点
 	// 前端接收到 ask_user SSE 事件后，通过此端点返回用户回答。
 	mux.HandleFunc("POST /askuser", func(w http.ResponseWriter, r *http.Request) {
-		var req askUserRequest
+		var req protocol.AskUserAnswer
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "无效的请求体", http.StatusBadRequest)
 			return
@@ -312,7 +341,7 @@ func newHTTPMux(app *App) *http.ServeMux {
 	// POST /plan/confirm — 计划确认端点
 	// 前端接收到 plan_confirm SSE 事件后，通过此端点返回用户确认。
 	mux.HandleFunc("POST /plan/confirm", func(w http.ResponseWriter, r *http.Request) {
-		var req planConfirmRequest
+		var req protocol.PlanConfirmAnswer
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "无效的请求体", http.StatusBadRequest)
 			return
@@ -336,7 +365,7 @@ func newHTTPMux(app *App) *http.ServeMux {
 	// POST /interrupt — 中断执行端点
 	// 前端可以通过此端点请求中断当前执行。
 	mux.HandleFunc("POST /interrupt", func(w http.ResponseWriter, r *http.Request) {
-		var req interruptRequest
+		var req protocol.InterruptRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "无效的请求体", http.StatusBadRequest)
 			return
@@ -357,9 +386,155 @@ func newHTTPMux(app *App) *http.ServeMux {
 		}
 	})
 
+	// POST /queue — 消息队列端点（WithSteering）。
+	// 消息进入 queue 车道，当前 run 结束后自动作为下一条输入续跑。
+	// 与 /chat 的区别：/chat 忙时注入当前轮（guide），/queue 永远排队
+	// （任务结束后才独立成轮执行）。未启用插话通道返回 501。
+	mux.HandleFunc("POST /queue", func(w http.ResponseWriter, r *http.Request) {
+		if app.config.steering == nil {
+			http.Error(w, "未启用插话通道（WithSteering）", http.StatusNotImplemented)
+			return
+		}
+		var req protocol.ChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Message == "" {
+			http.Error(w, "message 字段必填", http.StatusBadRequest)
+			return
+		}
+		sessionID := req.SessionID
+		if sessionID == "" {
+			http.Error(w, "session_id 字段必填", http.StatusBadRequest)
+			return
+		}
+		item := app.config.steering.Enqueue(sessionID, req.Message)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":  "ok",
+			"id":      item.ID,
+			"pending": app.config.steering.PendingQueued(sessionID),
+		})
+	})
+
+	// GET /queue — 查看排队消息（WithSteering，队头在前，含条目 ID）。
+	mux.HandleFunc("GET /queue", func(w http.ResponseWriter, r *http.Request) {
+		if app.config.steering == nil {
+			http.Error(w, "未启用插话通道（WithSteering）", http.StatusNotImplemented)
+			return
+		}
+		sessionID := r.URL.Query().Get("session_id")
+		items := app.config.steering.ListQueued(sessionID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"pending": len(items),
+			"items":   items,
+		})
+	})
+
+	// POST /queue/remove — 按 ID 取走一条排队消息（WithSteering）。
+	// 返回原文，供宿主「撤回输入框编辑」或「立即发送」复用；ID 不存在
+	// 返回 404（可能已被 drain 消费或别的端撤回）。
+	mux.HandleFunc("POST /queue/remove", func(w http.ResponseWriter, r *http.Request) {
+		if app.config.steering == nil {
+			http.Error(w, "未启用插话通道（WithSteering）", http.StatusNotImplemented)
+			return
+		}
+		var req struct {
+			SessionID string `json:"session_id"`
+			ItemID    string `json:"item_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SessionID == "" || req.ItemID == "" {
+			http.Error(w, "session_id 与 item_id 字段必填", http.StatusBadRequest)
+			return
+		}
+		text, ok := app.config.steering.RemoveQueued(req.SessionID, req.ItemID)
+		w.Header().Set("Content-Type", "application/json")
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"status": "error", "message": "队列项不存在或已消费"})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "text": text})
+	})
+
+	// GET /mode — 当前权限模式（运行时覆写优先，否则构造配置，缺省 default）。
+	mux.HandleFunc("GET /mode", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"mode": permissionModeString(app.CurrentPermissionMode())})
+	})
+
+	// POST /mode — 运行时切换权限模式（SetPermissionMode）。
+	// 立即生效：进行中的 run 直接改写权限门，后续 run 沿用覆写值。
+	// 合法值：default / accept_edits / plan / bypass / deny_all。
+	mux.HandleFunc("POST /mode", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "无效的请求体", http.StatusBadRequest)
+			return
+		}
+		mode, ok := permissionModeFromString(req.Mode)
+		if !ok {
+			http.Error(w, "mode 必须是 default/accept_edits/plan/bypass/deny_all", http.StatusBadRequest)
+			return
+		}
+		app.SetPermissionMode(mode)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "mode": permissionModeString(mode)})
+	})
+
+	// GET /thinking — 当前思考强度档位（off/low/medium/high；空 = 不干预）。
+	mux.HandleFunc("GET /thinking", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"effort": app.CurrentThinkingEffort()})
+	})
+
+	// POST /thinking — 运行时切换思考强度档位（自下一次 run 起生效）。
+	mux.HandleFunc("POST /thinking", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Effort string `json:"effort"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "无效的请求体", http.StatusBadRequest)
+			return
+		}
+		switch req.Effort {
+		case "off", "low", "medium", "high", "":
+			app.SetThinkingEffort(req.Effort)
+		default:
+			http.Error(w, "effort 必须是 off/low/medium/high 或空", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "effort": req.Effort})
+	})
+
+	// GET /model — 当前模型 ID（Capabilities.ModelID，随运行时切换而变）。
+	mux.HandleFunc("GET /model", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"model": app.ModelID()})
+	})
+
+	// POST /model — 运行时切换模型（provider 实现 ModelSwitcher 时生效，
+	// 下一次模型请求即用新模型；不需要重启引擎）。
+	mux.HandleFunc("POST /model", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Model == "" {
+			http.Error(w, "model 字段必填", http.StatusBadRequest)
+			return
+		}
+		if !app.SetModel(req.Model) {
+			http.Error(w, "当前 Provider 不支持运行时切换模型", http.StatusNotImplemented)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "model": req.Model})
+	})
+
 	// POST /execute — 同步端点
 	mux.HandleFunc("POST /execute", func(w http.ResponseWriter, r *http.Request) {
-		var req chatRequest
+		var req protocol.ChatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "无效的请求体", http.StatusBadRequest)
 			return
@@ -707,82 +882,14 @@ func newHTTPMux(app *App) *http.ServeMux {
 		json.NewEncoder(w).Encode(summary)
 	})
 
+	// GET /protocol — 协议自描述：版本、帧类型、端点表。客户端启动时
+	// 拉取一次做兼容性校验（version 不匹配即警告），无需硬编码事件清单。
+	mux.HandleFunc("GET /protocol", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(protocol.Describe())
+	})
+
 	return mux
-}
-
-type chatRequest struct {
-	Message   string `json:"message"`
-	SessionID string `json:"session_id,omitempty"`
-}
-
-type sseEvent struct {
-	Type string `json:"type"`
-	// SessionID 本事件归属的会话——多会话并行时客户端按它路由事件到
-	// 对应的 UI（否则两个会话的流无法区分归属）。
-	SessionID string `json:"session_id,omitempty"`
-	// StatusKey 非空时本事件是「状态行更新」而非追加消息：客户端按 Key
-	// 原地替换显示（429 重试倒计时）；Text 空 = 清除该状态行。
-	StatusKey  string          `json:"status_key,omitempty"`
-	Text       string          `json:"text,omitempty"`
-	Thinking   string          `json:"thinking,omitempty"`
-	ToolName   string          `json:"tool_name,omitempty"`
-	ToolUseID  string          `json:"tool_use_id,omitempty"`
-	ToolInput  json.RawMessage `json:"tool_input,omitempty"` // tool_start 携带调用参数（Read 的文件路径 / Bash 的命令等）
-	ToolResult string          `json:"tool_result,omitempty"`
-	Error      string          `json:"error,omitempty"`
-	Usage      *sseUsage       `json:"usage,omitempty"`
-}
-
-type ssePermissionRequest struct {
-	Type       string          `json:"type"`
-	RequestID  string          `json:"request_id"`
-	SessionID  string          `json:"session_id"`
-	ToolName   string          `json:"tool_name"`
-	ToolInput  json.RawMessage `json:"tool_input"`
-	Permission string          `json:"permission"`
-}
-
-type sseAskUserRequest struct {
-	Type      string `json:"type"`
-	RequestID string `json:"request_id"`
-	SessionID string `json:"session_id"`
-	Question  string `json:"question"`
-}
-
-type ssePlanConfirmRequest struct {
-	Type        string `json:"type"`
-	RequestID   string `json:"request_id"`
-	SessionID   string `json:"session_id"`
-	PlanContent string `json:"plan_content"`
-}
-
-type approveRequest struct {
-	RequestID   string `json:"request_id"`
-	SessionID   string `json:"session_id,omitempty"`
-	Allow       bool   `json:"allow"`
-	AlwaysAllow bool   `json:"always_allow,omitempty"`
-	Reason      string `json:"reason,omitempty"`
-}
-
-type askUserRequest struct {
-	RequestID string `json:"request_id"`
-	Answer    string `json:"answer"`
-}
-
-type planConfirmRequest struct {
-	RequestID string `json:"request_id"`
-	Confirm   bool   `json:"confirm"`
-	Reason    string `json:"reason,omitempty"`
-}
-
-type interruptRequest struct {
-	SessionID string `json:"session_id,omitempty"`
-	Reason    string `json:"reason,omitempty"`
-}
-
-type sseUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
 }
 
 type executeResponse struct {
@@ -823,14 +930,34 @@ func routeTaskStore(store task.StoreInterface, sessionID string) task.StoreInter
 	return store
 }
 
-func usageFromEvent(ev Event) *sseUsage {
-	if ev.Usage == nil {
-		return nil
+// envelopeFromEvent 把 agent loop 事件映射为协议信封（字段语义见
+// protocol.Envelope 注释）。事件类型名沿用历史线上格式（向后兼容）。
+func envelopeFromEvent(ev Event, sessionID string) protocol.Envelope {
+	env := protocol.Envelope{
+		Type:          ev.Type.String(),
+		SessionID:     sessionID,
+		Text:          ev.Text,
+		StatusKey:     ev.StatusKey, // 非空=状态行原地更新（429 重试倒计时等）
+		Thinking:      ev.Thinking,
+		ToolName:      ev.ToolName,
+		ToolUseID:     ev.ToolUseID,
+		ToolInput:     ev.ToolInput,
+		ToolResult:    ev.ToolResult,
+		Error:         errString(ev.Error),
+		AgentID:       ev.AgentID,
+		AgentDesc:     ev.AgentDesc,
+		AgentStatus:   ev.AgentStatus,
+		AgentActivity: ev.AgentActivity,
+		AgentToolUses: ev.AgentToolUses,
+		AgentTokens:   ev.AgentTokens,
 	}
-	return &sseUsage{
-		InputTokens:  ev.Usage.InputTokens,
-		OutputTokens: ev.Usage.OutputTokens,
+	if ev.Usage != nil {
+		env.Usage = &protocol.Usage{
+			InputTokens:  ev.Usage.InputTokens,
+			OutputTokens: ev.Usage.OutputTokens,
+		}
 	}
+	return env
 }
 
 // String 返回事件类型名称（用于 SSE 序列化）。
@@ -870,8 +997,51 @@ func (t EventType) String() string {
 	case EventRetrieval:
 		// RAG 前置检索摘要（信息性事件，观测检索开销）。
 		return "retrieval"
+	case EventSteer:
+		// guide 车道注入进模型上下文（工具批边界；宿主通知/环境提醒）。
+		return protocol.TypeSteer
+	case EventQueueRun:
+		// queue 车道消费：排队消息作为新一轮输入开跑。
+		return protocol.TypeQueueRun
+	case EventSubAgentProgress:
+		// 子 agent 运行进度（并发子 agent 的树形状态）。
+		return protocol.TypeSubAgentProgress
 	default:
 		return "unknown"
+	}
+}
+
+// permissionModeString / permissionModeFromString — 权限模式与 HTTP 字符串的
+// 双向映射（GET/POST /mode 端点用）。
+func permissionModeString(m PermissionModeOption) string {
+	switch m {
+	case PermissionBypass:
+		return "bypass"
+	case PermissionAcceptEdits:
+		return "accept_edits"
+	case PermissionPlanOnly:
+		return "plan"
+	case PermissionDenyAll:
+		return "deny_all"
+	default:
+		return "default"
+	}
+}
+
+func permissionModeFromString(s string) (PermissionModeOption, bool) {
+	switch s {
+	case "default":
+		return PermissionDefault, true
+	case "accept_edits":
+		return PermissionAcceptEdits, true
+	case "plan":
+		return PermissionPlanOnly, true
+	case "bypass":
+		return PermissionBypass, true
+	case "deny_all":
+		return PermissionDenyAll, true
+	default:
+		return PermissionDefault, false
 	}
 }
 

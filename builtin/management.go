@@ -155,6 +155,7 @@ func TaskGetTool(store task.StoreInterface) goagent.ToolDef {
 		Input:       taskGetInput{},
 		Permission:  goagent.ReadOnly,
 		Concurrent:  true,
+		Effect:      goagent.EffectReadOnly,
 		Execute: func(ctx goagent.Context, in taskGetInput) (string, error) {
 			t := storeFor(ctx, store).Get(in.TaskID)
 			if t == nil {
@@ -182,6 +183,7 @@ func TaskListTool(store task.StoreInterface) goagent.ToolDef {
 		Input:       struct{}{},
 		Permission:  goagent.ReadOnly,
 		Concurrent:  true,
+		Effect:      goagent.EffectReadOnly,
 		Execute: func(ctx goagent.Context, in struct{}) (string, error) {
 			summaries := storeFor(ctx, store).ListSummaries()
 			if len(summaries) == 0 {
@@ -429,6 +431,7 @@ func CronListTool(sched *cron.Scheduler) goagent.ToolDef {
 		Input:       struct{}{},
 		Permission:  goagent.ReadOnly,
 		Concurrent:  true,
+		Effect:      goagent.EffectReadOnly,
 		Execute: func(ctx goagent.Context, in struct{}) (string, error) {
 			jobs := sched.List()
 			if len(jobs) == 0 {

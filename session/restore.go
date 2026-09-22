@@ -85,54 +85,60 @@ func Restore(storage *Storage, sessionID string) (*Session, error) {
 }
 
 // EnsureToolResultPairing 修复孤立的 tool_use 块。
-// 如果某个 tool_use 没有对应的 tool_result，插入一个合成的错误 result。
-// 这在会话恢复时很重要，因为崩溃可能导致 tool_use 没有对应的 result。
+// 如果某个 tool_use 没有对应的 tool_result，紧随所属 assistant 消息
+// 插入一个合成的错误 result。合成结果必须紧邻 tool_calls 消息——
+// OpenAI 系 API 校验 tool 消息与 tool_calls 消息的相邻性，追加到
+// 历史末尾照样被拒（HTTP 400 insufficient tool messages）。
+// 触发场景不止崩溃恢复：用户中断/运行异常退出时，assistant 消息
+// 已提前落盘而工具结果尚未落定，孤立 tool_use 会毒化整个会话——
+// 之后每次请求都 400。
 //
 // 对齐 Claude Code 的 ensureToolResultPairing 逻辑。
 func EnsureToolResultPairing(messages []message.Message) []message.Message {
-	// 收集所有 tool_use ID。
+	// 收集所有 tool_use ID 与已有 tool_result 对应的 ID。
 	toolUseIDs := make(map[string]bool)
+	resultIDs := make(map[string]bool)
 	for _, msg := range messages {
 		for _, block := range msg.Content {
 			if block.Type == "tool_use" {
 				toolUseIDs[block.ToolUseID] = true
 			}
-		}
-	}
-
-	// 收集所有 tool_result 对应的 ID。
-	resultIDs := make(map[string]bool)
-	for _, msg := range messages {
-		for _, block := range msg.Content {
 			if block.Type == "tool_result" {
 				resultIDs[block.ForToolUseID] = true
 			}
 		}
 	}
 
-	// 找出孤立的 tool_use ID。
-	var orphanIDs []string
+	// 无孤立 tool_use → 原样返回（快路径，避免每次运行都拷贝整段历史）。
+	orphans := 0
 	for id := range toolUseIDs {
 		if !resultIDs[id] {
-			orphanIDs = append(orphanIDs, id)
+			orphans++
 		}
 	}
-
-	if len(orphanIDs) == 0 {
+	if orphans == 0 {
 		return messages
 	}
 
-	// 为每个孤立的 tool_use 插入合成的 tool_result。
-	result := make([]message.Message, len(messages))
-	copy(result, messages)
-
-	for _, orphanID := range orphanIDs {
-		syntheticResult := message.NewToolResultMessage(
-			orphanID,
-			"会话恢复：此工具调用在执行前被中断",
-			true,
-		)
-		result = append(result, syntheticResult)
+	// 就地修复：遍历时紧跟所属 assistant 消息插入合成 tool_result，
+	// 并把补过的 ID 记入 resultIDs 防止重复插入。
+	result := make([]message.Message, 0, len(messages)+orphans)
+	for _, msg := range messages {
+		result = append(result, msg)
+		var missing []string
+		for _, block := range msg.Content {
+			if block.Type == "tool_use" && !resultIDs[block.ToolUseID] {
+				missing = append(missing, block.ToolUseID)
+				resultIDs[block.ToolUseID] = true
+			}
+		}
+		for _, id := range missing {
+			result = append(result, message.NewToolResultMessage(
+				id,
+				"会话恢复：此工具调用在执行前被中断",
+				true,
+			))
+		}
 	}
 
 	return result

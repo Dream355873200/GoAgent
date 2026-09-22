@@ -12,6 +12,26 @@ type Config struct {
 	MaxConcurrency int // 最大并行工具执行数，默认 10
 }
 
+// Class 工具副作用分级——决定并行编排策略。三级替代旧的 bool：
+//
+//	ClassReadOnly   只读：无副作用（Read/Glob/Grep/WebSearch），任何
+//	                场景可并行，包括独占工具运行期间。
+//	ClassParallel   并行安全：有副作用但并发调用互不冲突
+//	                （TaskCreate、独立请求），可与并行/只读工具并行，
+//	                不能与独占工具重叠。
+//	ClassExclusive  独占：有全局副作用（写文件、git、构建、Bash），
+//	                必须独占执行，不与任何其他工具并行。
+type Class int
+
+const (
+	// ClassUnset 未显式分级——按兼容字段 Concurrent 推导
+	// （true→Parallel，false→Exclusive）。
+	ClassUnset Class = iota
+	ClassExclusive
+	ClassParallel
+	ClassReadOnly
+)
+
 // ExecuteFn 是工具执行的函数签名。
 type ExecuteFn func(ctx context.Context, input json.RawMessage) (string, error)
 
@@ -21,15 +41,31 @@ type PreCheckFn func(ctx context.Context) (reason string, denied bool)
 
 // ToolCall 是一个待执行的工具调用。
 type ToolCall struct {
-	ID         string
-	Name       string
-	Input      json.RawMessage
+	ID    string
+	Name  string
+	Input json.RawMessage
+	// Class 副作用分级。非 Unset 时优先生效；Unset 时按 Concurrent 推导。
+	Class Class
+	// Concurrent 兼容字段：旧代码用 bool 标记「可并行」。
+	// Class 显式分级存在时被忽略。新代码请用 Class。
+	// Deprecated: 使用 Class。
 	Concurrent bool
 	Execute    ExecuteFn
 	// PreCheck 在执行前调用（权限检查、中间件、hooks 等）。
 	// 为 nil 时跳过预检查直接执行。
 	// 对齐 Claude Code 的 StreamingToolExecutor 在 executeTool 内做权限检查。
 	PreCheck PreCheckFn
+}
+
+// effect 返回调用的有效分级（显式 Class 优先，兼容字段兜底）。
+func (c ToolCall) effect() Class {
+	if c.Class != ClassUnset {
+		return c.Class
+	}
+	if c.Concurrent {
+		return ClassParallel
+	}
+	return ClassExclusive
 }
 
 // ToolResult 是工具执行的结果。
@@ -54,14 +90,14 @@ func New(cfg Config) *Executor {
 }
 
 // Execute 使用适当的串行/并发编排运行一批工具调用。
-// 并发安全的工具并行运行；非并发安全的工具串行运行。
+// 只读/并行安全的工具并行运行；独占工具串行运行。
 // 对齐 Claude Code 的分区策略。
 func (e *Executor) Execute(ctx context.Context, calls []ToolCall) []ToolResult {
 	batches := e.partition(calls)
 	var allResults []ToolResult
 
 	for _, batch := range batches {
-		if len(batch) == 1 || !batch[0].Concurrent {
+		if len(batch) == 1 || batch[0].effect() == ClassExclusive {
 			// 串行执行。
 			for _, call := range batch {
 				result := e.executeOne(ctx, call)
@@ -82,14 +118,14 @@ func (e *Executor) Execute(ctx context.Context, calls []ToolCall) []ToolResult {
 }
 
 // partition 将工具调用分组为批次：
-// 连续的并发安全工具组成一个批次（并行），
-// 每个非并发工具是自己的批次（串行）。
+// 连续的只读/并行安全工具组成一个批次（并行），
+// 每个独占工具是自己的批次（串行）。
 func (e *Executor) partition(calls []ToolCall) [][]ToolCall {
 	var batches [][]ToolCall
 	var currentBatch []ToolCall
 
 	for _, call := range calls {
-		if call.Concurrent {
+		if call.effect() != ClassExclusive {
 			currentBatch = append(currentBatch, call)
 		} else {
 			// 刷新待处理的并发批次。
@@ -97,7 +133,7 @@ func (e *Executor) partition(calls []ToolCall) [][]ToolCall {
 				batches = append(batches, currentBatch)
 				currentBatch = nil
 			}
-			// 非并发工具是自己的批次。
+			// 独占工具是自己的批次。
 			batches = append(batches, []ToolCall{call})
 		}
 	}
@@ -208,8 +244,9 @@ func NewStreamingExecutor(exec *Executor) *StreamingExecutor {
 	}
 }
 
-// Add 将工具调用排队执行。如果工具是并发安全的
-// 且没有非并发工具在运行，则立即开始。
+// Add 将工具调用排队执行。分级调度：
+// 只读工具在并发上限内随时可启动（含独占工具运行期间）；
+// 并行安全工具在无独占工具运行时可启动；独占工具等全部完成后独占。
 func (se *StreamingExecutor) Add(ctx context.Context, call ToolCall) {
 	se.mu.Lock()
 	defer se.mu.Unlock()
@@ -217,7 +254,7 @@ func (se *StreamingExecutor) Add(ctx context.Context, call ToolCall) {
 	// 保存调用方的 context，供后续 drainPending 使用。
 	se.ctx = ctx
 
-	if !call.Concurrent {
+	if call.effect() == ClassExclusive {
 		se.allConcurrent = false
 	}
 
@@ -302,13 +339,18 @@ func (se *StreamingExecutor) Discard() {
 }
 
 func (se *StreamingExecutor) canStartNow(call ToolCall) bool {
-	if call.Concurrent && se.allConcurrent && se.running < se.executor.maxConcurrency {
-		return true
+	switch call.effect() {
+	case ClassReadOnly:
+		// 只读：无副作用，只受全局并发上限约束。
+		return se.running < se.executor.maxConcurrency
+	case ClassParallel:
+		if se.allConcurrent && se.running < se.executor.maxConcurrency {
+			return true
+		}
+		return se.running == 0
+	default: // ClassExclusive
+		return se.running == 0
 	}
-	if se.running == 0 {
-		return true
-	}
-	return false
 }
 
 func (se *StreamingExecutor) startTool(ctx context.Context, call ToolCall) {

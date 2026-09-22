@@ -32,7 +32,11 @@ type Request struct {
 	Tools        []ToolDefinition  `json:"tools,omitempty"`
 	MaxTokens    int               `json:"max_tokens,omitempty"`
 	Model        string            `json:"model,omitempty"`
-	Thinking     *ThinkingConfig   `json:"thinking,omitempty"` // Extended Thinking 配置
+	Thinking     *ThinkingConfig   `json:"thinking,omitempty"` // Extended Thinking 配置（Anthropic 风格）
+	// ReasoningEffort 是思考强度档位（OpenAI 风格）：
+	//   "off" = 关闭思考；"low"/"medium"/"high" = 强度档位；空 = 不干预（跟随默认）。
+	// OpenAI 兼容实现将其映射为请求体的 reasoning_effort 字段（off → "none"）。
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // SystemBlock 是 system prompt 的一个段（用于 prompt caching）。

@@ -12,10 +12,11 @@ import (
 // 实现此接口可注入自定义存储后端（如数据库、Redis 等）。
 type StoreInterface interface {
 	// RegisterAgent 注册一个后台 agent 任务。
-	RegisterAgent(description, prompt, agentType, model, toolUseID string) (taskID string, ctx context.Context, cancel context.CancelFunc)
+	// sessionID 是创建此任务的会话（终态通知回注该会话）。
+	RegisterAgent(sessionID, description, prompt, agentType, model, toolUseID string) (taskID string, ctx context.Context, cancel context.CancelFunc)
 
 	// RegisterShell 注册一个后台 shell 任务。
-	RegisterShell(command, description, toolUseID string) (taskID string, ctx context.Context, cancel context.CancelFunc)
+	RegisterShell(sessionID, command, description string, toolUseID string) (taskID string, ctx context.Context, cancel context.CancelFunc)
 
 	// Complete 标记任务成功完成。
 	Complete(taskID, result string, messages []message.Message)

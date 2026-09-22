@@ -26,6 +26,7 @@ func WebSearchTool() goagent.ToolDef {
 		Input:              WebSearchInput{},
 		Permission:         goagent.ReadOnly,
 		Concurrent:         true,
+		Effect:             goagent.EffectReadOnly,
 		MaxResultSizeChars: 50000,
 		Execute: func(ctx goagent.Context, in WebSearchInput) (string, error) {
 			return executeWebSearch(in)
@@ -162,6 +163,7 @@ func WebFetchTool() goagent.ToolDef {
 		Input:              WebFetchInput{},
 		Permission:         goagent.ReadOnly,
 		Concurrent:         true,
+		Effect:             goagent.EffectReadOnly,
 		MaxResultSizeChars: 100000,
 		Execute: func(ctx goagent.Context, in WebFetchInput) (string, error) {
 			return executeWebFetch(in)

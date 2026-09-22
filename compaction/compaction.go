@@ -71,6 +71,12 @@ type Config struct {
 
 	// PromptFile 外部 compact prompt 文件路径（空则用嵌入默认值）。
 	PromptFile string
+
+	// PostCompact 压缩后重注入源（可选）。每次实际压缩（Layer 4 摘要
+	// 成功 / 413 响应式压缩成功）完成后，逐个调用 Reminders，返回的
+	// 文本各自独立成 user 消息追加在压缩边界之后——重新注入被摘要
+	// 吞掉的关键上下文（已读文件、宿主固定资产等）。见 reminder.go。
+	PostCompact []ReminderSource
 }
 
 // Manager 协调压缩层。
@@ -89,6 +95,17 @@ type Manager struct {
 // SetProvider 设置用于 LLM 摘要的提供者。
 func (m *Manager) SetProvider(p provider.Provider) {
 	m.provider = p
+}
+
+// injectPostCompactReminders 调用全部重注入源，把提醒追加为 user 消息。
+func (m *Manager) injectPostCompactReminders(ctx context.Context, msgs []message.Message) []message.Message {
+	for _, src := range m.config.PostCompact {
+		if src == nil {
+			continue
+		}
+		msgs = appendReminderMessages(msgs, src.Reminders(ctx))
+	}
+	return msgs
 }
 
 // Compact 执行完整压缩流程，对齐 Claude Code 的 compactConversation。
@@ -247,6 +264,7 @@ func (m *Manager) Apply(ctx context.Context, messages []message.Message, context
 		if err == nil {
 			freed = currentTokens - estimateMessagesTokens(compacted)
 			totalFreed += freed
+			compacted = m.injectPostCompactReminders(ctx, compacted)
 			messages = compacted
 			m.RecordAutocompactResult(true, 0)
 		} else {
@@ -269,7 +287,7 @@ func (m *Manager) HandleOverflow(ctx context.Context, messages []message.Message
 	// 第二次尝试：响应式压缩（基于模型）。
 	compacted, err := m.auto.apply(ctx, messages, contextWindow)
 	if err == nil {
-		return compacted, true
+		return m.injectPostCompactReminders(ctx, compacted), true
 	}
 
 	return messages, false
