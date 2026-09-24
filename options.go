@@ -802,18 +802,28 @@ func WithBgTaskStore(store bgtask.StoreInterface) Option {
 // --- MCP Servers Options ---
 
 // WithMCP 配置 MCP 服务器。
-// MCP 服务器的工具会自动发现并注册到 agent 工具集。
+// App 构造时逐个连接（单个超时 30s），发现的工具以 mcp__<name>__<tool>
+// 注册到 agent 工具集；连接失败只记告警，不阻断构造。Name 必填。
+// stdio（Command）与 Streamable HTTP（URL）二选一，Transport 可省略。
+// 退出前调用 App.CloseMCP 终止 stdio 服务器进程。
 //
 // 示例：
 //
 //	app := goagent.New(
-//	    goagent.WithMCP(agent.MCPServerConfig{
-//	        Name:      "filesystem",
-//	        Transport: "stdio",
-//	        Command:   "npx",
-//	        Args:      []string{"-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"},
-//	    }),
+//	    goagent.WithMCP(
+//	        agent.MCPServerConfig{
+//	            Name:    "filesystem",
+//	            Command: "npx",
+//	            Args:    []string{"-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"},
+//	        },
+//	        agent.MCPServerConfig{
+//	            Name: "docs",
+//	            URL:  "https://example.com/mcp",
+//	            Auth: "Bearer <token>",
+//	        },
+//	    ),
 //	)
+//	defer app.CloseMCP()
 func WithMCP(servers ...agent.MCPServerConfig) Option {
 	return optionFunc(func(c *appConfig) {
 		c.mcpServers = append(c.mcpServers, servers...)

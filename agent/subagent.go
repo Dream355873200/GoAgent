@@ -11,7 +11,6 @@ import (
 )
 
 // AgentDefinition 定义一个子 agent 的配置。
-// 对齐 Claude Code 的 AgentDefinition。
 type AgentDefinition struct {
 	// AgentType 是 agent 的类型标识（如 "general-purpose", "research"）。
 	AgentType string
@@ -53,14 +52,19 @@ type MCPServerConfig struct {
 	Command string
 	// Args 启动参数（stdio 模式使用）。
 	Args []string
-	// Env 环境变量（stdio 模式使用）。
+	// Env 环境变量（stdio 模式使用，追加/覆盖继承的进程环境）。
 	Env map[string]string
-	// Transport 传输方式："stdio" 或 "http"。
+	// Dir 子进程工作目录（stdio 模式使用，可空）。
+	Dir string
+	// Transport 传输方式："stdio" 或 "http"（空时按 Command/URL 推断）。
 	Transport string
-	// URL HTTP URL（http 模式使用）。
+	// URL Streamable HTTP 端点（http 模式使用）。
 	URL string
-	// Auth 认证信息（http 模式使用）。
+	// Auth 认证信息（http 模式使用）：作为 Authorization 请求头原样发送，
+	// 如 "Bearer xxx"。
 	Auth string
+	// Headers 附加 HTTP 请求头（http 模式使用）。
+	Headers map[string]string
 }
 
 // SubAgentConfig 配置子 agent 运行。
@@ -115,7 +119,6 @@ type SubAgentResult struct {
 }
 
 // SubAgent 是一个子 agent 接口。
-// 对齐 Claude Code 的 runAgent 机制。
 type SubAgent interface {
 	// Run 运行子 agent 并返回结果。
 	Run(ctx context.Context, cfg SubAgentConfig, initialPrompt string) (*SubAgentResult, error)
@@ -163,7 +166,6 @@ func NewDefaultSubAgent() *DefaultSubAgent {
 }
 
 // Run 运行子 agent。
-// 对齐 Claude Code 的 runAgent。
 func (a *DefaultSubAgent) Run(ctx context.Context, cfg SubAgentConfig, initialPrompt string) (*SubAgentResult, error) {
 	if cfg.Provider == nil {
 		return nil, fmt.Errorf("SubAgent.Run: 需要 Provider")
@@ -499,7 +501,6 @@ func hasToolCalls(msg message.Message) bool {
 }
 
 // BuiltInAgents 内置的 Agent 定义。
-// 对齐 Claude Code 的 builtInAgents。
 var BuiltInAgents = map[string]*AgentDefinition{
 	"general-purpose": {
 		AgentType:   "general-purpose",
@@ -511,7 +512,6 @@ var BuiltInAgents = map[string]*AgentDefinition{
 }
 
 // LoadAgentsFromDir 从目录加载 Agent 定义。
-// 对齐 Claude Code 的 loadAgentsDir。
 func LoadAgentsFromDir(dir string) (map[string]*AgentDefinition, error) {
 	// TODO: 实现从目录加载 agent 定义
 	// 目前返回内置 agents

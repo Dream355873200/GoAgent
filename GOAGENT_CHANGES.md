@@ -1053,3 +1053,61 @@ compact / yolo 分类器所用 prompt 文件仍取全局 promptDir。
   SessionDescription / SkillRegistryFn）、「Steering：运行中插话」、「HTTP 端点速览」。
 - 项目结构补 steering / streambus / agenttool / protocol / reminder / retrieval /
   benchmark / sdk/typescript / builtin/js.go；版本状态补 v0.9–v0.11。
+
+## 2026-09-24（MCP 客户端重写 + 显式工具 Schema + 子 agent 工具取自注册表）
+
+**动机**：宿主要把插件声明的 MCP 服务器、插件子 agent 真正接进来，旧实现
+不可用：
+- 通知也分配 id 并阻塞等响应（`notifications/initialized` 永久挂起）；
+  请求 id 写死、响应不按 id 配对；无 ctx 超时；Env 被忽略；HTTP 传输
+  未实现；工具名取服务端自报名（不可控、可能重名/含非法字符）。
+- `ToolDef` 只能从 Input 结构体反射 schema，MCP 的 `map` schema 经反射
+  退化为 `{"type":"object"}`，模型看不到参数。
+- `agent.Runner` 硬编码 `MaxTokens: 4096`（推理模型思考 token 计入输出，
+  易截断）、忽略 `Definition.Model`；子 agent 工具只能手写，无法复用已
+  注册工具。
+
+**变更**：
+1. `mcp` 包重写：
+   - `Transport` 接口改为 `Send(ctx, *Request)`（传输层分配 id）+
+     `Notify(ctx, method, params)` + `Close()`。
+   - stdio：`NewStdioTransportConfig(StdioConfig{Command, Args, Env, Dir})`；
+     后台读循环按 id 分发响应，自动应答服务端请求（ping → `{}`，其余
+     -32601），忽略通知与非 JSON 行；保留 stderr 尾部 4KB，进程退出时
+     挂起中的请求带 stderr 报错而非永久阻塞。
+   - Streamable HTTP：`NewHTTPTransportConfig(HTTPConfig{URL, Headers, Client})`；
+     每条消息一个 POST（Accept json + event-stream），跟踪 `Mcp-Session-Id`，
+     SSE 响应中按 id 取结果，Close 发 DELETE 结束会话。
+   - `Client`：`ProtocolVersion = "2025-03-26"`；`WithName` 配置名优先于
+     服务端自报名；`ListTools` 自动翻页；`CallTool` 检查 JSON-RPC error；
+     新增 `ServerInfo()`。
+   - 工具名 `mcp__<server>__<tool>`（`ToolName` / `ServerPrefix`，净化为
+     `[A-Za-z0-9_-]` 并截断到 64）；`FrameworkTool.RemoteName`；schema 缺省
+     补 object；`isError` 结果转为带正文的 error；`ContentItem.Resource`
+     与 `ExtractText` 支持 resource / resource_link / 图片音频占位。
+   - 新增 `dial.go`：`ServerConfig{Name, Command, Args, Env, Dir, URL, Headers}`
+     + `Validate` / `Dial` / `Connect`（一步完成建连、握手、发现、转换，失败
+     不留孤儿进程）。
+2. `ToolDef.Schema map[string]any`：非空时直接作为入参 schema，不反射
+   Input；`registerToolLocked` / `ReplaceTool` / pipeline 轻量循环统一走
+   `inputSchemaOf`。
+3. `MCPToolDef(mcp.FrameworkTool) ToolDef`（`mcptools.go`）：保留远程 schema，
+   Execute 取 `json.RawMessage` 透传，权限 Normal。`initMCP` 改用
+   `mcp.Connect`（单个 30s 超时），失败记 logger 告警，重名工具跳过；
+   新增 `App.CloseMCP()`。`agent.MCPServerConfig` 增 `Dir` / `Headers`，
+   `Auth` 作为 Authorization 请求头，`Transport` 可省略（按 Command/URL 推断）。
+4. `App.AgentTools(names...) ([]agent.ToolDef, error)`：按名把已注册工具
+   转成子 agent 工具（描述/schema 与主 agent 一致）；`App.ToolPermission(name)`；
+   `App.Provider()`；`App.AgentTool(def)`：provider 每次调用时取 App 当前值
+   （跟随 SetProvider）。`AgentToolOf` 修正过期注释。AgentTool 调用时若
+   ctx 带会话工作目录，子 agent 系统提示末尾追加「# 环境 / 工作目录」段。
+5. `agent.Definition.MaxTokens`（0 = 交给 provider，与主循环一致），Runner
+   请求透传 `Model: def.Model`。
+
+**注意**：子 agent 的工具调用不经主循环中间件与权限审批——宿主应只交出
+只读工具（`ToolPermission` 校验）。
+
+**验证**：go build ./... / go vet（根包 + agent + mcp）/ go test（根包 +
+mcp + builtin）全绿；mcp 用假服务器（测试二进制自重入的 stdio 形态 +
+httptest 的 HTTP/SSE 形态）覆盖穿插日志/通知/服务端 ping、翻页、id 配对、
+isError、进程提前退出、ctx 超时。

@@ -1,9 +1,10 @@
 // Package mcp 实现 Model Context Protocol (MCP) 客户端。
 //
 // MCP 是一种标准化协议，允许 LLM 应用与外部工具服务器通信。
-// 此包实现客户端侧，支持通过 stdio 和 HTTP 传输发现和调用远程工具。
+// 此包实现客户端侧，支持通过 stdio 和 Streamable HTTP 传输发现和调用远程工具。
 //
-// 对齐 Claude Code 的 MCP 客户端架构。
+// 最常用的入口是 Connect：按 ServerConfig 建立连接、握手、发现工具并转换为
+// 框架工具（见 dial.go）。
 package mcp
 
 import (
@@ -13,13 +14,18 @@ import (
 	"sync"
 )
 
+// ProtocolVersion 客户端发起握手时声明的协议版本（服务端可协商为自己支持的版本）。
+const ProtocolVersion = "2025-03-26"
+
 // Client 是 MCP 协议客户端。
 type Client struct {
-	mu         sync.RWMutex
-	transport  Transport
-	tools      []ToolInfo
-	connected  bool
-	serverInfo *ServerInfo
+	mu              sync.RWMutex
+	transport       Transport
+	name            string // 配置名（工具名前缀；空则回落服务端自报名）
+	tools           []ToolInfo
+	connected       bool
+	serverInfo      *ServerInfo
+	protocolVersion string
 }
 
 // ServerInfo 包含 MCP 服务器信息。
@@ -28,14 +34,25 @@ type ServerInfo struct {
 	Version string `json:"version"`
 }
 
-// NewClient 创建一个新的 MCP 客户端。
-func NewClient(transport Transport) *Client {
-	return &Client{
-		transport: transport,
-	}
+// ClientOption 客户端选项。
+type ClientOption func(*Client)
+
+// WithName 设置服务器配置名：工具注册名的前缀取它，而不是服务端自报的
+// serverInfo.name（后者不可控，可能重复或含非法字符）。
+func WithName(name string) ClientOption {
+	return func(c *Client) { c.name = name }
 }
 
-// Connect 连接到 MCP 服务器并完成初始化握手。
+// NewClient 创建一个新的 MCP 客户端。
+func NewClient(transport Transport, opts ...ClientOption) *Client {
+	c := &Client{transport: transport}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// Connect 连接到 MCP 服务器并完成初始化握手（重复调用无副作用）。
 func (c *Client) Connect(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -44,13 +61,10 @@ func (c *Client) Connect(ctx context.Context) error {
 		return nil
 	}
 
-	// 发送 initialize 请求。
 	resp, err := c.transport.Send(ctx, &Request{
-		JSONRPC: "2.0",
-		ID:      1,
-		Method:  "initialize",
+		Method: "initialize",
 		Params: map[string]any{
-			"protocolVersion": "2024-11-05",
+			"protocolVersion": ProtocolVersion,
 			"capabilities":    map[string]any{},
 			"clientInfo": map[string]any{
 				"name":    "goagent",
@@ -61,72 +75,78 @@ func (c *Client) Connect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("MCP 初始化失败: %w", err)
 	}
-
-	// 解析服务器信息。
-	if resp.Result != nil {
-		var initResult struct {
-			ServerInfo ServerInfo `json:"serverInfo"`
-		}
-		if err := json.Unmarshal(resp.Result, &initResult); err == nil {
-			c.serverInfo = &initResult.ServerInfo
-		}
+	if resp.Error != nil {
+		return fmt.Errorf("MCP 初始化被拒绝: %w", resp.Error)
 	}
 
-	// 发送 initialized 通知。
-	_, _ = c.transport.Send(ctx, &Request{
-		JSONRPC: "2.0",
-		Method:  "notifications/initialized",
-	})
+	var initResult struct {
+		ProtocolVersion string     `json:"protocolVersion"`
+		ServerInfo      ServerInfo `json:"serverInfo"`
+	}
+	if err := json.Unmarshal(resp.Result, &initResult); err == nil {
+		c.serverInfo = &initResult.ServerInfo
+		c.protocolVersion = initResult.ProtocolVersion
+	}
+
+	if err := c.transport.Notify(ctx, "notifications/initialized", nil); err != nil {
+		return fmt.Errorf("MCP 初始化通知失败: %w", err)
+	}
 
 	c.connected = true
 	return nil
 }
 
-// ListTools 获取服务器提供的所有工具列表。
+// ListTools 获取服务器提供的所有工具列表（自动翻页）。
 func (c *Client) ListTools(ctx context.Context) ([]ToolInfo, error) {
-	c.mu.RLock()
-	if !c.connected {
-		c.mu.RUnlock()
+	if !c.IsConnected() {
 		return nil, fmt.Errorf("MCP 客户端未连接")
 	}
-	c.mu.RUnlock()
 
-	resp, err := c.transport.Send(ctx, &Request{
-		JSONRPC: "2.0",
-		ID:      2,
-		Method:  "tools/list",
-	})
-	if err != nil {
-		return nil, fmt.Errorf("获取工具列表失败: %w", err)
-	}
-
-	var result struct {
-		Tools []ToolInfo `json:"tools"`
-	}
-	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		return nil, fmt.Errorf("解析工具列表失败: %w", err)
+	var all []ToolInfo
+	cursor := ""
+	for {
+		var params any
+		if cursor != "" {
+			params = map[string]any{"cursor": cursor}
+		}
+		resp, err := c.transport.Send(ctx, &Request{Method: "tools/list", Params: params})
+		if err != nil {
+			return nil, fmt.Errorf("获取工具列表失败: %w", err)
+		}
+		if resp.Error != nil {
+			return nil, fmt.Errorf("获取工具列表失败: %w", resp.Error)
+		}
+		var page struct {
+			Tools      []ToolInfo `json:"tools"`
+			NextCursor string     `json:"nextCursor"`
+		}
+		if err := json.Unmarshal(resp.Result, &page); err != nil {
+			return nil, fmt.Errorf("解析工具列表失败: %w", err)
+		}
+		all = append(all, page.Tools...)
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			break
+		}
+		cursor = page.NextCursor
 	}
 
 	c.mu.Lock()
-	c.tools = result.Tools
+	c.tools = all
 	c.mu.Unlock()
-
-	return result.Tools, nil
+	return all, nil
 }
 
 // CallTool 调用指定的 MCP 工具。
 func (c *Client) CallTool(ctx context.Context, name string, arguments map[string]any) (*ToolCallResult, error) {
-	c.mu.RLock()
-	if !c.connected {
-		c.mu.RUnlock()
+	if !c.IsConnected() {
 		return nil, fmt.Errorf("MCP 客户端未连接")
 	}
-	c.mu.RUnlock()
+	if arguments == nil {
+		arguments = map[string]any{}
+	}
 
 	resp, err := c.transport.Send(ctx, &Request{
-		JSONRPC: "2.0",
-		ID:      3,
-		Method:  "tools/call",
+		Method: "tools/call",
 		Params: map[string]any{
 			"name":      name,
 			"arguments": arguments,
@@ -135,31 +155,23 @@ func (c *Client) CallTool(ctx context.Context, name string, arguments map[string
 	if err != nil {
 		return nil, fmt.Errorf("调用工具 %q 失败: %w", name, err)
 	}
-
 	if resp.Error != nil {
-		return nil, fmt.Errorf("工具 %q 返回错误: %s (code: %d)", name, resp.Error.Message, resp.Error.Code)
+		return nil, fmt.Errorf("工具 %q 返回错误: %w", name, resp.Error)
 	}
 
 	var result ToolCallResult
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
 		return nil, fmt.Errorf("解析工具结果失败: %w", err)
 	}
-
 	return &result, nil
 }
 
-// Disconnect 断开与 MCP 服务器的连接。
+// Disconnect 断开与 MCP 服务器的连接（关闭传输；stdio 服务器进程随之终止）。
 func (c *Client) Disconnect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	if !c.connected {
-		return nil
-	}
-
-	err := c.transport.Close()
 	c.connected = false
-	return err
+	return c.transport.Close()
 }
 
 // IsConnected 返回客户端是否已连接。
@@ -169,12 +181,22 @@ func (c *Client) IsConnected() bool {
 	return c.connected
 }
 
-// ServerName 返回连接的服务器名称。
+// ServerName 返回服务器名称：配置名优先，未配置时取服务端自报名。
 func (c *Client) ServerName() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	if c.name != "" {
+		return c.name
+	}
 	if c.serverInfo != nil {
 		return c.serverInfo.Name
 	}
 	return ""
+}
+
+// ServerInfo 返回服务端握手时自报的信息（未连接返回 nil）。
+func (c *Client) ServerInfo() *ServerInfo {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.serverInfo
 }

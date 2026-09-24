@@ -47,7 +47,6 @@ import (
 	"github.com/Dream355873200/GoAgent/plan"
 	"github.com/Dream355873200/GoAgent/prompts"
 	"github.com/Dream355873200/GoAgent/provider"
-	"github.com/Dream355873200/GoAgent/schema"
 	"github.com/Dream355873200/GoAgent/session"
 	"github.com/Dream355873200/GoAgent/sessionmem"
 	"github.com/Dream355873200/GoAgent/sysprompt"
@@ -283,17 +282,9 @@ func (a *App) registerToolLocked(name string, def ToolDef) {
 		panic(fmt.Sprintf("goagent: tool %q already registered", name))
 	}
 
-	// Generate JSON Schema from the Input struct.
-	var inputSchema any
-	if def.Input != nil {
-		inputSchema = schema.Generate(def.Input)
-	} else {
-		inputSchema = map[string]any{"type": "object", "properties": map[string]any{}}
-	}
-
 	a.tools[name] = &registeredTool{
 		def:         def,
-		inputSchema: inputSchema,
+		inputSchema: inputSchemaOf(def),
 	}
 	a.toolOrder = append(a.toolOrder, name)
 }
@@ -337,57 +328,6 @@ func (a *App) Use(mw Middleware, opts ...MiddlewareOption) {
 func (a *App) autoRegisterBuiltinTools() {
 	if builtinToolsProvider != nil {
 		a.UseTools(builtinToolsProvider()...)
-	}
-}
-
-// initMCP 初始化 MCP 服务器并注册其工具。
-func (a *App) initMCP() {
-	for _, srv := range a.config.mcpServers {
-		var transport mcp.Transport
-
-		switch srv.Transport {
-		case "http":
-			if srv.URL != "" {
-				transport = mcp.NewHTTPTransport(srv.URL)
-			} else {
-				continue
-			}
-		case "stdio", "":
-			if srv.Command != "" {
-				var err error
-				transport, err = mcp.NewStdioTransport(srv.Command, srv.Args...)
-				if err != nil {
-					continue
-				}
-			} else {
-				continue
-			}
-		default:
-			continue
-		}
-
-		client := mcp.NewClient(transport)
-		a.mcpClients = append(a.mcpClients, client)
-
-		ctx := context.Background()
-		if err := client.Connect(ctx); err != nil {
-			continue
-		}
-
-		tools, err := mcp.DiscoverAndConvert(ctx, client)
-		if err != nil || len(tools) == 0 {
-			continue
-		}
-
-		// 将 MCP 工具转换为框架工具并注册
-		for _, t := range tools {
-			a.Tool(t.Name, ToolDef{
-				Description: t.Description,
-				Input:       t.InputSchema,
-				Permission:  Normal,
-				Execute:     t.Execute,
-			})
-		}
 	}
 }
 
@@ -747,7 +687,7 @@ func (a *App) ReplaceTool(name string, def ToolDef) {
 	if _, exists := a.tools[name]; exists {
 		a.tools[name] = &registeredTool{
 			def:         def,
-			inputSchema: schema.Generate(def.Input),
+			inputSchema: inputSchemaOf(def),
 		}
 		return
 	}

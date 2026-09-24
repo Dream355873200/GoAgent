@@ -2,8 +2,6 @@
 //
 // AgentToolDef 创建一个 LLM 可调用的工具，用于启动子 agent。
 // 主 agent 可以通过此工具将复杂任务委托给子 agent。
-//
-// 对齐 Claude Code 的 Agent 工具。
 package agent
 
 import (

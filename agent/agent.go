@@ -2,8 +2,6 @@
 //
 // 子 agent 是独立运行的 agent 循环实例，拥有自己的系统提示、
 // 工具集和最大轮次限制。主 agent 可以通过工具调用启动子 agent。
-//
-// 对齐 Claude Code 的子 agent 架构。
 package agent
 
 import (
@@ -32,8 +30,12 @@ type Definition struct {
 	// MaxTurns 是子 agent 的最大轮次。默认 10。
 	MaxTurns int
 
-	// Model 是子 agent 使用的模型（可选，默认使用主 agent 的模型）。
+	// Model 是子 agent 使用的模型（可选，默认使用 provider 当前模型）。
 	Model string
+
+	// MaxTokens 单次响应输出上限（可选）。0 = 不指定，交给 provider 决定
+	// （与主循环一致；推理模型的思考 token 也计入输出，硬限过小会截断）。
+	MaxTokens int
 
 	// Provider 是子 agent 使用的 provider（可选）。
 	Provider provider.Provider
@@ -118,7 +120,8 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 			Messages:     messages,
 			SystemPrompt: def.SystemPrompt,
 			Tools:        toolDefs,
-			MaxTokens:    4096,
+			Model:        def.Model,
+			MaxTokens:    def.MaxTokens,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("子 agent %q API 调用失败: %w", def.Name, err)

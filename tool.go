@@ -7,6 +7,7 @@ import (
 	"reflect"
 
 	"github.com/Dream355873200/GoAgent/executor"
+	"github.com/Dream355873200/GoAgent/schema"
 )
 
 // 工具副作用分级（executor.Class 别名）——决定并行编排策略：
@@ -92,6 +93,10 @@ type ToolDef struct {
 	//   `json:"name,omitempty"`     — 标记为可选
 	Input any
 
+	// Schema 显式 JSON Schema（可空）：非空时直接作为工具入参 schema，
+	// 不再反射 Input。用于 schema 来自外部的工具（如 MCP 服务器声明的
+	// inputSchema）；此时 Execute 通常取 json.RawMessage 入参自行解析。
+	Schema map[string]any
 	// Permission 决定框架如何处理用户审批。
 	Permission Permission
 
@@ -128,6 +133,19 @@ type ToolDef struct {
 	// run 看到的 Description。用于描述内嵌会话相关清单的工具（如各会话
 	// 可用技能不同）——工具注册表仍是进程级一份，描述随会话变化。
 	SessionDescription func(sessionID string) string
+}
+
+// inputSchemaOf 工具入参 JSON Schema：显式 Schema 优先，其次反射 Input，
+// 都没有时为空 object schema。
+func inputSchemaOf(def ToolDef) any {
+	switch {
+	case def.Schema != nil:
+		return def.Schema
+	case def.Input != nil:
+		return schema.Generate(def.Input)
+	default:
+		return map[string]any{"type": "object", "properties": map[string]any{}}
+	}
 }
 
 // call 使用给定的 JSON 输入调用 Execute 函数。

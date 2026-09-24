@@ -24,7 +24,6 @@ import (
 	"github.com/Dream355873200/GoAgent/permission"
 	"github.com/Dream355873200/GoAgent/prompts"
 	"github.com/Dream355873200/GoAgent/provider"
-	"github.com/Dream355873200/GoAgent/schema"
 )
 
 // PipelineNodeNameKey 是 pipeline 运行时注入到 context 的 context key，
@@ -1325,7 +1324,7 @@ func (p *pipeline) buildLightweightLoop(agentDef *PipelineAgentDef, nodeCtx cont
 	for _, t := range agentDef.Tools {
 		rt := &registeredTool{
 			def:         t.Def,
-			inputSchema: schema.Generate(t.Def.Input),
+			inputSchema: inputSchemaOf(t.Def),
 		}
 		tools = append(tools, loop.ToolEntry{
 			Name:        t.Name,
