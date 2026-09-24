@@ -123,6 +123,11 @@ type ToolDef struct {
 	// Aliases 是此工具的别名列表。
 	// LLM 可以用任一名称调用此工具。
 	Aliases []string
+
+	// SessionDescription 按会话动态生成描述（可空）：非空返回值覆盖该会话
+	// run 看到的 Description。用于描述内嵌会话相关清单的工具（如各会话
+	// 可用技能不同）——工具注册表仍是进程级一份，描述随会话变化。
+	SessionDescription func(sessionID string) string
 }
 
 // call 使用给定的 JSON 输入调用 Execute 函数。

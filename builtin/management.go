@@ -44,7 +44,11 @@ func ManagementTools(deps ManagementDeps) []goagent.NamedTool {
 		)
 	}
 
-	if deps.SkillRegistry != nil {
+	if deps.SkillRegistryFn != nil {
+		tools = append(tools,
+			goagent.NamedTool{Name: "Skill", Def: SessionSkillTool(deps.SkillRegistryFn)},
+		)
+	} else if deps.SkillRegistry != nil {
 		tools = append(tools,
 			goagent.NamedTool{Name: "Skill", Def: SkillTool(deps.SkillRegistry)},
 		)
@@ -77,9 +81,12 @@ func ManagementTools(deps ManagementDeps) []goagent.NamedTool {
 
 // ManagementDeps 是管理工具所需的依赖。
 type ManagementDeps struct {
-	TaskStore       *task.Store
-	PlanManager     *plan.Manager
-	SkillRegistry   *skill.Registry
+	TaskStore     *task.Store
+	PlanManager   *plan.Manager
+	SkillRegistry *skill.Registry
+	// SkillRegistryFn 会话 → 技能注册表（非空时优先于 SkillRegistry）：
+	// 同一进程内不同会话可见不同技能集，Skill 工具的描述与执行都按会话解析。
+	SkillRegistryFn func(sessionID string) *skill.Registry
 	CronScheduler   *cron.Scheduler
 	WorktreeManager *worktree.Manager
 	BgTaskManager   *bgtask.Manager
@@ -279,20 +286,34 @@ func skillToolDescription(reg *skill.Registry) string {
 }
 
 func SkillTool(reg *skill.Registry) goagent.ToolDef {
+	return SessionSkillTool(func(string) *skill.Registry { return reg })
+}
+
+// SessionSkillTool 会话感知的 Skill 工具：注册表按 ctx.SessionID 解析，
+// 描述经 SessionDescription 按会话内嵌各自的技能清单。resolve 返回 nil
+// 表示该会话无全局技能（仅项目 .yume/commands/ 可用）。
+func SessionSkillTool(resolve func(sessionID string) *skill.Registry) goagent.ToolDef {
 	return goagent.ToolDef{
-		Description: skillToolDescription(reg),
-		Input:       skillInput{},
-		Permission:  goagent.ReadOnly,
+		Description: skillToolDescription(resolve("")),
+		SessionDescription: func(sessionID string) string {
+			return skillToolDescription(resolve(sessionID))
+		},
+		Input:      skillInput{},
+		Permission: goagent.ReadOnly,
 		Execute: func(ctx goagent.Context, in skillInput) (string, error) {
+			reg := resolve(ctx.SessionID)
 			// list：合并项目目录（会话工作目录）+ 全局注册表的清单。
 			if in.Skill == "list" {
 				return listSkills(ctx.WorkDir, reg), nil
 			}
-			// 项目级 skill 优先（对齐 Claude Code：项目 commands 覆盖用户级）。
+			// 项目级 skill 优先（项目 commands 覆盖全局）。
 			// 按会话工作目录现场读取——单进程多会话各自的项目 commands 互不串；
 			// 项目没有该 skill 时回落到注册表（全局目录预扫描的结果）。
 			if content, ok := readProjectSkill(ctx.WorkDir, in.Skill, in.Args); ok {
 				return content, nil
+			}
+			if reg == nil {
+				return "", fmt.Errorf("技能 %q 不存在。可用技能:\n%s", in.Skill, listSkills(ctx.WorkDir, nil))
 			}
 			result, err := reg.Execute(in.Skill, in.Args)
 			if err != nil {

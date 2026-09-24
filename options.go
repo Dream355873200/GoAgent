@@ -44,6 +44,9 @@ type appConfig struct {
 	toolKits            []ToolKit
 	sessionManager      *session.Manager
 	sessionWorkDirFn    func(sessionID string) string // 会话 → 工作目录解析（多会话多根目录）
+	sessionProjectCtxFn func(sessionID string) []string // 会话 → 追加项目上下文文件
+	sessionPromptDirFn  func(sessionID string) string   // 会话 → 提示词目录（覆盖全局）
+	sessionToolFilterFn func(sessionID, toolName string) bool // 会话 → 工具可见性谓词（true 保留）
 	sandbox             Sandbox                       // 沙箱工厂（nil = 无沙箱，默认）
 	sandboxPolicy       Policy                        // 沙箱默认策略（WithSandbox 时生效）
 	autoPersist         *bool                         // nil 表示使用默认（true）
@@ -279,6 +282,35 @@ func WithMemoryDir(dir string) Option {
 func WithProjectContext(path string) Option {
 	return optionFunc(func(c *appConfig) {
 		c.projectContextFiles = append(c.projectContextFiles, path)
+	})
+}
+
+// WithSessionProjectContext sets a resolver that maps a session ID to extra
+// project context files, appended to the global list for runs of that session
+// only. This lets one process serve sessions with different domain rulebooks
+// (e.g. per-product profiles) without restart. Returning nil adds nothing.
+func WithSessionProjectContext(fn func(sessionID string) []string) Option {
+	return optionFunc(func(c *appConfig) {
+		c.sessionProjectCtxFn = fn
+	})
+}
+
+// WithSessionPromptDir sets a resolver that maps a session ID to a prompt
+// directory overriding the global one for that session's runs (empty result
+// keeps the global promptDir). System prompt sections are assembled per run,
+// so different sessions can carry different prompt flavors concurrently.
+func WithSessionPromptDir(fn func(sessionID string) string) Option {
+	return optionFunc(func(c *appConfig) {
+		c.sessionPromptDirFn = fn
+	})
+}
+
+// WithSessionToolFilter sets a per-session tool visibility predicate: runs of
+// the given session only see tools for which the predicate returns true.
+// Unregistered hosts (nil fn) keep every tool visible — the default.
+func WithSessionToolFilter(fn func(sessionID, toolName string) bool) Option {
+	return optionFunc(func(c *appConfig) {
+		c.sessionToolFilterFn = fn
 	})
 }
 

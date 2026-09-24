@@ -903,9 +903,37 @@ func (a *App) CurrentThinkingEffort() string {
 // run is the internal entry point that wires up all subsystems and starts the agent loop.
 // sess 为 nil 时创建无状态会话；非 nil 时使用已有历史消息。
 func (a *App) run(ctx context.Context, input string, sess *session.Session, out chan<- Event) {
+	// 提取 SessionID（sess 可能为 nil，如 pipeline supervisor、RunWithHistory
+	// 等场景）。会话级 resolver（工作目录/项目上下文/提示词/工具可见性）都
+	// 以此为键，故在锁内读配置前先取。
+	var sessionID string
+	if sess != nil {
+		sessionID = sess.ID
+	}
 	a.mu.RLock()
 	cfg := a.config
 	tools := a.buildToolSet()
+	// 会话级工具可见性：谓词不过滤的会话保持全量（默认）。不同会话可
+	// 携带不同装配档位——工具注册表仍是进程级一份。
+	if cfg.sessionToolFilterFn != nil && sessionID != "" && len(tools) > 0 {
+		filtered := tools[:0:0]
+		for _, e := range tools {
+			if cfg.sessionToolFilterFn(sessionID, e.Name) {
+				filtered = append(filtered, e)
+			}
+		}
+		tools = filtered
+	}
+	// 会话级动态描述：ToolDef.SessionDescription 非空结果覆盖静态描述。
+	if sessionID != "" {
+		for i := range tools {
+			if rt := a.tools[tools[i].Name]; rt != nil && rt.def.SessionDescription != nil {
+				if d := rt.def.SessionDescription(sessionID); d != "" {
+					tools[i].Description = d
+				}
+			}
+		}
+	}
 	mws := make([]MiddlewareWithFilter, len(a.middlewares))
 	copy(mws, a.middlewares)
 	a.mu.RUnlock()
@@ -959,10 +987,15 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		permGate.SetClassifier(permission.NewYoloClassifier(a.provider, yoloCfg))
 	}
 
-	// 3. Memory Manager。
+	// 3. Memory Manager。项目上下文 = 全局文件 + 会话级追加（不同会话
+	// 可携带不同领域规范，单进程多档位并存）。
+	projectCtx := cfg.projectContextFiles
+	if cfg.sessionProjectCtxFn != nil && sessionID != "" {
+		projectCtx = append(append([]string{}, projectCtx...), cfg.sessionProjectCtxFn(sessionID)...)
+	}
 	memMgr := memory.NewManager(memory.Config{
 		MemoryDir:      cfg.memoryDir,
-		ProjectContext: cfg.projectContextFiles,
+		ProjectContext: projectCtx,
 	})
 
 	// 4. Executor。
@@ -981,11 +1014,7 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		sessMem = sessionmem.New(a.provider, *cfg.sessionMemoryCfg)
 	}
 
-	// 提取 SessionID（sess 可能为 nil，如 pipeline supervisor、RunWithHistory 等场景）。
-	var sessionID string
-	if sess != nil {
-		sessionID = sess.ID
-	}
+	// 提取 SessionID 已上移到 run 入口（会话级 resolver 依赖）。
 
 	// 会话工作目录由 WithSessionWorkDir 的解析函数按会话提供——单进程多会话
 	// 各自扎根不同目录（Bash 的 cmd.Dir、相对路径解析均以此为基准），
@@ -1017,7 +1046,7 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 
 	// 7. 动态 System Prompt 组装。必须在 workDir 定型之后——环境信息段
 	// 要告知模型当前工作目录（见 buildSystemPrompt）。
-	systemPrompt := a.buildSystemPrompt(cfg, memMgr, workDir)
+	systemPrompt := a.buildSystemPrompt(cfg, memMgr, workDir, sessionID)
 
 	// 会话上下文注入：SessionID + 工作目录经 context value 流经整个
 	// 执行链（loop → executor → 工具的 goagent.Context 字段）。
@@ -1140,21 +1169,30 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 // workDir 是本次 run 的工作目录（会话目录 > 沙箱根；空 = 进程 cwd），
 // 注入环境信息段告知模型——不告知会导致模型猜路径（如 /workspace）
 // 并误用当前平台不存在的命令（如 Windows cmd 下跑 pwd）。
-func (a *App) buildSystemPrompt(cfg appConfig, memMgr *memory.Manager, workDir string) string {
+func (a *App) buildSystemPrompt(cfg appConfig, memMgr *memory.Manager, workDir, sessionID string) string {
 	builder := sysprompt.NewBuilder()
+
+	// 会话级提示词目录：解析非空时覆盖全局 promptDir（不同会话可并行
+	// 携带不同提示词档位；空结果保持全局值）。
+	promptDir := cfg.promptDir
+	if cfg.sessionPromptDirFn != nil && sessionID != "" {
+		if d := cfg.sessionPromptDirFn(sessionID); d != "" {
+			promptDir = d
+		}
+	}
 
 	if cfg.systemPrompt != "" {
 		// 传统模式：用户提供的纯字符串
 		builder.AddBasePrompt(cfg.systemPrompt)
 	} else {
 		// 默认：加载 prompt 体系（promptDir 优先，否则嵌入默认值）
-		builder.AddSection("identity", resolvePrompt(cfg.promptDir, prompts.Identity), nil)
-		builder.AddSection("doing_tasks", resolvePrompt(cfg.promptDir, prompts.DoingTasks), nil)
-		builder.AddSection("actions", resolvePrompt(cfg.promptDir, prompts.Actions), nil)
-		builder.AddSection("using_tools", resolvePrompt(cfg.promptDir, prompts.UsingTools), nil)
-		builder.AddSection("tone_style", resolvePrompt(cfg.promptDir, prompts.ToneStyle), nil)
-		builder.AddSection("output_efficiency", resolvePrompt(cfg.promptDir, prompts.OutputEfficiency), nil)
-		builder.AddSection("reminder", resolvePrompt(cfg.promptDir, prompts.Reminder), nil)
+		builder.AddSection("identity", resolvePrompt(promptDir, prompts.Identity), nil)
+		builder.AddSection("doing_tasks", resolvePrompt(promptDir, prompts.DoingTasks), nil)
+		builder.AddSection("actions", resolvePrompt(promptDir, prompts.Actions), nil)
+		builder.AddSection("using_tools", resolvePrompt(promptDir, prompts.UsingTools), nil)
+		builder.AddSection("tone_style", resolvePrompt(promptDir, prompts.ToneStyle), nil)
+		builder.AddSection("output_efficiency", resolvePrompt(promptDir, prompts.OutputEfficiency), nil)
+		builder.AddSection("reminder", resolvePrompt(promptDir, prompts.Reminder), nil)
 	}
 
 	// 环境信息（平台/Shell/工作目录）：无条件注入——工作目录是模型的
@@ -1205,7 +1243,7 @@ func resolvePrompt(promptDir, embedName string) string {
 // GetSystemPrompt 返回当前的完整 system prompt（供用户查看/调试）。
 // 注意：不含 run 级动态信息（会话工作目录）——实际 run 时会按会话注入。
 func (a *App) GetSystemPrompt() string {
-	return a.buildSystemPrompt(a.config, nil, "")
+	return a.buildSystemPrompt(a.config, nil, "", "")
 }
 
 // buildPromptVars 构建提示词模板变量。

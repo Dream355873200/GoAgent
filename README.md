@@ -1,6 +1,6 @@
 # GoAgent — Go AI Agent 应用框架
 
-> 基于 Claude Code 架构的 Go AI Agent 应用框架，提供生产级的上下文压缩、权限管理、工具编排等核心能力。
+> 生产级 Go AI Agent 应用框架：上下文压缩、权限管理、工具编排、多会话多模式并发、运行中插话、Pipeline 编排与 benchmark 自迭代等核心能力开箱即用。
 
 [![Go Version](https://img.shields.io/badge/Go-1.24.2+-00ADD8?style=flat-square&logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
@@ -32,20 +32,25 @@
 
 | 类别 | 功能 |
 |------|------|
-| **核心循环** | Agent Loop 状态机（8 阶段）、流式工具执行、并发安全判定 |
-| **权限系统** | 三态权限（allow/deny/ask）、5 种权限模式、YOLO LLM 分类器、规则引擎 |
-| **上下文管理** | 四层上下文压缩、Circuit Breaker、超大结果持久化到磁盘 |
-| **会话** | JSONL 持久化、会话恢复、多会话并发控制、会话级工作目录（单进程多项目并行） |
+| **核心循环** | Agent Loop 状态机（8 阶段）、流式工具执行、三级副作用调度（只读/并行/独占）、流中断锚点恢复 |
+| **权限系统** | 三态权限（allow/deny/ask）、5 种权限模式（运行时可切换）、YOLO LLM 分类器、规则引擎 |
+| **上下文管理** | 四层上下文压缩、Circuit Breaker、超大结果持久化到磁盘、压缩后重注入（post-compact reminder） |
+| **会话** | JSONL 持久化、会话恢复、多会话并发控制、会话级工作目录（单进程多项目并行）、孤立 tool_use 自愈 |
+| **多模式** | 会话级注入点：按会话裁剪工具集 / 提示词目录 / 项目上下文 / 工具描述 / Skill 注册表——同一进程内不同会话跑不同「模式」 |
+| **运行中交互** | Steering 双车道（guide 插话注入 + queue 排队续跑）、统一 `<system-reminder>` 注入通道、后台任务终态自动回注 |
 | **内存** | CLAUDE.md 三层加载、Auto Memory、SessionMemory |
-| **工具生态** | 内置工具（Read/Write/Edit/Glob/Grep/Bash/GitCommit/WebSearch/WebFetch）、MCP 客户端、按需子系统（Task/Plan/Ask/BgTask/Issue） |
-| **任务系统** | Task/Todo V2（依赖管理）、Plan Mode、Skill 系统 |
+| **工具生态** | 内置工具（Read/Write/Edit/Glob/Grep/Bash/GitCommit/WebSearch/WebFetch/run_js）、MCP 客户端、按需子系统（Task/Plan/Ask/BgTask/Issue）、AgentTool 转接头 |
+| **任务系统** | Task/Todo V2（依赖管理）、Plan Mode、Skill 系统（YAML frontmatter） |
 | **调度** | Cron 调度（5-field cron + jitter + 3 天过期）、Background Agents |
-| **编排** | Pipeline DAG 编排（拓扑调度、MapReduce 并行、Supervisor 审核） |
-| **隔离** | Git Worktree 隔离执行 |
-| **推理增强** | Extended Thinking（adaptive/enabled/disabled） |
-| **可观测性** | Observer 接口（11 种事件）、Cost Tracking、Analytics、HTTP 端点 |
-| **工程支持** | Token Budget 追踪、Diminishing Returns 检测、Cost Tracking、Analytics |
+| **编排** | Pipeline DAG 编排（拓扑调度、MapReduce 并行、Supervisor 审核）、动态 Pipeline（LLM 运行时建图） |
+| **隔离** | 工具执行沙箱（Tier 0/1）、Git Worktree 隔离执行、goja JS 沙箱执行器 |
+| **推理增强** | Extended Thinking、思考强度（off/low/medium/high，运行时可调）、运行时切模型 |
+| **检索** | RAG 四件套（Retriever/Embedder/Store/Loader + 多路融合） |
+| **评测** | benchmark 子包：断言原语、LLM Judge、pass^k、回归对比、JUnit XML |
+| **可观测性** | Observer 接口（含 LLM 调用级钩子）、Cost Tracking、Analytics、HTTP 端点 |
+| **工程支持** | Token Budget 追踪、Diminishing Returns 检测、挂起/恢复（SuspendGate） |
 | **可靠性** | Rate Limit / Retry with Backoff（429 TPM 窗口对齐重试 + 状态行推送）、Hooks 框架（5 事件类型） |
+| **协议与 SDK** | 统一 SSE 信封（seq 严格递增 + 版本盖章）、`GET /protocol` 自描述、零依赖 TypeScript 客户端 |
 | **UI** | 交互式 TUI REPL（Bubble Tea）、HTTP/SSE API + REST 端点 |
 
 ---
@@ -246,6 +251,14 @@ goagent.WithAnthropic()
 | `WithSessionManager(mgr)` | 会话管理器，启用多轮持久化 | 不启用（单次会话） |
 | `WithAutoPersist(bool)` | 会话结束自动持久化 | `true` |
 | `WithSessionWorkDir(fn)` | 按 sessionID 解析会话工作目录（注入 ctx，Bash cmd.Dir / 文件工具相对路径以此为基准，单进程多会话多项目互不串） | 不启用（进程 cwd） |
+| `WithSessionToolFilter(fn)` | 按会话过滤本次 run 暴露给模型的工具（`fn(sessionID, toolName) bool`，不改注册表） | 不启用（全部工具） |
+| `WithSessionPromptDir(fn)` | 按会话解析提示词目录（返回 `""` 沿用全局 `WithPromptDir`） | 不启用 |
+| `WithSessionProjectContext(fn)` | 按会话追加项目上下文文件（接在全局 `WithProjectContext` 之后） | 不启用 |
+| `WithSteering()` | 启用运行中插话双车道（guide 注入活跃 run / queue 排队续跑），`app.Steering()` 取回 hub | 不启用 |
+| `WithPostCompactReminder(rs)` | 注册压缩后重注入源（可多次调用） | 无 |
+| `WithSuspend()` | 启用挂起/恢复门闩（SuspendGate） | 不启用 |
+| `WithThinkingEffort(e)` | 思考强度 `off/low/medium/high`（运行时 `SetThinkingEffort` 可改） | `""`（不干预） |
+| `WithHTTPRoutes(routes)` | RunHTTP 内置路由之外注册宿主端点（复用同一 mux/App） | 无 |
 | `WithSandbox(sb, policy)` | 启用工具执行沙箱（Tier 0-3，见「沙箱」节）：每次 Run/RunPipeline 创建隔离会话，路径白名单 + 工作副本 | 不启用（无沙箱，零开销） |
 | `WithCompaction(cfg)` | 上下文压缩配置 | 阈值 `0.8`，结果上限 `50000` 字符 |
 | `WithSessionMemory(cfg)` | 会话内定期记忆提取 | 不启用 |
@@ -336,7 +349,7 @@ for ev := range app.Run(ctx, "prompt") {
 
 - **429 语义区分**：HTTP 429 返回 `provider.RateLimitError`（区别于过载 `OverloadError`）——速率限制切备用模型无济于事，必须等待
 - **自动重试**：loop 对 `RateLimitError` 自动重试最多 10 次，等待对齐 TPM 窗口（15s 起步逐次递增至 60s）
-- **状态行推送**：等待期间每秒推送带 `StatusKey` 的倒计时事件（对齐 Claude Code 的「✻ 429 · Retrying in Xs · attempt N/10」），前端可原地更新显示
+- **状态行推送**：等待期间每秒推送带 `StatusKey` 的倒计时事件（形如「429 · Retrying in Xs · attempt N/10」），前端可原地更新显示
 - **思考空回复恢复**：思考模型偶发「只输出 reasoning 无正文」的空回复，loop 有护栏自动恢复重试
 
 ### 沙箱（Sandbox）：工具执行层的隔离
@@ -377,6 +390,69 @@ app := goagent.New(cfg, goagent.WithSandbox(
 - **Tier 1 边界**：防意外不防恶意——进程内前缀检查挡不住工具代码里的 `os.Remove`，符号链接逃逸不防护。**进程级隔离是宿主部署者的责任**（不受信 workload 请用容器/VM 跑宿主进程）
 
 此层是 TODO「L4 隔离沙箱代码执行」「Agent 迭代测试模式」的共同地基：L4 的沙箱运行时、benchmark 的环境隔离防线都站在它上面。
+
+### 多会话多模式：会话级注入点
+
+同一进程服务多个会话，每个会话可以是不同的「模式」（不同提示词风格 / 领域规范 / 可见工具 / 技能清单），切换模式只改会话映射，不重启进程。全部是可选注入点，未设置时行为与单模式完全一致：
+
+```go
+modeOf := func(sid string) string { return sessionModes[sid] } // 宿主自管的会话 → 模式映射
+
+app := goagent.New(cfg,
+    goagent.WithBuiltinTools(),
+    goagent.WithSessionWorkDir(func(sid string) string { return projectDirs[sid] }),
+    // 工具可见性：只影响本次 run 暴露给模型的工具表，不改注册表
+    goagent.WithSessionToolFilter(func(sid, tool string) bool {
+        return modes[modeOf(sid)].Allows(tool)
+    }),
+    // 提示词目录：返回 "" = 沿用全局 / 内置通用提示词
+    goagent.WithSessionPromptDir(func(sid string) string { return modes[modeOf(sid)].PromptDir }),
+    // 领域规范：追加在全局项目上下文之后
+    goagent.WithSessionProjectContext(func(sid string) []string { return modes[modeOf(sid)].Rules }),
+)
+
+// Skill 工具按会话解析注册表：描述里的技能清单与执行时的查找都随会话走
+app.Tool("Skill", builtin.SessionSkillTool(func(sid string) *skill.Registry {
+    return modes[modeOf(sid)].Skills
+}))
+```
+
+- `ToolDef.SessionDescription func(sessionID string) string`：任意工具都可按会话生成描述（非空覆盖静态 `Description`）。
+- `builtin.ManagementDeps.SkillRegistryFn`：非空时 `ManagementTools` 注册会话感知版 Skill 工具。
+- 已知未覆盖：pipeline 路径、compact / YOLO 分类器所用提示词仍取全局配置。
+
+### Steering：运行中插话
+
+长任务期间既不想中断、又不想等下一轮时，用双车道把信息送进正在跑的 run：
+
+```go
+app := goagent.New(cfg, goagent.WithSteering())
+hub := app.Steering()
+
+// guide 车道：在下一个工具批边界注入活跃 run（无活跃 run 返回 ErrNotSteerable）
+_ = hub.Steer(sessionID, "用户刚在编辑器里改了 main.go，继续前请重新读取")
+
+// queue 车道：排队，run 结束后自动取队首续跑；可 ListQueued / RemoveQueued 单项管理
+item := hub.Enqueue(sessionID, "顺便把 README 也更新一下")
+_ = item.ID
+```
+
+注入给模型的非对话文本（插话、压缩后重注入、工具结果内联提醒、后台任务完成通知）统一经 `reminder.Wrap` 打上 `<system-reminder source="…">` 标记，模型可辨识其工具性质，前端可按标记剥壳渲染。
+
+### HTTP 端点速览
+
+`app.RunHTTP(addr)` 暴露 SSE 对话 + REST 管理面，所有 SSE 帧共用统一信封 `{seq, v, type, session_id, ...}`（`seq` 连接内严格递增，跳号即丢帧）。客户端可用 [`sdk/typescript`](sdk/typescript) 零依赖 TS 客户端。
+
+| 类别 | 端点 |
+|------|------|
+| 对话 | `POST /chat`（SSE；会话忙时自动转 guide 插话）· `POST /interrupt` · `POST /execute` |
+| 交互 | `POST /approve` · `POST /askuser` · `GET /pending-ask`（未决提问恢复）· `POST /plan/confirm` |
+| 排队 | `POST /queue` · `GET /queue` · `POST /queue/remove` |
+| 运行时调参 | `GET/POST /mode`（权限模式）· `GET/POST /thinking`（思考强度）· `GET/POST /model`（切模型） |
+| 资源 | `/tasks` · `/plan` · `/bgtasks` · `/sessions` · `/sessions/{id}/messages` · `/tools` · `/usage` · `/audit` |
+| 元信息 | `GET /health` · `GET /protocol`（协议自描述：版本 + 帧类型表 + 端点表） |
+
+宿主自有端点用 `WithHTTPRoutes` 挂到同一 mux。
 
 ---
 ## 进阶指南
@@ -435,6 +511,20 @@ goagent.New(
     // === 会话 ===
     WithSessionManager(mgr),           // 会话管理器
     WithAutoPersist(true),            // 自动持久化（默认开启）
+    WithSessionWorkDir(fn),           // 会话 → 工作目录
+
+    // === 会话级注入（多模式） ===
+    WithSessionToolFilter(fn),         // 会话 → 可见工具
+    WithSessionPromptDir(fn),          // 会话 → 提示词目录
+    WithSessionProjectContext(fn),     // 会话 → 追加项目上下文
+
+    // === 运行中交互 ===
+    WithSteering(),                    // guide 插话 + queue 排队续跑
+    WithSuspend(),                     // 挂起/恢复门闩
+    WithPostCompactReminder(rs),       // 压缩后重注入源
+
+    // === 推理 ===
+    WithThinkingEffort("medium"),      // 思考强度 off/low/medium/high
 
     // === 内存 ===
     WithMemoryDir(".goagent/memory"),  // Auto Memory 目录
@@ -461,6 +551,9 @@ goagent.New(
     WithCostTracking(),          // 启用成本追踪
     WithAnalytics(),             // 启用使用分析
 
+    // === HTTP 宿主扩展 ===
+    WithHTTPRoutes(routes),      // RunHTTP 额外路由
+
     // === Store 接口注入 ===
     WithTaskStore(myTaskStore),      // 自定义 Task 存储
     WithPlanStore(myPlanStore),       // 自定义 Plan 存储
@@ -482,6 +575,21 @@ goagent/
 ├── middleware.go           # Middleware, Decision
 ├── toolkit.go              # ToolKit, QuickTool helpers
 ├── providers.go            # Anthropic/OpenAI 便捷创建函数
+├── steering.go             # SteeringHub：guide 插话 / queue 排队双车道
+├── streambus.go            # 按会话绑定的下发通道（ask/审批帧路由）
+├── askuser_handler.go      # AskUser 提问路由 + 未决提问查询
+├── agenttool.go            # AgentTool 转接头（agent 包成 ToolDef）
+├── pipeline.go             # Pipeline DAG 编排
+├── dynpipeline.go          # 动态 Pipeline（LLM 运行时建图）
+├── sandbox*.go             # 工具执行沙箱（Dir / Worktree）
+├── retrieval.go            # RAG 门面
+├── benchmark.go            # benchmark 门面（AgentTarget 等）
+│
+├── protocol/               # SSE 统一信封 + 协议自描述
+├── reminder/               # <system-reminder> 注入通道
+├── retrieval/              # RAG 四件套 + 参考实现
+├── benchmark/              # 评测：Case/断言/Runner/Judge/报告
+├── sdk/typescript/         # 零依赖 TypeScript 客户端（goagent-client）
 │
 ├── internal/
 │   └── loop/               # 核心 Agent 循环状态机
@@ -544,7 +652,8 @@ goagent/
 │   ├── tools.go          # Read/Write/Edit/Glob/Grep
 │   ├── bash.go           # Bash
 │   ├── askuser.go        # AskUser
-│   ├── management.go     # Task/Plan/BgTask 工具
+│   ├── js.go             # run_js（goja 沙箱执行器）
+│   ├── management.go     # Task/Plan/BgTask/Skill 工具（含会话感知 Skill）
 │   └── kits.go           # ToolKit 注册
 │
 ├── task/                   # Task/Todo V2
@@ -622,6 +731,9 @@ goagent/
 | v0.6 | 可观测性重构：Observer 系统 + Store 接口 + Driver 接口 + 完整 REST API | ✅ 完成 |
 | v0.7 | 多会话架构 + 工具质量对标：会话级工作目录、HTTP 多会话并行、Task/Issue 按会话分区、readstate 读写状态跟踪、429 TPM 重试 + 状态行、GitCommit 工具、Skill 清单内嵌 | ✅ 完成 |
 | v0.8 | 嵌入者体验：WithLogger 日志注入（slog）、pipeline 错误严格传播、PipelineConfig.OnEvent 事件透出、WithIssueTools 独立 Option、nil provider 守卫、swarm 清理 | ✅ 完成 |
+| v0.9 | 能力扩展：沙箱 Tier 0/1、动态 Pipeline L1、EventInterrupted、LLM observer 钩子、挂起/恢复、RAG 四件套、benchmark B0-B2、run_js、AgentTool、WithHTTPRoutes | ✅ 完成 |
+| v0.10 | 运行时交互：Steering 双车道 + 条目化队列、统一信封协议 + TS SDK、system-reminder 通道、压缩后重注入、三级副作用调度、流中断恢复、后台任务终态回注、Skill frontmatter、权限模式/思考强度/模型运行时切换、提问帧路由修复 + 未决提问查询 | ✅ 完成 |
+| v0.11 | 多模式：会话级工具过滤 / 提示词目录 / 项目上下文、会话级工具描述、会话感知 Skill 工具 | ✅ 完成 |
 
 详细架构说明见 [docs/architecture.md](docs/architecture.md) 和 [docs/mechanisms.md](docs/mechanisms.md)。
 
@@ -1110,7 +1222,7 @@ L5 的攻击面比 L4 大一圈：沙箱拦得住「代码」，拦不住「能�
      / register_tool 的工具描述要求 LLM 同时产出自然语言说明；校验器
      交叉验证两者（说明说「无网络」但 spec 引用了 fetch_url → 拒绝
      + 报差异）。说明不只给人看，还是 LLM 的自我一致性检查——
-     对齐 Claude Code plan mode 的模式（批准的是人话，执行的是结构化内容）
+     与 plan mode 同构（批准的是人话，执行的是结构化内容）
 3. **代码化视图（远期，可不做）**：Pulumi 风格多行格式，仅「版本 diff
      对比两个 spec」时才值钱
 
@@ -1250,8 +1362,8 @@ agent 运行时」——沙箱/权限/压缩/计费/服务化内建，开箱即�
 
 **GoAgent 已领先的面**（eino 无对应）：沙箱体系（Tier 0-3）、细粒度权限
 + Approver 审批、上下文压缩一等公民（compaction + Circuit Breaker）、
-成本/预算/计费、HTTP/SSE + WebSocket + TUI + CLI 落地形态、对标
-Claude Code 的文件工具细节、MCP/cron/后台任务/会话记忆运行时生态、
+成本/预算/计费、HTTP/SSE + WebSocket + TUI + CLI 落地形态、生产级
+文件工具细节（读写指纹/外部修改拦截）、MCP/cron/后台任务/会话记忆运行时生态、
 429 语义区分 + 倒计时状态行重试、**agent 自建 DAG（dynpipeline）**——
 eino 的组件是编译期插的，LLM 没有手；我们的工具是运行时按名选的，
 LLM 现场建图 + 校验矩阵保质量。

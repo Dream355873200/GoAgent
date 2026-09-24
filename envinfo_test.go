@@ -15,7 +15,7 @@ func TestBuildSystemPromptInjectsWorkDir(t *testing.T) {
 	app := New(WithMaxTurns(1))
 
 	const dir = `E:\proj\todo-app` // run 级注入的会话工作目录（任意值即可）
-	prompt := app.buildSystemPrompt(app.config, nil, dir)
+	prompt := app.buildSystemPrompt(app.config, nil, dir, "")
 	if !strings.Contains(prompt, "Working directory: "+dir) {
 		t.Errorf("system prompt 未包含会话工作目录 %s:\n%.500s", dir, prompt)
 	}
@@ -27,7 +27,7 @@ func TestBuildSystemPromptInjectsWorkDir(t *testing.T) {
 func TestBuildSystemPromptWorkDirFallsBackToCwd(t *testing.T) {
 	app := New(WithMaxTurns(1))
 
-	prompt := app.buildSystemPrompt(app.config, nil, "")
+	prompt := app.buildSystemPrompt(app.config, nil, "", "")
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Skipf("无法获取 cwd: %v", err)
@@ -43,7 +43,7 @@ func TestBuildSystemPromptSandboxRootOverrides(t *testing.T) {
 	app := New(WithMaxTurns(1))
 
 	cwd, _ := os.Getwd()
-	prompt := app.buildSystemPrompt(app.config, nil, cwd+string(os.PathSeparator)+"sandbox-root")
+	prompt := app.buildSystemPrompt(app.config, nil, cwd+string(os.PathSeparator)+"sandbox-root", "")
 	if strings.Contains(prompt, "Working directory: "+cwd+"\n") {
 		t.Errorf("沙箱根在场时不应回显进程 cwd:\n%.500s", prompt)
 	}

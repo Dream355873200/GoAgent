@@ -991,3 +991,65 @@ run 的取消），run 无法收尾，会话卡死在提问状态，只能重启
    回放完成后查询，把引擎运行时的未决提问还原为可交互的提问卡。
 
 **验证**：go build / go vet 全绿。
+
+
+## 2026-09-24（会话级注入点：同一引擎内多模式并发）
+
+**动机**：宿主希望每个会话可使用不同的「模式」（提示词组 / 领域规范 /
+可见工具集不同），且多个会话在同一进程内并发运行。此前 promptDir、
+projectContextFiles、工具集都是 App 级全局配置，只能整进程切换。
+
+**新增 Option（均为可选，未设置时行为与此前完全一致）**：
+1. `WithSessionProjectContext(fn func(sessionID string) []string)`：
+   run 时把 fn 返回的文件追加到全局 `projectContextFiles` 之后，再交给
+   每 run 新建的 memory.Manager（不修改全局切片）。
+2. `WithSessionPromptDir(fn func(sessionID string) string)`：
+   buildSystemPrompt 按会话解析提示词目录；返回 "" 表示沿用全局
+   `promptDir`。各分段仍是「目录文件 > 内嵌默认值」的回退。
+3. `WithSessionToolFilter(fn func(sessionID, toolName string) bool)`：
+   run 入口对 buildToolSet 结果逐个过滤，谓词 true 保留。过滤只影响
+   本次 run 暴露给模型的工具表，不修改注册表。
+
+**内部调整**：
+- run() 中 sessionID 的提取上移到入口（锁内读配置之前），所有会话级
+  resolver 以它为键；原位置的提取块删除。
+- `buildSystemPrompt(cfg, memMgr, workDir, sessionID string)` 新增第四参；
+  `GetSystemPrompt()` 与测试传 ""（无会话 = 全局配置）。
+
+**已知未覆盖**：pipeline 路径（pipeline.go 中仅消费 sessionWorkDirFn）、
+compact / yolo 分类器所用 prompt 文件仍取全局 promptDir。
+
+**验证**：go build ./... / go vet 全绿；BuildSystemPrompt 相关单测通过。
+
+## 2026-09-24（会话级工具描述 + 会话感知 Skill 工具）
+
+**动机**：会话级工具过滤落地后，Skill 工具仍是进程级一份——描述里内嵌的
+可用技能清单与执行时查的注册表对所有会话相同，不同模式的会话会看到
+彼此的领域技能。
+
+**变更**：
+1. `ToolDef.SessionDescription func(sessionID string) string`（可空）：
+   run 入口在工具过滤之后，对带此字段的工具按会话生成描述，非空结果
+   覆盖静态 `Description`（只影响本次 run 暴露给模型的工具表）。
+2. `builtin.SessionSkillTool(resolve func(sessionID string) *skill.Registry)`：
+   描述（SessionDescription）与执行（按 ctx.SessionID 取注册表）都按会话
+   解析；resolve 返回 nil 时只剩项目 `.yume/commands/`。`SkillTool(reg)`
+   改为其常量 resolver 特例，行为不变。
+3. `builtin.ManagementDeps.SkillRegistryFn`：非空时优先于 `SkillRegistry`，
+   ManagementTools 注册会话感知版 Skill 工具。
+
+**验证**：go build ./... / go vet / go test（根包 + builtin）全绿。
+
+## 2026-09-24（README 同步：上传前文档补齐）
+
+- 标语去掉来源项目名，改为能力自述；正文另外三处同类字眼改写为机制描述。
+- 特性表补：三级副作用调度、流中断恢复、多模式（会话级注入点）、运行中交互
+  （Steering / system-reminder / 后台任务回注）、run_js、AgentTool、思考强度与
+  运行时切模型、RAG、benchmark、协议信封与 TS SDK。
+- With* 表与完整选项参考补：WithSessionToolFilter / WithSessionPromptDir /
+  WithSessionProjectContext / WithSteering / WithSuspend / WithPostCompactReminder /
+  WithThinkingEffort / WithHTTPRoutes。
+- 核心概念新增三节：「多会话多模式：会话级注入点」（含 SessionSkillTool /
+  SessionDescription / SkillRegistryFn）、「Steering：运行中插话」、「HTTP 端点速览」。
+- 项目结构补 steering / streambus / agenttool / protocol / reminder / retrieval /
+  benchmark / sdk/typescript / builtin/js.go；版本状态补 v0.9–v0.11。
