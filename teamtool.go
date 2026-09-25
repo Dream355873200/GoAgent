@@ -146,3 +146,16 @@ func firstLineOf(s string) string {
 	}
 	return s
 }
+
+// EmitSubAgentProgress 供宿主（引擎侧跨会话工具，如 team_dispatch）在工具
+// 执行内向主对话流透出子代理进度——internal/loop 不能被外部模块导入，
+// 这里是唯一的公开出口。
+func EmitSubAgentProgress(ctx Context, agentID, desc, status, activity string) {
+	loop.EmitFromTool(ctx, loop.Event{
+		Type:          loop.EvtSubAgentProgress,
+		AgentID:       agentID,
+		AgentDesc:     desc,
+		AgentStatus:   status,
+		AgentActivity: activity,
+	})
+}
