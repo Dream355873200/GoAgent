@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Dream355873200/GoAgent/internal/loop"
 )
@@ -312,9 +316,9 @@ func (a *App) CreatePipelineTool() NamedTool {
 		"依赖关系需要你自己现场猜的任务请直接自己做或用子 agent。" +
 		"数据载体约定：队列任务与节点产出默认用 Markdown 片段（LLM-to-LLM），" +
 		"仅在下游是代码/需要 UI 渲染时用 JSON；每个节点的 output 字段向下游声明" +
-			"自己的产出格式，下游按该约定消费。" +
-			"末端节点（没有 injects）的最终产出会节选进工具结果，需要完整交付的应让末端节点用 Write 写入文件。" +
-			"校验失败会返回具体原因，修正 spec 后可重试。"
+		"自己的产出格式，下游按该约定消费。" +
+		"末端节点（没有 injects）的最终产出会节选进工具结果，需要完整交付的应让末端节点用 Write 写入文件。" +
+		"校验失败会返回具体原因，修正 spec 后可重试。"
 	if names := a.ToolNames(); len(names) > 0 {
 		desc += "\n可用工具（节点的 tools 只能从这里选）: " + strings.Join(names, ", ")
 	}
@@ -335,6 +339,53 @@ func (a *App) CreatePipelineTool() NamedTool {
 						return "", fmt.Errorf("spec JSON 解析失败: %w（spec 须为 {\"nodes\":[...]} 对象）", err)
 					}
 				}
+
+				// 运行快照落盘 <workdir>/.yume/pipelines/<ts>.json：节点状态与
+				// 产出随事件增量重写——宿主面板可回看历史运行（运行结束定格）。
+				runID := strconv.FormatInt(time.Now().UnixMilli(), 10)
+				type runNode struct {
+					Name        string   `json:"name"`
+					Instruction string   `json:"instruction,omitempty"`
+					Tools       []string `json:"tools,omitempty"`
+					DependsOn   []string `json:"depends_on,omitempty"`
+					Injects     []string `json:"injects,omitempty"`
+					Status      string   `json:"status"`
+					Outputs     []string `json:"outputs,omitempty"`
+				}
+				type runSnapshot struct {
+					ID         string    `json:"id"`
+					StartedAt  int64     `json:"started_at"`
+					FinishedAt int64     `json:"finished_at,omitempty"`
+					Nodes      []runNode `json:"nodes"`
+				}
+				snap := runSnapshot{ID: runID, StartedAt: time.Now().UnixMilli(), Nodes: make([]runNode, 0, len(spec.Nodes))}
+				for _, n := range spec.Nodes {
+					snap.Nodes = append(snap.Nodes, runNode{Name: n.Name, Instruction: n.Instruction, Tools: n.Tools, DependsOn: n.DependsOn, Injects: n.Injects, Status: "pending"})
+				}
+				runDir := ""
+				if ctx.WorkDir != "" {
+					runDir = filepath.Join(ctx.WorkDir, ".yume", "pipelines")
+					if err := os.MkdirAll(runDir, 0o755); err == nil {
+						defer func() { // 兜底定格：异常路径也留下快照
+							b, _ := json.MarshalIndent(snap, "", "  ")
+							_ = os.WriteFile(filepath.Join(runDir, runID+".json"), b, 0o644)
+						}()
+					} else {
+						runDir = ""
+					}
+				}
+				saveSnap := func() {
+					if runDir == "" {
+						return
+					}
+					b, _ := json.MarshalIndent(snap, "", "  ")
+					_ = os.WriteFile(filepath.Join(runDir, runID+".json"), b, 0o644)
+				}
+				nodeByID := map[string]*runNode{}
+				for i := range snap.Nodes {
+					nodeByID[snap.Nodes[i].Name] = &snap.Nodes[i]
+				}
+
 				outputs := map[string][]string{}
 				// 节点生命周期与产出事件经 subagent_progress 透出到主对话流的
 				// create_pipeline 工具卡（前端实时渲染节点进度）。
@@ -344,11 +395,33 @@ func (a *App) CreatePipelineTool() NamedTool {
 					switch ev.Type {
 					case "node_started":
 						text = "▶ " + ev.Node
+						if rn := nodeByID[ev.Node]; rn != nil && rn.Status == "pending" {
+							rn.Status = "running"
+							saveSnap()
+						}
 					case "node_done":
 						text, status = "✓ "+ev.Node, "done"
+						if rn := nodeByID[ev.Node]; rn != nil {
+							rn.Status = "done"
+							saveSnap()
+						}
 					case "node_output":
+						const maxOut = 4000
+						out := ev.Text
+						if len(out) > maxOut {
+							out = out[:maxOut] + "…（截断）"
+						}
 						outputs[ev.Node] = append(outputs[ev.Node], ev.Text)
+						if rn := nodeByID[ev.Node]; rn != nil {
+							rn.Outputs = append(rn.Outputs, out)
+							saveSnap()
+						}
 						return // 产出不进进度行（太长），进最终摘要
+					case "error":
+						if rn := nodeByID[ev.Node]; rn != nil {
+							rn.Status = "error"
+							saveSnap()
+						}
 					}
 					if text == "" {
 						return
@@ -364,6 +437,13 @@ func (a *App) CreatePipelineTool() NamedTool {
 				if err := a.RunDynPipeline(ctx, &spec, onEvent); err != nil {
 					return "", err
 				}
+				snap.FinishedAt = time.Now().UnixMilli()
+				for i := range snap.Nodes {
+					if snap.Nodes[i].Status == "running" || snap.Nodes[i].Status == "pending" {
+						snap.Nodes[i].Status = "done"
+					}
+				}
+				saveSnap()
 				summary := fmt.Sprintf("pipeline 执行完成（%d 个节点）", len(spec.Nodes))
 				if len(outputs) > 0 {
 					summary += "\n\n[节点产出]"
