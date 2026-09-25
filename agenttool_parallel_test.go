@@ -71,7 +71,7 @@ func TestAgentToolBackground(t *testing.T) {
 
 	prov := &scriptedProvider{replies: []message.Message{textMsg("后台结论")}}
 	tool := agentToolDef(agent.Definition{Name: "bg"}, func() provider.Provider { return prov },
-		func() *bgtask.Manager { return mgr })
+		func() *bgtask.Manager { return mgr }, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	raw, _ := json.Marshal(AgentToolInput{Task: "跑", Background: true})
