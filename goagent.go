@@ -832,6 +832,43 @@ func (a *App) CurrentPermissionMode() PermissionModeOption {
 	return PermissionDefault
 }
 
+// AddPermissionGuard 运行期注册一条权限策略 Guard（单调：可拒不可放）。
+// 立即对当前活跃 Gate 生效（含在跑 run 的下一次工具调用），并记入构造
+// 配置——后续 run 构造新 Gate 时延续。同名覆盖。
+func (a *App) AddPermissionGuard(gd permission.Guard) {
+	a.mu.Lock()
+	replaced := false
+	for i := range a.config.permissionGuards {
+		if a.config.permissionGuards[i].Name == gd.Name {
+			a.config.permissionGuards[i] = gd // 同名覆盖
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		a.config.permissionGuards = append(a.config.permissionGuards, gd)
+	}
+	a.mu.Unlock()
+	if g := a.activeGate.Load(); g != nil {
+		g.AddGuard(gd)
+	}
+}
+
+// RemovePermissionGuard 运行期注销一条权限策略 Guard。
+func (a *App) RemovePermissionGuard(name string) {
+	a.mu.Lock()
+	for i := range a.config.permissionGuards {
+		if a.config.permissionGuards[i].Name == name {
+			a.config.permissionGuards = append(a.config.permissionGuards[:i], a.config.permissionGuards[i+1:]...)
+			break
+		}
+	}
+	a.mu.Unlock()
+	if g := a.activeGate.Load(); g != nil {
+		g.RemoveGuard(name)
+	}
+}
+
 // SetThinkingEffort 运行时切换思考强度档位（off/low/medium/high）。
 // 自下一次 run 起随每次模型请求下发；进行中的轮次不回溯。
 func (a *App) SetThinkingEffort(effort string) {
@@ -928,6 +965,11 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	// 应用权限规则（如有配置）。
 	if cfg.permissionRules != nil {
 		permGate.SetRules(cfg.permissionRules)
+	}
+
+	// 应用外部策略 Guard 链（单调：可拒不可放；运行期追加见 AddPermissionGuard）。
+	for _, gd := range cfg.permissionGuards {
+		permGate.AddGuard(gd)
 	}
 
 	// 注入 YOLO LLM 分类器（对齐 Claude Code 的 YOLO classifier）。

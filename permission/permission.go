@@ -104,6 +104,7 @@ type Gate struct {
 	deniedCache       map[string]bool // toolName+input -> 用户是否最近拒绝
 	mode              PermissionMode
 	rules             *RuleSet
+	guards            []Guard           // 外部策略链（单调：可拒不可放，见 Guard 注释）
 	classifier        *YoloClassifier   // YOLO LLM 分类器（对齐 Claude Code）
 	currentTranscript []message.Message // 由 loop 每轮更新，供 YOLO 分类器使用
 }
@@ -131,6 +132,43 @@ func (g *Gate) SetRules(rules *RuleSet) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.rules = rules
+}
+
+// Guard 是挂在 Gate 上的外部策略（对齐 DeepSeek harness 的 monotonic guard：
+// 任何 Guard 都可以拒绝一次工具调用，但没有任何 Guard 能强行放行已被其他
+// 策略拒绝的调用）。拒绝是终点；返回 nil 或非 Deny 结果等于把决定交还
+// 给后续策略链（模式 / allow 规则 / 分类器 / 默认级别）。宿主用它接入
+// 域内策略（审批升级、场景包规则、企业红线），不必改 Gate 本体。
+type Guard struct {
+	// Name 策略名（幂等注册：同名覆盖；结果 Source 标注 guard:<name>）。
+	Name string
+	// Fn 返回 nil = 不干预；返回 Deny = 拒绝（最终决定）；其余行为忽略。
+	Fn func(toolName string, input string, level Level) *PermissionResult
+}
+
+// AddGuard 注册一条策略（同名覆盖）。
+func (g *Gate) AddGuard(gd Guard) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i := range g.guards {
+		if g.guards[i].Name == gd.Name {
+			g.guards[i] = gd
+			return
+		}
+	}
+	g.guards = append(g.guards, gd)
+}
+
+// RemoveGuard 注销一条策略。
+func (g *Gate) RemoveGuard(name string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i := range g.guards {
+		if g.guards[i].Name == name {
+			g.guards = append(g.guards[:i], g.guards[i+1:]...)
+			return
+		}
+	}
 }
 
 // SetClassifier 设置 YOLO LLM 分类器。
@@ -165,6 +203,25 @@ func (g *Gate) CheckResult(toolName string, input string, level Level) Permissio
 				return *result
 			}
 			// 记录 allow/ask 规则结果，稍后可能用到。
+		}
+	}
+
+	// 第 1.5 步：外部 Guard 链（单调：可拒不可放）。deny 规则之后、模式
+	// 判定之前——宿主策略可以拦下任何调用（包括 bypass 模式），但不能
+	// 强行放行（返回的 Allow/Ask 一律忽略）。
+	g.mu.RLock()
+	guards := append([]Guard(nil), g.guards...)
+	g.mu.RUnlock()
+	for _, gd := range guards {
+		if gd.Fn == nil {
+			continue
+		}
+		if r := gd.Fn(toolName, input, level); r != nil && r.Behavior == BehaviorDeny {
+			out := *r
+			if out.Source == "" {
+				out.Source = "guard:" + gd.Name
+			}
+			return out
 		}
 	}
 

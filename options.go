@@ -54,6 +54,7 @@ type appConfig struct {
 	autoPersist         *bool                         // nil 表示使用默认（true）
 	permissionMode      *permission.PermissionMode    // nil 表示使用默认
 	permissionRules     *permission.RuleSet
+	permissionGuards    []permission.Guard // 外部策略链（单调：可拒不可放）
 	thinkingEffort      string // 思考强度档位（off/low/medium/high；空 = 不干预）
 	hooks               []hooks.Hook       // 用户注册的 hooks
 	subAgentDefs        []agent.Definition // 子 agent 定义
@@ -519,6 +520,15 @@ const (
 func WithPermissionRules(rules *PermissionRules) Option {
 	return optionFunc(func(c *appConfig) {
 		c.permissionRules = rules.toInternal()
+	})
+}
+
+// WithPermissionGuard 注册一条权限策略 Guard（单调：可拒不可放，见
+// permission.Guard）。可多次调用按序追加；运行期可用 App.AddPermissionGuard
+// 追加/覆盖（对在跑的下一个 run 立即生效）。
+func WithPermissionGuard(gd permission.Guard) Option {
+	return optionFunc(func(c *appConfig) {
+		c.permissionGuards = append(c.permissionGuards, gd)
 	})
 }
 
