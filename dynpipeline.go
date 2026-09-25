@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/Dream355873200/GoAgent/internal/loop"
 )
 
 // ---------------------------------------------------------------------------
@@ -326,7 +328,29 @@ func (a *App) CreatePipelineTool() NamedTool {
 				if err := json.Unmarshal(in.Spec, &spec); err != nil {
 					return "", fmt.Errorf("spec JSON 解析失败: %w", err)
 				}
-				if err := a.RunDynPipeline(ctx, &spec, nil); err != nil {
+				// 节点生命周期事件经 subagent_progress 透出到主对话流的
+				// create_pipeline 工具卡（前端实时渲染节点进度）。
+				onEvent := func(ev PipelineEvent) {
+					status := "running"
+					text := ev.Text
+					switch ev.Type {
+					case "node_started":
+						text = "▶ " + ev.Node
+					case "node_done":
+						text, status = "✓ "+ev.Node, "done"
+					}
+					if text == "" {
+						return
+					}
+					loop.EmitFromTool(ctx, loop.Event{
+						Type:          loop.EvtSubAgentProgress,
+						AgentID:       ev.Node,
+						AgentDesc:     ev.Node,
+						AgentStatus:   status,
+						AgentActivity: text,
+					})
+				}
+				if err := a.RunDynPipeline(ctx, &spec, onEvent); err != nil {
 					return "", err
 				}
 				return fmt.Sprintf("pipeline 执行完成（%d 个节点）", len(spec.Nodes)), nil
