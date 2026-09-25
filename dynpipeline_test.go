@@ -106,3 +106,36 @@ func TestBuildDynPipelineNodeLimit(t *testing.T) {
 		t.Fatalf("应报节点数超限: %v", err)
 	}
 }
+
+// 根节点 message 省略时以 instruction 作为任务种子——否则队列空转、
+// 节点一次 LLM 都不跑就「完成」（整条流水线瞬间假完成）。
+func TestBuildDynPipelineRootMessageSeeding(t *testing.T) {
+	app := New(WithMaxTurns(1))
+	spec := &DynPipelineSpec{Nodes: []DynNodeSpec{
+		{Name: "survey", Instruction: "做一次调研"},
+		{Name: "report", Instruction: "汇总成报告", DependsOn: []string{"survey"}},
+	}}
+	cfg, err := app.BuildDynPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range cfg.Nodes {
+		if n.Message == "" {
+			t.Fatalf("节点 %q 缺少任务种子（空队列会直接跳过运行）", n.Name)
+		}
+	}
+	if cfg.Nodes[0].Message != "做一次调研" {
+		t.Fatalf("根节点应以 instruction 为任务种子, got %q", cfg.Nodes[0].Message)
+	}
+	// 显式 message 优先
+	spec2 := &DynPipelineSpec{Nodes: []DynNodeSpec{
+		{Name: "a", Instruction: "指令", Message: "显式任务"},
+	}}
+	cfg2, err := app.BuildDynPipeline(spec2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.Nodes[0].Message != "显式任务" {
+		t.Fatalf("显式 message 应优先, got %q", cfg2.Nodes[0].Message)
+	}
+}

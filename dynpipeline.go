@@ -170,6 +170,20 @@ func (a *App) BuildDynPipeline(spec *DynPipelineSpec) (PipelineConfig, error) {
 				Instruction: instruction,
 			},
 		}
+		// 根节点（无上游生产者）的 message 省略时，以 instruction 作为任务
+		// 种子——否则队列空转：节点不跑一次 LLM 就「完成」，整条流水线
+		// 瞬间假完成（实测踩坑：LLM 提交的 spec 普遍省略 message）。
+		hasUpstream := false
+		for _, m := range spec.Nodes {
+			for _, inj := range m.Injects {
+				if inj == n.Name {
+					hasUpstream = true
+				}
+			}
+		}
+		if node.Message == "" && !hasUpstream {
+			node.Message = n.Instruction
+		}
 		if n.Concurrency > 0 {
 			node.Concurrency = n.Concurrency
 		}
