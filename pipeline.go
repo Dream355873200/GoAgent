@@ -1441,11 +1441,18 @@ func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDe
 	var finalText string
 	var toolStartCount, toolDoneCount, errorCount int
 	var lastError error
-	var textBuf strings.Builder
+	var textBuf, thinkBuf strings.Builder
 	flushTextTrace := func() {
 		if textBuf.Len() > 0 {
 			p.traceAppend(agentDef.Name, map[string]any{"type": "text", "text": textBuf.String()})
 			textBuf.Reset()
+		}
+	}
+	// 思考是逐词流式 delta：聚合成块再落盘，否则轨迹里一行一个字。
+	flushThinkTrace := func() {
+		if thinkBuf.Len() > 0 {
+			p.traceAppend(agentDef.Name, map[string]any{"type": "thinking", "text": thinkBuf.String()})
+			thinkBuf.Reset()
 		}
 	}
 	for ev := range l.Run(ctx, input) {
@@ -1454,17 +1461,20 @@ func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDe
 			finalText += ev.Text
 			textBuf.WriteString(ev.Text)
 		case loop.EvtThinking:
-			// 思考模型推理过程（delta.reasoning_content）。此前被静默丢弃。
-			flushTextTrace()
-			p.traceAppend(agentDef.Name, map[string]any{"type": "thinking", "text": ev.Thinking})
+			// 思考模型推理过程（delta.reasoning_content）。
+			textBuf.Reset() // 思考打断了文本段
+			thinkBuf.WriteString(ev.Thinking)
 			p.emitEvent(agentDef.Name, "thinking", ev.Thinking, "")
 		case loop.EvtToolStart:
 			toolStartCount++
 			flushTextTrace()
+			flushThinkTrace()
 			p.traceAppend(agentDef.Name, map[string]any{"type": "tool_start", "tool": ev.ToolName, "input": tracePreview(string(ev.ToolInput), 800)})
 			p.logger.Info(fmt.Sprintf("runLightweight: agent=%s tool_start=%s", agentDef.Name, ev.ToolName))
 		case loop.EvtToolDone:
 			toolDoneCount++
+			flushTextTrace()
+			flushThinkTrace()
 			p.traceAppend(agentDef.Name, map[string]any{"type": "tool_done", "tool": ev.ToolName, "result": tracePreview(ev.ToolResult, 2000)})
 			resultPreview := ev.ToolResult
 			if len(resultPreview) > 200 {
@@ -1475,6 +1485,7 @@ func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDe
 			errorCount++
 			lastError = ev.Error
 			flushTextTrace()
+			flushThinkTrace()
 			p.traceAppend(agentDef.Name, map[string]any{"type": "error", "text": ev.Error.Error()})
 			p.logger.Warn(fmt.Sprintf("runLightweight: agent=%s error=%v", agentDef.Name, ev.Error))
 			p.emitEvent(agentDef.Name, "error", ev.Error.Error(), "")
@@ -1505,6 +1516,7 @@ func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDe
 	}
 
 	flushTextTrace()
+	flushThinkTrace()
 
 	// 空响应检测：LLM 既没有调用工具、也没有输出文本、也没有返回错误。
 	// 这通常意味着 provider 配置有误（API Key 无效、模型名错误、BaseURL 不通等），
