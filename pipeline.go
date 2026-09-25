@@ -81,7 +81,7 @@ type PipelineEvent struct {
 	// error:    LLM/工具错误（已在内部处理，此为透出供宿主记录）。
 	Type string
 
-	// Text progress/thinking 的内容。
+	// Text progress/thinking/node_output 的内容。
 	Text string
 	// StatusKey 仅 progress：状态行键（非空 = 原地更新语义）。
 	StatusKey string
@@ -1438,6 +1438,11 @@ func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDe
 
 	p.logger.Info(fmt.Sprintf("runLightweight: agent=%s completed tools_started=%d tools_done=%d errors=%d text_len=%d",
 		agentDef.Name, toolStartCount, toolDoneCount, errorCount, len(finalText)))
+	// 节点产出透出：宿主（create_pipeline 工具）据此把末端产出带回给
+	// 主 agent——此前最终文本只进日志，产物在流水线内部蒸发。
+	if len(finalText) > 0 {
+		p.emitEvent(agentDef.Name, "node_output", finalText, "")
+	}
 	if len(finalText) > 0 {
 		preview := finalText
 		if len(preview) > 300 {

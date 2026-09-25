@@ -312,8 +312,9 @@ func (a *App) CreatePipelineTool() NamedTool {
 		"依赖关系需要你自己现场猜的任务请直接自己做或用子 agent。" +
 		"数据载体约定：队列任务与节点产出默认用 Markdown 片段（LLM-to-LLM），" +
 		"仅在下游是代码/需要 UI 渲染时用 JSON；每个节点的 output 字段向下游声明" +
-		"自己的产出格式，下游按该约定消费。" +
-		"校验失败会返回具体原因，修正 spec 后可重试。"
+			"自己的产出格式，下游按该约定消费。" +
+			"末端节点（没有 injects）的最终产出会节选进工具结果，需要完整交付的应让末端节点用 Write 写入文件。" +
+			"校验失败会返回具体原因，修正 spec 后可重试。"
 	if names := a.ToolNames(); len(names) > 0 {
 		desc += "\n可用工具（节点的 tools 只能从这里选）: " + strings.Join(names, ", ")
 	}
@@ -326,9 +327,16 @@ func (a *App) CreatePipelineTool() NamedTool {
 			Execute: func(ctx Context, in CreatePipelineInput) (string, error) {
 				var spec DynPipelineSpec
 				if err := json.Unmarshal(in.Spec, &spec); err != nil {
-					return "", fmt.Errorf("spec JSON 解析失败: %w", err)
+					// 容错：模型常把 nodes 数组直接当 spec 提交（漏了外层对象）。
+					var nodes []DynNodeSpec
+					if err2 := json.Unmarshal(in.Spec, &nodes); err2 == nil && len(nodes) > 0 {
+						spec = DynPipelineSpec{Nodes: nodes}
+					} else {
+						return "", fmt.Errorf("spec JSON 解析失败: %w（spec 须为 {\"nodes\":[...]} 对象）", err)
+					}
 				}
-				// 节点生命周期事件经 subagent_progress 透出到主对话流的
+				outputs := map[string][]string{}
+				// 节点生命周期与产出事件经 subagent_progress 透出到主对话流的
 				// create_pipeline 工具卡（前端实时渲染节点进度）。
 				onEvent := func(ev PipelineEvent) {
 					status := "running"
@@ -338,6 +346,9 @@ func (a *App) CreatePipelineTool() NamedTool {
 						text = "▶ " + ev.Node
 					case "node_done":
 						text, status = "✓ "+ev.Node, "done"
+					case "node_output":
+						outputs[ev.Node] = append(outputs[ev.Node], ev.Text)
+						return // 产出不进进度行（太长），进最终摘要
 					}
 					if text == "" {
 						return
@@ -353,7 +364,20 @@ func (a *App) CreatePipelineTool() NamedTool {
 				if err := a.RunDynPipeline(ctx, &spec, onEvent); err != nil {
 					return "", err
 				}
-				return fmt.Sprintf("pipeline 执行完成（%d 个节点）", len(spec.Nodes)), nil
+				summary := fmt.Sprintf("pipeline 执行完成（%d 个节点）", len(spec.Nodes))
+				if len(outputs) > 0 {
+					summary += "\n\n[节点产出]"
+					for _, n := range spec.Nodes {
+						for _, out := range outputs[n.Name] {
+							tail := out
+							if len(tail) > 800 {
+								tail = tail[:800] + "…（截断，全文见节点产出的文件/队列交付）"
+							}
+							summary += "\n\n### " + n.Name + "\n" + tail
+						}
+					}
+				}
+				return summary, nil
 			},
 		},
 	}
