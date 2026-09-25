@@ -24,25 +24,25 @@ const Version = 1
 // 帧类型名（Envelope.Type 字段值）。
 const (
 	// --- 流事件（agent loop 产出） ---
-	TypeTextDelta        = "text_delta"        // 模型正文增量（Text）
-	TypeThinking         = "thinking"          // 模型思考增量（Thinking）
-	TypeToolStart        = "tool_start"        // 工具即将执行（ToolName/ToolInput/ToolUseID）
-	TypeToolDone         = "tool_done"         // 工具执行完成（ToolName/ToolResult/ToolUseID）
+	TypeTextDelta        = "text_delta"         // 模型正文增量（Text）
+	TypeThinking         = "thinking"           // 模型思考增量（Thinking）
+	TypeToolStart        = "tool_start"         // 工具即将执行（ToolName/ToolInput/ToolUseID）
+	TypeToolDone         = "tool_done"          // 工具执行完成（ToolName/ToolResult/ToolUseID）
 	TypeNeedApproval     = "permission_request" // 请求权限审批（RequestID/ToolName/Permission）
-	TypeUsage            = "usage"             // token 用量更新（Usage）
-	TypeTurnComplete     = "turn_complete"     // 一轮 agent 循环完成
-	TypeDone             = "done"              // 本轮 run 成功完成
-	TypeError            = "error"             // 错误终止（Error）
-	TypeProgress         = "progress"          // 工具中间进度（StatusKey 原地更新）
-	TypeCompaction       = "compaction"        // 上下文压缩发生（信息性）
-	TypeAskUser          = "ask_user"          // 向用户提问（RequestID/Question/Payload）
-	TypePlanConfirm      = "plan_confirm"      // 请求确认计划（RequestID/PlanContent）
-	TypeInterrupt        = "interrupt"         // 请求中断确认
-	TypeInterrupted      = "interrupted"       // 用户主动终止（Text 携带原因）
-	TypeRetrieval        = "retrieval"         // RAG 前置检索完成（信息性）
-	TypeSteer            = "steer"             // 插话进入模型上下文（Text）
-	TypeQueueRun         = "queue_run"         // 排队消息作为新一轮输入开跑（Text）
-	TypeSubAgentProgress = "subagent_progress" // 子 agent 运行进度
+	TypeUsage            = "usage"              // token 用量更新（Usage）
+	TypeTurnComplete     = "turn_complete"      // 一轮 agent 循环完成
+	TypeDone             = "done"               // 本轮 run 成功完成
+	TypeError            = "error"              // 错误终止（Error）
+	TypeProgress         = "progress"           // 工具中间进度（StatusKey 原地更新）
+	TypeCompaction       = "compaction"         // 上下文压缩发生（信息性）
+	TypeAskUser          = "ask_user"           // 向用户提问（RequestID/Question/Payload）
+	TypePlanConfirm      = "plan_confirm"       // 请求确认计划（RequestID/PlanContent）
+	TypeInterrupt        = "interrupt"          // 请求中断确认
+	TypeInterrupted      = "interrupted"        // 用户主动终止（Text 携带原因）
+	TypeRetrieval        = "retrieval"          // RAG 前置检索完成（信息性）
+	TypeSteer            = "steer"              // 插话进入模型上下文（Text）
+	TypeQueueRun         = "queue_run"          // 排队消息作为新一轮输入开跑（Text）
+	TypeSubAgentProgress = "subagent_progress"  // 子 agent 运行进度
 
 	// --- 生命周期帧（传输层标注，不来自 agent loop） ---
 	TypeRunStart = "run_start" // 一轮 run 开始（流内第一个帧，SessionID 绑定）
@@ -104,6 +104,9 @@ type Envelope struct {
 	// Steered 消息经插话通道注入当前 run（metadata 帧，steered=true 时
 	// 客户端知道本轮流在插话确认后立即结束）。
 	Steered bool `json:"steered,omitempty"`
+	// Queued 会话忙但当前无可插话的轮次（任务尚在准备或收尾），消息改入
+	// 排队车道，当前 run 结束后自动续跑（metadata 帧，Text 为排队项 ID）。
+	Queued bool `json:"queued,omitempty"`
 
 	// --- 子 agent 进度字段（subagent_progress 帧） ---
 	AgentID       string `json:"agent_id,omitempty"`
@@ -124,6 +127,10 @@ type Usage struct {
 type ChatRequest struct {
 	Message   string `json:"message"`
 	SessionID string `json:"session_id,omitempty"`
+	// ResumeQueue 空闲唤醒：message 为空时取该会话 queue 车道队头作为本轮
+	// 输入（后台任务终态通知等）；队列空则直接结束。会话忙时忽略（在跑
+	// 的 run 结束后会自行消费队列）。
+	ResumeQueue bool `json:"resume_queue,omitempty"`
 }
 
 // ApproveRequest POST /approve 请求体——权限审批决定。

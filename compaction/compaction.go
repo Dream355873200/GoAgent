@@ -17,6 +17,8 @@ package compaction
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/Dream355873200/GoAgent/message"
 	"github.com/Dream355873200/GoAgent/provider"
@@ -295,6 +297,28 @@ func (m *Manager) HandleOverflow(ctx context.Context, messages []message.Message
 
 // --- Layer 0: Budget ---
 
+// 图片回收共享策略（与 micro_compact.go 的图片处理保持一致）：
+// 含内联图片的结果绝不允许 head+tail 截断——截断会产出损坏 base64，发给
+// 端点必 400 且会话永久卡死。最近 imgTailMessages 条消息内的图片完整保留
+//（一轮可含多张参考图），更早的整体回收为占位符——占位符携带原图文件
+// 路径，模型之后可用 vision_ask/Read 重新查看。
+const imgTailMessages = 40
+var imagePathRe = regexp.MustCompile(`[A-Za-z]:\\[^\s"']+`)
+
+// recycleImageResult 判定并生成图片结果回收文本。
+// 返回 (替换文本, true) = 应回收；(空, false) = 保留完整原样。
+func recycleImageResult(messages []message.Message, i int, text string) (string, bool) {
+	if !strings.Contains(text, imageMarker) {
+		return "", false
+	}
+	if i >= len(messages)-imgTailMessages {
+		return "", false
+	}
+	path := imagePathRe.FindString(text)
+	return "[截图已省略：历史图片已回收，原图保存在 " + path +
+		"；如需再次查看，用 vision_ask 读取该文件路径]", true
+}
+
 type budgetCompressor struct {
 	maxSize int
 	// TODO: 实现真正的磁盘持久化 + 引用替换。
@@ -309,6 +333,12 @@ func (b *budgetCompressor) apply(messages []message.Message) ([]message.Message,
 		for j, block := range msg.Content {
 			if block.Type == "tool_result" && len(block.Text) > b.maxSize {
 				original := len(block.Text)
+				// 图片豁免：内联图片结果走统一回收策略（禁 head+tail 截断）
+				if repl, ok := recycleImageResult(messages, i, block.Text); ok {
+					result[i].Content[j].Text = repl
+					freed += (original - len(repl)) / 4
+					continue
+				}
 				result[i].Content[j].Text = block.Text[:b.maxSize/2] +
 					fmt.Sprintf("\n\n[... %d 字符被截断 (TODO: 实现磁盘持久化 + 引用替换) ...]\n\n", original-b.maxSize) +
 					block.Text[original-b.maxSize/2:]
@@ -379,10 +409,17 @@ func (mc *microCompressor) apply(messages []message.Message, contextWindow int, 
 
 	// Pass 1: 按大小裁剪过长的工具结果（对所有工具结果生效）。
 	// 对齐 Claude Code 的 applyToolResultBudget()。
+	// 图片豁免：内联图片结果（[IMAGE ...]）绝不能 head+tail 截断——截断会
+	// 产出损坏 base64，发给端点必 400 且会话永久卡死。走统一回收策略。
 	for i, msg := range result {
 		for j, block := range msg.Content {
 			if block.Type == "tool_result" && len(block.Text) > MaxToolResultChars {
 				original := len(block.Text)
+				if repl, ok := recycleImageResult(result, i, block.Text); ok {
+					result[i].Content[j].Text = repl
+					freed += (original - len(repl)) / 4
+					continue
+				}
 				// 保留头尾各 10KB，中间用截断标记替换。
 				head := block.Text[:10_000]
 				tail := block.Text[original-10_000:]
@@ -422,9 +459,13 @@ func (mc *microCompressor) apply(messages []message.Message, contextWindow int, 
 	}
 
 	// 将已消费的工具结果替换为标记。
+	// 图片结果跳过：由 Pass 1 的统一回收策略管理（最近 40 条内完整保留）。
 	for i, msg := range result {
 		for j, block := range msg.Content {
 			if block.Type == "tool_result" && consumed[block.ForToolUseID] && len(block.Text) > 100 {
+				if strings.Contains(block.Text, imageMarker) {
+					continue
+				}
 				original := len(block.Text)
 				result[i].Content[j].Text = fmt.Sprintf("[内容已处理，移除 %d 字符]", original)
 				freed += original / 4
@@ -517,9 +558,11 @@ func (a *autoCompressor) apply(ctx context.Context, messages []message.Message, 
 	}
 
 	// 构建请求模型摘要的提示。
+	// 图片标记剥离：内联 base64（150KB+/张）会撑爆摘要输入、截断尾部还会
+	// 产出损坏数据。
 	var conversationText string
 	for _, msg := range messages {
-		text := message.ExtractText(msg)
+		text := stripImageMarkers(message.ExtractText(msg))
 		if text != "" {
 			conversationText += fmt.Sprintf("[%s]: %s\n", msg.Role, text)
 		}

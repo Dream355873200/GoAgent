@@ -1343,10 +1343,13 @@ func (p *pipeline) buildLightweightLoop(agentDef *PipelineAgentDef, nodeCtx cont
 		MaxConcurrency: 10,
 	})
 
-	// 保底压缩：只保留 L4(Auto)，80% 触发。去掉 L0(Budget) 和 L2(Micro) 避免提前截断 tool result。
+	// 节点压缩：L2(Micro) + L4(Auto)。
+	// Micro 裁剪过期工具结果（长任务 worker 的质量/成本关键；图片走统一
+	// 回收策略不会被截断）；Auto 在 0.8 水位做 LLM 摘要。
+	// L0(Budget)/L1(Snip) 不进节点：head+tail 截断会损坏图片数据。
 	compCfg := compaction.Config{
 		AutoCompactThreshold: 0.8,
-		Layers:               []compaction.Layer{compaction.LayerAuto},
+		Layers:               []compaction.Layer{compaction.LayerMicro, compaction.LayerAuto},
 	}
 	if p.parentApp.config.promptDir != "" {
 		compCfg.PromptFile = p.parentApp.config.promptDir + "/" + prompts.Compact

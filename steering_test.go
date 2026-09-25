@@ -211,6 +211,24 @@ func TestSteerQueueAutoContinuation(t *testing.T) {
 	}
 }
 
+// TestRunSessionEmptyInputResumesQueue 空输入 = 空闲唤醒：取队头开跑并
+// 续跑余下排队项；队列为空时直接结束、不跑任何一轮。
+func TestRunSessionEmptyInputResumesQueue(t *testing.T) {
+	app, hub, _ := newSteerTestApp(t, []string{"读到结论", "继续"})
+	if runs, _, errs := collectDrain(app.RunSession(context.Background(), "s4", "")); len(runs) != 0 || len(errs) != 0 {
+		t.Fatalf("空队列唤醒不应起跑, runs=%v errs=%v", runs, errs)
+	}
+	hub.Enqueue("s4", "后台任务完成")
+	hub.Enqueue("s4", "第二条")
+	runs, _, errs := collectDrain(app.RunSession(context.Background(), "s4", ""))
+	if len(errs) > 0 {
+		t.Fatalf("事件流错误: %v", errs)
+	}
+	if len(runs) != 2 || runs[0] != "后台任务完成" || runs[1] != "第二条" {
+		t.Fatalf("应按 FIFO 唤醒并续跑, got %v", runs)
+	}
+}
+
 // TestQueueItemListRemove 排队消息的单项管理：List 返回队头在前、
 // Remove 按 ID 取走并返回原文、Remove 不存在的 ID 返回 false。
 func TestQueueItemListRemove(t *testing.T) {

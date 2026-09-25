@@ -20,6 +20,7 @@ export const FrameType = {
   Compaction: "compaction",
   Retrieval: "retrieval",
   Steer: "steer",
+  QueueRun: "queue_run",
   SubAgentProgress: "subagent_progress",
   Interrupted: "interrupted",
   Error: "error",

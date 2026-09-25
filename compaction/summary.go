@@ -4,11 +4,20 @@ package compaction
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/Dream355873200/GoAgent/message"
 	"github.com/Dream355873200/GoAgent/provider"
 )
+
+// stripImageMarkers 剥离内联图片标记（含全部 base64 数据）——摘要模型只需
+// 知道「这里曾有截图」，原图数据会让摘要输入爆掉 token 甚至请求失败。
+var imageMarkerRe = regexp.MustCompile(`(?s)\[IMAGE [^\]]{100,}\]`)
+
+func stripImageMarkers(s string) string {
+	return imageMarkerRe.ReplaceAllString(s, "[图片已省略]")
+}
 
 // SummaryConfig 配置摘要生成。
 type SummaryConfig struct {
@@ -70,11 +79,11 @@ func CompactSummary(ctx context.Context, messages []message.Message, cfg Summary
 	return formatted, nil
 }
 
-// buildConversationText 将消息转换为对话文本。
+// buildConversationText 将消息转换为对话文本（图片标记已剥离）。
 func buildConversationText(messages []message.Message) string {
 	var parts []string
 	for _, msg := range messages {
-		text := message.ExtractText(msg)
+		text := stripImageMarkers(message.ExtractText(msg))
 		if text != "" {
 			parts = append(parts, fmt.Sprintf("[%s]: %s\n", msg.Role, text))
 		}

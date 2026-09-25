@@ -29,7 +29,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/Dream355873200/GoAgent/agent"
 	"github.com/Dream355873200/GoAgent/analytics"
 	"github.com/Dream355873200/GoAgent/bgtask"
 	"github.com/Dream355873200/GoAgent/budget"
@@ -38,7 +37,6 @@ import (
 	"github.com/Dream355873200/GoAgent/executor"
 	"github.com/Dream355873200/GoAgent/hooks"
 	"github.com/Dream355873200/GoAgent/internal/loop"
-	"github.com/Dream355873200/GoAgent/reminder"
 	"github.com/Dream355873200/GoAgent/mcp"
 	"github.com/Dream355873200/GoAgent/memory"
 	"github.com/Dream355873200/GoAgent/message"
@@ -47,6 +45,7 @@ import (
 	"github.com/Dream355873200/GoAgent/plan"
 	"github.com/Dream355873200/GoAgent/prompts"
 	"github.com/Dream355873200/GoAgent/provider"
+	"github.com/Dream355873200/GoAgent/reminder"
 	"github.com/Dream355873200/GoAgent/session"
 	"github.com/Dream355873200/GoAgent/sessionmem"
 	"github.com/Dream355873200/GoAgent/sysprompt"
@@ -225,9 +224,11 @@ func New(opts ...Option) *App {
 		app.autoRegisterBuiltinTools()
 	}
 
-	// 注册子 agent 工具（如果配置了）。
-	if len(app.config.subAgentDefs) > 0 && app.provider != nil && subAgentToolsProvider != nil {
-		app.UseTools(subAgentToolsProvider(app.provider, app.config.subAgentDefs)...)
+	// 注册子 agent 工具（WithSubAgents）：与 App.AgentTool 同一实现。
+	if app.provider != nil {
+		for _, def := range app.config.subAgentDefs {
+			app.Tool("Agent_"+def.Name, app.AgentTool(def))
+		}
 	}
 
 	// 注册 ToolKit 工具（WithToolKits）。
@@ -356,9 +357,6 @@ var issueToolsProvider func(store task.StoreInterface) []NamedTool
 // planToolsProvider 是由 builtin 包注入的 Plan 工具提供函数。
 var planToolsProvider func(store plan.StoreInterface) []NamedTool
 
-// subAgentToolsProvider 是由 builtin 包注入的子 agent 工具提供函数。
-var subAgentToolsProvider func(prov provider.Provider, defs []agent.Definition) []NamedTool
-
 // bgTaskToolsProvider 是由 builtin 包注入的后台任务工具提供函数。
 var bgTaskToolsProvider func(store bgtask.StoreInterface) []NamedTool
 
@@ -379,11 +377,6 @@ func RegisterTaskToolsProvider(fn func(store task.StoreInterface) []NamedTool) {
 // RegisterPlanToolsProvider 由 builtin 包调用以注册 Plan 工具提供函数。
 func RegisterPlanToolsProvider(fn func(store plan.StoreInterface) []NamedTool) {
 	planToolsProvider = fn
-}
-
-// RegisterSubAgentToolsProvider 由 builtin 包调用以注册子 agent 工具提供函数。
-func RegisterSubAgentToolsProvider(fn func(prov provider.Provider, defs []agent.Definition) []NamedTool) {
-	subAgentToolsProvider = fn
 }
 
 // RegisterBgTaskToolsProvider 由 builtin 包调用以注册后台任务工具提供函数。
@@ -505,6 +498,20 @@ func (a *App) RunSession(ctx context.Context, sessionID string, input string) <-
 		if err != nil {
 			events <- Event{Type: EventError, Error: fmt.Errorf("获取会话失败: %w", err)}
 			return
+		}
+
+		// 空输入 = 空闲唤醒：取队头作为本轮输入（后台任务在会话空闲时
+		// 完成，通知只能等这里消费）；队列空则无事可做。
+		if input == "" {
+			if a.config.steering == nil {
+				return
+			}
+			next, ok := a.config.steering.claimQueued(sessionID)
+			if !ok {
+				return
+			}
+			events <- Event{Type: EventQueueRun, Text: next}
+			input = next
 		}
 
 		// 更新状态为运行中。
@@ -881,15 +888,16 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	// 子系统初始化。
 
 	// 1. Compaction Manager（对齐 Claude Code 流程）。
+	// 提示词目录按会话解析：压缩 / YOLO 分类与系统提示词同一档位，缺文件
+	// 各自回退嵌入默认值——提示词组可只覆盖其中几段。
+	promptDir := effectivePromptDir(cfg, sessionID)
 	compCfg := compaction.Config{
 		AutoCompactThreshold: cfg.compaction.AutoCompactThreshold,
 		MaxResultSize:        cfg.compaction.MaxResultSize,
 		PostCompact:          cfg.postCompact,
 	}
-	if cfg.yoloPromptFile != "" {
-		compCfg.PromptFile = cfg.yoloPromptFile
-	} else if cfg.promptDir != "" {
-		compCfg.PromptFile = filepath.Join(cfg.promptDir, prompts.Compact)
+	if promptDir != "" {
+		compCfg.PromptFile = filepath.Join(promptDir, prompts.Compact)
 	}
 	compMgr := compaction.NewManager(compCfg)
 	// 设置 Provider 以支持新的 Compact() 方法（对齐 Claude Code 流程）。
@@ -921,8 +929,8 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		}
 		if cfg.yoloPromptFile != "" {
 			yoloCfg.PromptFile = cfg.yoloPromptFile
-		} else if cfg.promptDir != "" {
-			yoloCfg.PromptFile = filepath.Join(cfg.promptDir, prompts.YoloClassifier)
+		} else if promptDir != "" {
+			yoloCfg.PromptFile = filepath.Join(promptDir, prompts.YoloClassifier)
 		}
 		permGate.SetClassifier(permission.NewYoloClassifier(a.provider, yoloCfg))
 	}
@@ -1019,16 +1027,17 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		Compaction:   compMgr,
 
 		ReasoningEffort: a.CurrentThinkingEffort(),
-		Permission:   permGate,
-		Memory:       memMgr,
-		Executor:     exec,
-		Budget:       budgetTracker,
-		Hooks:        &hooksRunnerAdapter{mgr: a.hooksMgr},
-		Observer:     observer.ResolveObserver(ctx, a.obsRegistry.Observer()),
-		SessionID:    sessionID,
-		Logger:       a.logger,
-		Debug:        a.config.debug,
-		SuspendGate:  a.config.suspendGate,
+		Permission:      permGate,
+		// Memory 不下传：memMgr 的上下文段已由 buildSystemPrompt 组装进
+		// systemPrompt，循环再追加一遍会让项目上下文重复出现。
+		Executor:    exec,
+		Budget:      budgetTracker,
+		Hooks:       &hooksRunnerAdapter{mgr: a.hooksMgr},
+		Observer:    observer.ResolveObserver(ctx, a.obsRegistry.Observer()),
+		SessionID:   sessionID,
+		Logger:      a.logger,
+		Debug:       a.config.debug,
+		SuspendGate: a.config.suspendGate,
 	}
 
 	// PlanChecker 仅在 Plan 系统启用时注入。
@@ -1111,15 +1120,7 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 // 并误用当前平台不存在的命令（如 Windows cmd 下跑 pwd）。
 func (a *App) buildSystemPrompt(cfg appConfig, memMgr *memory.Manager, workDir, sessionID string) string {
 	builder := sysprompt.NewBuilder()
-
-	// 会话级提示词目录：解析非空时覆盖全局 promptDir（不同会话可并行
-	// 携带不同提示词档位；空结果保持全局值）。
-	promptDir := cfg.promptDir
-	if cfg.sessionPromptDirFn != nil && sessionID != "" {
-		if d := cfg.sessionPromptDirFn(sessionID); d != "" {
-			promptDir = d
-		}
-	}
+	promptDir := effectivePromptDir(cfg, sessionID)
 
 	if cfg.systemPrompt != "" {
 		// 传统模式：用户提供的纯字符串
@@ -1170,6 +1171,17 @@ func (a *App) buildSystemPrompt(cfg appConfig, memMgr *memory.Manager, workDir, 
 	return text
 }
 
+// effectivePromptDir 会话级提示词目录：解析非空时覆盖全局 promptDir（不同
+// 会话可并行携带不同提示词档位；空结果保持全局值）。
+func effectivePromptDir(cfg appConfig, sessionID string) string {
+	if cfg.sessionPromptDirFn != nil && sessionID != "" {
+		if d := cfg.sessionPromptDirFn(sessionID); d != "" {
+			return d
+		}
+	}
+	return cfg.promptDir
+}
+
 // resolvePrompt 按 promptDir > 嵌入默认值 的优先级解析 prompt。
 func resolvePrompt(promptDir, embedName string) string {
 	if promptDir != "" {
@@ -1184,6 +1196,17 @@ func resolvePrompt(promptDir, embedName string) string {
 // 注意：不含 run 级动态信息（会话工作目录）——实际 run 时会按会话注入。
 func (a *App) GetSystemPrompt() string {
 	return a.buildSystemPrompt(a.config, nil, "", "")
+}
+
+// SessionSystemPrompt 按会话解析的 system prompt（会话提示词目录 + 会话
+// 工作目录；供宿主预览某会话生效的提示词）。不含沙箱根与 memory 段。
+func (a *App) SessionSystemPrompt(sessionID string) string {
+	cfg := a.config
+	workDir := ""
+	if cfg.sessionWorkDirFn != nil && sessionID != "" {
+		workDir = cfg.sessionWorkDirFn(sessionID)
+	}
+	return a.buildSystemPrompt(cfg, nil, workDir, sessionID)
 }
 
 // buildPromptVars 构建提示词模板变量。
@@ -1276,6 +1299,13 @@ func toPublicEvent(ev loop.Event) Event {
 		StatusKey:  ev.StatusKey,
 		Usage:      ev.Usage,
 		Error:      ev.Error,
+
+		AgentID:       ev.AgentID,
+		AgentDesc:     ev.AgentDesc,
+		AgentStatus:   ev.AgentStatus,
+		AgentActivity: ev.AgentActivity,
+		AgentToolUses: ev.AgentToolUses,
+		AgentTokens:   ev.AgentTokens,
 	}
 }
 

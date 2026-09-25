@@ -221,7 +221,9 @@ func (g *Gate) CheckResult(toolName string, input string, level Level) Permissio
 
 	// 第 3.5 步：YOLO LLM 分类器（对齐 Claude Code 的 classifyYoloAction 位置）。
 	// 在 allow 规则通过后、默认级别检查前，使用 LLM 子模型判断操作安全性。
-	if g.classifier != nil && level > LevelReadOnly {
+	// 仅在 bypass 模式生效：分类器的「安全自动放行」是绕过模式的智能决策；
+	// 在 default（手动审批）模式运行会替用户批准写操作，架空审批语义。
+	if g.classifier != nil && level > LevelReadOnly && g.mode == ModeBypassPermissions {
 		g.mu.RLock()
 		clf := g.classifier
 		transcript := g.currentTranscript

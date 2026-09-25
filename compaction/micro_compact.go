@@ -3,10 +3,17 @@ package compaction
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/Dream355873200/GoAgent/message"
 )
+
+// imageMarker 内联图片标记前缀。图片结果绝不能 head+tail 截断——截断
+// 会产出损坏的 base64，发给端点必 400 且会话永久卡死。压缩策略：历史
+// 图片整体回收为占位符（模型产生图片的那一轮已经看过并消化了内容）。
+const imageMarker = "[IMAGE"
 
 // 常见的可压缩工具类型（对齐 Claude Code 的 COMPACTABLE_TOOLS）。
 // 这些工具的结果会被 microcompact 处理。
@@ -103,11 +110,48 @@ func applyToolResultBudget(messages []message.Message, maxChars int, compactable
 	result := make([]message.Message, len(messages))
 	copy(result, messages)
 
+	// 图片结果块收集：超出预算的图片结果不能 head+tail 截断（会产出损坏
+	// base64，发给端点必 400 且会话永久卡死）。策略：最近 imgTailMessages
+	// 条消息内的图片**全部完整保留**（覆盖"一轮多张参考图"的对比场景；
+	// 1 个用户回合 ≈ 2~6 条消息），更早的整体回收为占位符——占位符携带
+	// 原图文件路径，模型之后可用 vision_ask/Read 重新查看。
+	const imgTailMessages = 40
+	type blockRef struct{ i, j int }
+	var imgBlocks []blockRef
+	for i, msg := range result {
+		for j, block := range msg.Content {
+			if block.Type == "tool_result" && isCompactableTool(block.ToolName, compactableTools) &&
+				len(block.Text) > maxChars && strings.Contains(block.Text, imageMarker) {
+				imgBlocks = append(imgBlocks, blockRef{i, j})
+			}
+		}
+	}
+	recycle := map[string]bool{}
+	for _, r := range imgBlocks {
+		if r.i < len(result)-imgTailMessages {
+			recycle[fmt.Sprintf("%d:%d", r.i, r.j)] = true
+		}
+	}
+	var pathRe = regexp.MustCompile(`[A-Za-z]:\\[^\s"']+`)
+
 	for i, msg := range result {
 		for j, block := range msg.Content {
 			// 只处理compactable工具的结果
 			if block.Type == "tool_result" && isCompactableTool(block.ToolName, compactableTools) && len(block.Text) > maxChars {
 				original := len(block.Text)
+                // 内联图片结果：禁止 head+tail 截断（会产出损坏 base64，
+                // 发给端点必 400 且会话永久卡死）。最近 40 条消息内的图片
+                // 完整保留（多图对比场景友好），更早的整体回收为占位符
+                //（携带原图路径，模型可随时用 vision_ask 重新查看）。
+				if strings.Contains(block.Text, imageMarker) {
+					if recycle[fmt.Sprintf("%d:%d", i, j)] {
+						path := pathRe.FindString(block.Text)
+						result[i].Content[j].Text = "[截图已省略：历史图片已回收，原图保存在 " + path +
+							"；如需再次查看，用 vision_ask 读取该文件路径]"
+						freed += (original - len(result[i].Content[j].Text)) / 4
+					}
+					continue
+				}
 				// 保留头尾各 10KB
 				headSize := 10_000
 				if headSize > original/2 {
@@ -163,11 +207,15 @@ func removeConsumedToolResults(messages []message.Message, compactableTools []st
 	}
 
 	// 将已消费的工具结果替换为标记（只处理compactable工具）。
+	// 图片结果跳过：它们由 Pass 1 的保留策略管理（最新 2 张完整可读）。
 	for i, msg := range result {
 		for j, block := range msg.Content {
 			if block.Type == "tool_result" && consumed[block.ForToolUseID] && len(block.Text) > 100 {
 				// 只处理compactable工具
 				if !isCompactableTool(block.ToolName, compactableTools) {
+					continue
+				}
+				if strings.Contains(block.Text, imageMarker) {
 					continue
 				}
 				original := len(block.Text)

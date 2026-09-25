@@ -109,8 +109,8 @@ type ToolEntry struct {
 	Permission  permission.Level
 	Concurrent  bool
 	// Class 副作用分级（executor.Class）。非 Unset 时优先于 Concurrent。
-	Class executor.Class
-	ExecuteFn   func(ctx context.Context, input json.RawMessage) (string, error)
+	Class     executor.Class
+	ExecuteFn func(ctx context.Context, input json.RawMessage) (string, error)
 
 	// InterruptBehavior 中断行为："cancel" 或 "block"。默认 "cancel"。
 	InterruptBehavior  string
@@ -143,6 +143,14 @@ type Event struct {
 	// StatusKey 非空时本事件是「状态行更新」而非追加消息：前端按 Key
 	// 原地替换显示（如 429 重试的倒计时行）。Text 为空 = 清除该状态行。
 	StatusKey string
+
+	// 子 agent 进度字段（EvtSubAgentProgress；由工具经 EmitFromTool 发射）。
+	AgentID       string
+	AgentDesc     string
+	AgentStatus   string
+	AgentActivity string
+	AgentToolUses int
+	AgentTokens   int
 }
 
 // 事件类型（匹配公共 EventType）。
@@ -160,6 +168,9 @@ const (
 	EvtError        = 8
 	EvtProgress     = 9
 	EvtCompaction   = 10
+	// EvtSubAgentProgress = 11 对齐公共 EventSubAgentProgress：子 agent 进度
+	//（工具执行期间经 EmitFromTool 发射，不由循环本身产生）。
+	EvtSubAgentProgress = 11
 	// EvtInterrupted = 15 对齐公共 EventInterrupted：用户主动终止。
 	EvtInterrupted = 15
 	// 公共 EventRetrieval = 16（检索事件不经过 loop，跳过该数值）。
@@ -266,11 +277,60 @@ func (l *Loop) logDebug(format string, args ...any) {
 // Run 启动 agent 循环并返回一个事件通道。
 func (l *Loop) Run(ctx context.Context, input string) <-chan Event {
 	out := make(chan Event, 64)
+	sink := &toolSink{out: out, done: make(chan struct{})}
 	go func() {
 		defer close(out)
-		l.run(ctx, input, out)
+		defer sink.close() // 先于 close(out)：迟到的工具事件被丢弃而非向已关闭通道发送
+		l.run(context.WithValue(ctx, toolSinkKey{}, sink), input, out)
 	}()
 	return out
+}
+
+// toolSinkKey 工具事件通道的 context 键。
+type toolSinkKey struct{}
+
+// toolSink 让执行中的工具向本次 run 的事件流追加事件。工具可能在循环
+// 结束后仍在运行（中断、后台化），关闭后的发射静默丢弃。
+type toolSink struct {
+	mu     sync.RWMutex
+	closed bool
+	out    chan<- Event
+	done   chan struct{}
+}
+
+func (s *toolSink) emit(ev Event) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return
+	}
+	select {
+	case s.out <- ev:
+	case <-s.done:
+	}
+}
+
+func (s *toolSink) close() {
+	close(s.done) // 先解除阻塞中的发射，再拿写锁
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
+}
+
+// EmitFromTool 从工具执行 ctx 向所属 run 的事件流发射事件；ctx 不来自
+// 循环（或 run 已结束）时返回 false。
+func EmitFromTool(ctx context.Context, ev Event) bool {
+	s, ok := ctx.Value(toolSinkKey{}).(*toolSink)
+	if !ok || s == nil {
+		return false
+	}
+	s.emit(ev)
+	return true
+}
+
+// DetachToolSink 返回不再关联事件流的 ctx（后台任务脱离本次 run 后使用）。
+func DetachToolSink(ctx context.Context) context.Context {
+	return context.WithValue(ctx, toolSinkKey{}, (*toolSink)(nil))
 }
 
 // FinalMessages 返回循环结束后的完整消息列表。

@@ -9,12 +9,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/Dream355873200/GoAgent/message"
 	"github.com/Dream355873200/GoAgent/provider"
@@ -51,6 +56,9 @@ type Provider struct {
 	mu     sync.RWMutex
 	config Config
 	client *http.Client
+	// imgFormats 记录每个 端点|模型 实测可用的图片编码（datauri/base64）。
+	// 首次图片 4xx 自动探测切换并记忆——对任意中转自愈，无需逐个适配。
+	imgFormats map[string]string
 }
 
 // New 创建一个新的 OpenAI Provider。
@@ -69,11 +77,24 @@ func New(cfg Config) *Provider {
 	if cfg.MaxOutputTokens <= 0 {
 		cfg.MaxOutputTokens = 4096
 	}
+	// 不设 http.Client.Timeout（它覆盖整个流式响应，长回复会被误杀）；
+	// 只限响应头等待，流式读取的空闲由 consumeStream 的看门狗兜底。
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = responseHeaderTimeout
 	return &Provider{
-		config: cfg,
-		client: &http.Client{},
+		config:     cfg,
+		client:     &http.Client{Transport: transport},
+		imgFormats: map[string]string{},
 	}
 }
+
+const (
+	// responseHeaderTimeout 请求发出后等待响应头的上限（网关排队/挂死）。
+	responseHeaderTimeout = 2 * time.Minute
+	// streamIdleTimeout 流式响应连续无数据的上限：上游连接不断但不再
+	// 吐字节时，run 会永远卡在读流上，只能靠用户中断。
+	streamIdleTimeout = 3 * time.Minute
+)
 
 // ---------- OpenAI API 请求/响应类型 ----------
 
@@ -153,6 +174,19 @@ type chatUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// OpenAI 标准缓存计量（prompt cache 命中的输入 token）；多数中转/模型
+	// 不返回该字段，缺省时缓存命中率为 0、UI 不展示缓存行。
+	PromptTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details,omitempty"`
+}
+
+// cacheRead 提取缓存命中的输入 token 数（无字段时为 0）。
+func (u *chatUsage) cacheRead() int {
+	if u == nil || u.PromptTokensDetails == nil {
+		return 0
+	}
+	return u.PromptTokensDetails.CachedTokens
 }
 
 // streamChunk 是 SSE 流中的一个数据块。
@@ -216,10 +250,9 @@ func (p *Provider) applyExtraBody(jsonBody []byte) ([]byte, error) {
 	return json.Marshal(m)
 }
 
-func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan provider.StreamEvent, error) {
-	// 构建请求体。
-	body := p.buildChatRequest(req, true)
-
+// marshalChat 构建并序列化请求体（含 ExtraBody 合并）。
+func (p *Provider) marshalChat(req *provider.Request, stream bool) ([]byte, error) {
+	body := p.buildChatRequest(req, stream)
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("序列化请求失败: %w", err)
@@ -227,7 +260,11 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan pr
 	if jsonBody, err = p.applyExtraBody(jsonBody); err != nil {
 		return nil, fmt.Errorf("合并 ExtraBody 失败: %w", err)
 	}
+	return jsonBody, nil
+}
 
+// doChat 发送请求体并做状态码检查。
+func (p *Provider) doChat(ctx context.Context, jsonBody []byte) (*http.Response, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.config.BaseURL+"/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
 		return nil, fmt.Errorf("创建 HTTP 请求失败: %w", err)
@@ -238,11 +275,48 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan pr
 	if err != nil {
 		return nil, fmt.Errorf("HTTP 请求失败: %w", err)
 	}
-
-	// 检查 HTTP 状态码。
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
+		dumpFailedRequest(jsonBody)
 		return nil, p.handleHTTPError(resp)
+	}
+	return resp, nil
+}
+
+// sendChat 发送对话请求；若因图片编码被 4xx 拒绝（各家中转对 data URI /
+// 裸 base64 支持不一），自动切换编码重试一次并按 端点|模型 记忆——一次
+// 探测，之后所有请求直接用对的格式，无需逐家中转适配。
+func (p *Provider) sendChat(ctx context.Context, req *provider.Request, stream bool) (*http.Response, error) {
+	jsonBody, err := p.marshalChat(req, stream)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.doChat(ctx, jsonBody)
+	if err != nil && requestHasImage(req.Messages) && p.maybeSwitchImageFormat(err) {
+		if jsonBody, err = p.marshalChat(req, stream); err == nil {
+			resp, err = p.doChat(ctx, jsonBody)
+		}
+	}
+	return resp, err
+}
+
+// dumpFailedRequest 调试辅助：FLAI_DEBUG_REQUEST=1 时，把被端点拒绝的请求
+// 体完整落盘，便于定位是哪个内容触发的 4xx。
+func dumpFailedRequest(jsonBody []byte) {
+	if os.Getenv("FLAI_DEBUG_REQUEST") != "1" {
+		return
+	}
+	dir := os.TempDir()
+	p := filepath.Join(dir, "ycode-failed-request.json")
+	if werr := os.WriteFile(p, jsonBody, 0o644); werr == nil {
+		fmt.Println("[openai] 失败请求已转储:", p)
+	}
+}
+
+func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan provider.StreamEvent, error) {
+	resp, err := p.sendChat(ctx, req, true)
+	if err != nil {
+		return nil, err
 	}
 
 	// 启动 SSE 流消费 goroutine。
@@ -253,31 +327,11 @@ func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan pr
 
 // Complete 实现非流式 API 调用。
 func (p *Provider) Complete(ctx context.Context, req *provider.Request) (*provider.Response, error) {
-	body := p.buildChatRequest(req, false)
-
-	jsonBody, err := json.Marshal(body)
+	resp, err := p.sendChat(ctx, req, false)
 	if err != nil {
-		return nil, fmt.Errorf("序列化请求失败: %w", err)
-	}
-	if jsonBody, err = p.applyExtraBody(jsonBody); err != nil {
-		return nil, fmt.Errorf("合并 ExtraBody 失败: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", p.config.BaseURL+"/chat/completions", bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("创建 HTTP 请求失败: %w", err)
-	}
-	p.setHeaders(httpReq)
-
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("HTTP 请求失败: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, p.handleHTTPError(resp)
-	}
 
 	var chatResp chatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
@@ -295,8 +349,9 @@ func (p *Provider) Complete(ctx context.Context, req *provider.Request) (*provid
 	var usage provider.Usage
 	if chatResp.Usage != nil {
 		usage = provider.Usage{
-			InputTokens:  chatResp.Usage.PromptTokens,
-			OutputTokens: chatResp.Usage.CompletionTokens,
+			InputTokens:     chatResp.Usage.PromptTokens,
+			OutputTokens:    chatResp.Usage.CompletionTokens,
+			CacheReadTokens: chatResp.Usage.cacheRead(),
 		}
 	}
 
@@ -343,7 +398,7 @@ func (p *Provider) buildChatRequest(req *provider.Request, stream bool) chatRequ
 	disableTools := p.config.DisableTools
 	p.mu.RUnlock()
 
-	msgs := toOpenAIMessages(req.SystemPrompt, req.Messages)
+	msgs := p.toOpenAIMessages("", req.SystemPrompt, req.Messages)
 	cr := chatRequest{
 		Model:    model,
 		Messages: msgs,
@@ -422,11 +477,20 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, out c
 	toolStates := make(map[int]*toolCallState)
 	var assistantText strings.Builder
 
+	// 空闲看门狗：超时关闭响应体，阻塞中的 Scan 随即返回错误。
+	var idleFired atomic.Bool
+	idle := time.AfterFunc(streamIdleTimeout, func() {
+		idleFired.Store(true)
+		resp.Body.Close()
+	})
+	defer idle.Stop()
+
 	scanner := bufio.NewScanner(resp.Body)
 	// 增大缓冲区以处理大型响应。
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for scanner.Scan() {
+		idle.Reset(streamIdleTimeout)
 		// 检查上下文取消。
 		select {
 		case <-ctx.Done():
@@ -463,8 +527,9 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, out c
 				out <- provider.StreamEvent{
 					Type: provider.EventUsage,
 					Usage: &provider.Usage{
-						InputTokens:  chunk.Usage.PromptTokens,
-						OutputTokens: chunk.Usage.CompletionTokens,
+						InputTokens:     chunk.Usage.PromptTokens,
+						OutputTokens:    chunk.Usage.CompletionTokens,
+						CacheReadTokens: chunk.Usage.cacheRead(),
 					},
 				}
 			}
@@ -540,8 +605,9 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, out c
 				out <- provider.StreamEvent{
 					Type: provider.EventUsage,
 					Usage: &provider.Usage{
-						InputTokens:  chunk.Usage.PromptTokens,
-						OutputTokens: chunk.Usage.CompletionTokens,
+						InputTokens:     chunk.Usage.PromptTokens,
+						OutputTokens:    chunk.Usage.CompletionTokens,
+						CacheReadTokens: chunk.Usage.cacheRead(),
 					},
 				}
 			}
@@ -582,6 +648,9 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, out c
 		// context 取消是正常的用户主动中断，不作为错误报告。
 		if ctx.Err() != nil {
 			return
+		}
+		if idleFired.Load() {
+			err = fmt.Errorf("上游 %s 无数据，已断开", streamIdleTimeout)
 		}
 		out <- provider.StreamEvent{Type: provider.EventError, Error: fmt.Errorf("读取 SSE 流失败: %w", err)}
 	}
@@ -663,7 +732,72 @@ func splitImagePrefix(s string) (media, b64 string, ok bool) {
 	return media, b64, true
 }
 
-func toOpenAIMessages(systemPrompt string, msgs []message.Message) []chatMessage {
+// imageURLFor 按 (端点|模型) 实测记忆的编码组装图片。默认 OpenAI 标准
+// data URI；FLAI_IMAGE_URL_FORMAT=base64 可强制。中转兼容差异由
+// maybeSwitchImageFormat 在首个图片 4xx 时自动探测解决，不逐家适配。
+func (p *Provider) imageURLFor(media, b64 string) string {
+	dataURI := "data:image/" + media + ";base64," + b64
+	if strings.EqualFold(os.Getenv("FLAI_IMAGE_URL_FORMAT"), "base64") {
+		return b64
+	}
+	key := p.imgFormatKey()
+	p.mu.RLock()
+	f := p.imgFormats[key]
+	p.mu.RUnlock()
+	if f == "base64" {
+		return b64
+	}
+	return dataURI
+}
+
+// imgFormatKey 缓存键：端点 + 模型（同一中转不同模型要求可能不同）。
+func (p *Provider) imgFormatKey() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.config.BaseURL + "|" + p.config.Model
+}
+
+// maybeSwitchImageFormat 图片相关 4xx 时切换编码并记忆，返回 true 表示
+// 值得用另一种格式重试一次。
+func (p *Provider) maybeSwitchImageFormat(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	hit := strings.Contains(msg, "base64") || strings.Contains(msg, "image") ||
+		strings.Contains(msg, "图片") || strings.Contains(msg, "格式") || strings.Contains(msg, "解析")
+	if !hit {
+		return false
+	}
+	key := p.imgFormatKey()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.imgFormats == nil { // 防御：任何构造路径漏掉初始化也不崩
+		p.imgFormats = map[string]string{}
+	}
+	cur := p.imgFormats[key]
+	next := "base64"
+	if cur == "base64" {
+		next = "datauri"
+	}
+	p.imgFormats[key] = next
+	fmt.Println("[openai] 图片编码自适应:", key, "->", next, "（下次请求生效）")
+	return true
+}
+
+// requestHasImage 请求中是否存在待发送的内联图片。
+func requestHasImage(msgs []message.Message) bool {
+	for _, msg := range msgs {
+		for _, block := range msg.Content {
+			if block.Type == "tool_result" && strings.HasPrefix(block.Text, "[IMAGE ") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (p *Provider) toOpenAIMessages(_ string, systemPrompt string, msgs []message.Message) []chatMessage {
 	var result []chatMessage
 
 	// 系统提示作为第一条消息。
@@ -674,6 +808,31 @@ func toOpenAIMessages(systemPrompt string, msgs []message.Message) []chatMessage
 		})
 	}
 
+	// tool_calls 配对修复：OpenAI 协议要求带 tool_calls 的 assistant 消息
+	// 后面必须紧跟每个 id 的 tool 结果。压缩/截断层可能弄丢配对的 tool
+	// 消息（导致 400 insufficient tool messages），这里在发送前校验配对，
+	// 缺失的自动补一条占位 tool 消息。
+	pendingIDs := []string{}
+	pendingSet := map[string]bool{}
+	flushPendingToolResults := func() {
+		if len(pendingSet) == 0 {
+			pendingIDs = nil
+			return
+		}
+		for _, id := range pendingIDs {
+			if id == "" || !pendingSet[id] {
+				continue
+			}
+			result = append(result, chatMessage{
+				Role:       "tool",
+				ToolCallID: id,
+				Content:    "[工具结果已缺失：历史压缩时被移除；如需该信息请重新调用该工具]",
+			})
+		}
+		pendingIDs = nil
+		pendingSet = map[string]bool{}
+	}
+
 	for _, msg := range msgs {
 		// 检查是否包含 tool_result — 需要特殊处理。
 		hasToolResult := false
@@ -682,6 +841,10 @@ func toOpenAIMessages(systemPrompt string, msgs []message.Message) []chatMessage
 				hasToolResult = true
 				break
 			}
+		}
+
+		if !hasToolResult {
+			flushPendingToolResults()
 		}
 
 		if hasToolResult {
@@ -695,12 +858,27 @@ func toOpenAIMessages(systemPrompt string, msgs []message.Message) []chatMessage
 					// 多模态图片通道：工具结果以 [IMAGE png <base64>] 开头时，
 					// 转成 OpenAI 多模态 content 数组（text + image_url data URI）。
 					// 供视觉类工具（截图裁决）把图片送进支持视觉的模型。
+					// 防线：base64 必须可解码（压缩截断/损坏的标记直接降级为
+					// 文本），坏图发给任何端点都会 400 并卡死整轮。
 					if media, b64, ok := splitImagePrefix(content); ok {
+						if _, decErr := base64.StdEncoding.DecodeString(b64); decErr != nil {
+							// 标记里的图片数据损坏（截断/压缩损伤）→ 降级为纯文本
+							body := content
+							if idx := strings.Index(content, "\n"); idx >= 0 {
+								body = content[idx+1:]
+							}
+							result = append(result, chatMessage{
+								Role:       "tool",
+								Content:    "[图片已省略：数据无效]\n" + body,
+								ToolCallID: block.ForToolUseID,
+							})
+							continue
+						}
 						result = append(result, chatMessage{
 							Role: "tool",
 							Content: []chatContentPart{
 								{Type: "text", Text: "[截图已附上]"},
-								{Type: "image_url", ImageURL: &chatImageURL{URL: "data:image/" + media + ";base64," + b64}},
+								{Type: "image_url", ImageURL: &chatImageURL{URL: p.imageURLFor(media, b64)}},
 							},
 							ToolCallID: block.ForToolUseID,
 						})
@@ -711,6 +889,11 @@ func toOpenAIMessages(systemPrompt string, msgs []message.Message) []chatMessage
 						Content:    content,
 						ToolCallID: block.ForToolUseID,
 					})
+				}
+			}
+			for _, block := range msg.Content {
+				if block.Type == "tool_result" {
+					delete(pendingSet, block.ForToolUseID)
 				}
 			}
 			continue
@@ -747,7 +930,17 @@ func toOpenAIMessages(systemPrompt string, msgs []message.Message) []chatMessage
 			}
 		}
 
+		for _, tc := range toolCalls {
+			if tc.ID != "" {
+				pendingIDs = append(pendingIDs, tc.ID)
+				pendingSet[tc.ID] = true
+			}
+		}
+
 		result = append(result, openaiMsg)
 	}
+
+	// 收尾：仍有未应答的 tool_calls（历史末尾被压缩截断）→ 补占位
+	flushPendingToolResults()
 	return result
 }

@@ -23,8 +23,17 @@ type scriptedProvider struct {
 	calls   int
 }
 
+// Stream 把 Complete 的整条应答作为一次 MessageComplete 下发（子 agent 走流式）。
 func (p *scriptedProvider) Stream(ctx context.Context, req *provider.Request) (<-chan provider.StreamEvent, error) {
-	return nil, fmt.Errorf("scriptedProvider: 不支持 Stream")
+	resp, err := p.Complete(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	ch := make(chan provider.StreamEvent, 2)
+	ch <- provider.StreamEvent{Type: provider.EventUsage, Usage: &resp.Usage}
+	ch <- provider.StreamEvent{Type: provider.EventMessageComplete, Message: &resp.Message, StopReason: resp.StopReason}
+	close(ch)
+	return ch, nil
 }
 
 func (p *scriptedProvider) Complete(ctx context.Context, req *provider.Request) (*provider.Response, error) {

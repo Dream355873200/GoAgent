@@ -8,6 +8,7 @@ package builtin
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,10 +16,8 @@ import (
 	"strings"
 
 	"github.com/Dream355873200/GoAgent"
-	"github.com/Dream355873200/GoAgent/agent"
 	"github.com/Dream355873200/GoAgent/bgtask"
 	"github.com/Dream355873200/GoAgent/plan"
-	"github.com/Dream355873200/GoAgent/provider"
 	"github.com/Dream355873200/GoAgent/task"
 )
 
@@ -55,38 +54,6 @@ func init() {
 			{Name: "EnterPlanMode", Def: EnterPlanModeTool(store)},
 			{Name: "ExitPlanMode", Def: ExitPlanModeTool(store)},
 		}
-	})
-
-	// 注册子 agent 工具提供函数。
-	goagent.RegisterSubAgentToolsProvider(func(prov provider.Provider, defs []agent.Definition) []goagent.NamedTool {
-		runner := agent.NewRunner(prov)
-		var tools []goagent.NamedTool
-		for _, def := range defs {
-			d := def // 闭包捕获
-			tools = append(tools, goagent.NamedTool{
-				Name: "Agent_" + d.Name,
-				Def: goagent.ToolDef{
-					Description: fmt.Sprintf("启动子 agent '%s' 执行独立任务。%s\n"+
-						"子 agent 拥有独立的上下文和工具集。", d.Name, d.Description),
-					Input:      agent.AgentToolInput{},
-					Permission: goagent.Normal,
-					Concurrent: true,
-					Execute: func(ctx goagent.Context, in agent.AgentToolInput) (string, error) {
-						if in.Prompt == "" {
-							return "", fmt.Errorf("prompt 不能为空")
-						}
-						result, err := runner.Run(ctx, d, in.Prompt)
-						if err != nil {
-							return "", fmt.Errorf("子 agent '%s' 执行失败: %w", d.Name, err)
-						}
-						return fmt.Sprintf("%s\n\n--- 子 agent '%s': %d 轮, %d+%d tokens ---",
-							result.FinalText, d.Name, result.TurnCount,
-							result.Usage.InputTokens, result.Usage.OutputTokens), nil
-					},
-				},
-			})
-		}
-		return tools
 	})
 
 	// 注册后台任务工具提供函数。
@@ -227,6 +194,12 @@ const maxLineLen = 2000
 // 二进制检测采样字节数。
 const binarySniffLen = 8000
 
+// 图片扩展名 → MIME 子类型（Read 的内联图片通道用）。
+var imageMimeByExt = map[string]string{
+	".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png", ".gif": "gif",
+	".webp": "webp", ".bmp": "bmp",
+}
+
 func executeRead(ctx goagent.Context, in ReadInput) (string, error) {
 	if in.FilePath == "" {
 		return "", fmt.Errorf("file_path 不能为空")
@@ -235,6 +208,16 @@ func executeRead(ctx goagent.Context, in ReadInput) (string, error) {
 	raw, err := os.ReadFile(in.FilePath)
 	if err != nil {
 		return "", fmt.Errorf("无法打开文件: %w", err)
+	}
+
+	// 图片文件：以内联图片返回，模型直接看到画面（视觉验收 / 截图确认）。
+	// 走与视觉工具相同的 [IMAGE <mime> <base64>] 通道，provider 转多模态消息。
+	if media, ok := imageMimeByExt[strings.ToLower(filepath.Ext(in.FilePath))]; ok {
+		if len(raw) > 8<<20 {
+			return fmt.Sprintf("(%s 图片过大，%d 字节 — 超过 8MB 读取上限)", filepath.Base(in.FilePath), len(raw)), nil
+		}
+		b64 := base64.StdEncoding.EncodeToString(raw)
+		return fmt.Sprintf("[IMAGE %s %s]\n（图片: %s，%d 字节）", media, b64, filepath.Base(in.FilePath), len(raw)), nil
 	}
 
 	// 二进制检测：采样段里 NUL 比例高或不可打印控制字符多 → 不当文本读。

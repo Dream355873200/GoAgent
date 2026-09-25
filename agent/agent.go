@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync"
 
 	"github.com/Dream355873200/GoAgent/message"
 	"github.com/Dream355873200/GoAgent/provider"
@@ -64,10 +66,25 @@ type RunResult struct {
 	Usage provider.Usage
 }
 
+// Progress 是子 agent 运行中的进度快照（每次工具启动、每轮结束时上报）。
+type Progress struct {
+	// Turn 是当前轮次（从 1 开始）。
+	Turn int
+	// ToolUses 是累计工具调用次数。
+	ToolUses int
+	// Tokens 是累计 token（输入+输出）。
+	Tokens int
+	// Activity 是一行活动描述（如 "Read main.go"、"思考: …"）。
+	Activity string
+}
+
 // Runner 执行子 agent。
 type Runner struct {
 	// defaultProvider 是没有指定 provider 时使用的默认 provider。
 	defaultProvider provider.Provider
+
+	// onProgress 进度回调（可选）；Runner 内部加锁串行调用。
+	onProgress func(Progress)
 }
 
 // NewRunner 创建一个新的子 agent 运行器。
@@ -75,8 +92,15 @@ func NewRunner(defaultProvider provider.Provider) *Runner {
 	return &Runner{defaultProvider: defaultProvider}
 }
 
+// OnProgress 设置进度回调，返回 Runner 本身便于链式调用。
+func (r *Runner) OnProgress(fn func(Progress)) *Runner {
+	r.onProgress = fn
+	return r
+}
+
 // Run 执行子 agent 并返回结果。
-// 这是一个隔离的 agent 循环，不共享主循环的消息历史。
+// 这是一个隔离的 agent 循环，不共享主循环的消息历史。模型响应走流式
+// （长生成不受响应头超时限制），同一轮的多个工具调用并行执行。
 func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunResult, error) {
 	prov := def.Provider
 	if prov == nil {
@@ -109,6 +133,22 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 	var totalUsage provider.Usage
 	turnCount := 0
 
+	var progMu sync.Mutex
+	toolUses := 0
+	report := func(activity string) {
+		if r.onProgress == nil {
+			return
+		}
+		progMu.Lock()
+		defer progMu.Unlock()
+		r.onProgress(Progress{
+			Turn:     turnCount + 1,
+			ToolUses: toolUses,
+			Tokens:   totalUsage.InputTokens + totalUsage.OutputTokens,
+			Activity: activity,
+		})
+	}
+
 	// 子 agent 循环。
 	for turnCount < maxTurns {
 		if ctx.Err() != nil {
@@ -116,7 +156,7 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 		}
 
 		// 调用 API。
-		resp, err := prov.Complete(ctx, &provider.Request{
+		resp, err := streamTurn(ctx, prov, &provider.Request{
 			Messages:     messages,
 			SystemPrompt: def.SystemPrompt,
 			Tools:        toolDefs,
@@ -128,8 +168,10 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 		}
 
 		// 累计 token 使用。
+		progMu.Lock()
 		totalUsage.InputTokens += resp.Usage.InputTokens
 		totalUsage.OutputTokens += resp.Usage.OutputTokens
+		progMu.Unlock()
 
 		// 添加助手消息。
 		messages = append(messages, resp.Message)
@@ -145,26 +187,36 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 				Usage:     totalUsage,
 			}, nil
 		}
+		if text := strings.TrimSpace(message.ExtractText(resp.Message)); text != "" {
+			report(firstLine(text))
+		}
 
-		// 执行工具调用。
-		for _, tc := range toolCalls {
+		// 并行执行本轮工具调用，结果按调用顺序回填。
+		results := make([]message.Message, len(toolCalls))
+		var wg sync.WaitGroup
+		for i, tc := range toolCalls {
 			tool := toolIndex[tc.Name]
 			if tool == nil {
-				messages = append(messages, message.NewToolResultMessage(
-					tc.ID,
-					fmt.Sprintf("未知工具: %s", tc.Name),
-					true,
-				))
+				results[i] = message.NewToolResultMessage(tc.ID, fmt.Sprintf("未知工具: %s", tc.Name), true)
 				continue
 			}
-
-			result, toolErr := tool.Execute(ctx, tc.Input)
-			isError := toolErr != nil
-			if isError {
-				result = "错误: " + toolErr.Error()
-			}
-			messages = append(messages, message.NewToolResultMessage(tc.ID, result, isError))
+			progMu.Lock()
+			toolUses++
+			progMu.Unlock()
+			report(ToolActivity(tc.Name, tc.Input))
+			wg.Add(1)
+			go func(i int, tc message.ToolCall) {
+				defer wg.Done()
+				result, toolErr := tool.Execute(ctx, tc.Input)
+				isError := toolErr != nil
+				if isError {
+					result = "错误: " + toolErr.Error()
+				}
+				results[i] = message.NewToolResultMessage(tc.ID, result, isError)
+			}(i, tc)
 		}
+		wg.Wait()
+		messages = append(messages, results...)
 
 		turnCount++
 	}

@@ -7,6 +7,7 @@ package sysprompt
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -15,7 +16,7 @@ import (
 )
 
 // shellOnce 缓存 shell 探测结果：AddEnvironmentInfo 每次 run 都会组装，
-// 探测（fork bash --version）只做一次。
+// 探测只做一次。
 var (
 	shellOnce  sync.Once
 	shellCache string
@@ -200,26 +201,15 @@ func detectShell() string {
 	return shellCache
 }
 
+// detectShellUncached 报告 Bash 工具实际使用的 shell，不 fork 子进程：
+// Windows 上 PATH 里的 bash 可能是 WSL 启动器（System32\bash.exe），
+// 无控制台启动时永不退出，会把每次 run 卡死在组装 system prompt 上。
 func detectShellUncached() string {
 	if runtime.GOOS == "windows" {
-		// Windows 上检查 SHELL 环境变量（Git Bash）或默认 cmd。
-		cmd := exec.Command("bash", "--version")
-		if output, err := cmd.Output(); err == nil {
-			firstLine := strings.Split(string(output), "\n")[0]
-			if strings.Contains(firstLine, "bash") {
-				return "bash"
-			}
-		}
-		return "cmd"
+		return "cmd" // 与 builtin Bash 工具一致（cmd /c）
 	}
-
-	// Unix 系统。
-	cmd := exec.Command("echo", "$SHELL")
-	if output, err := cmd.Output(); err == nil {
-		shell := strings.TrimSpace(string(output))
-		if shell != "" && shell != "$SHELL" {
-			return shell
-		}
+	if shell := os.Getenv("SHELL"); shell != "" {
+		return shell
 	}
 	return "bash"
 }

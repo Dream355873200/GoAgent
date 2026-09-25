@@ -20,14 +20,28 @@ type sseWriter struct {
 	mu      sync.Mutex
 	w       http.ResponseWriter
 	flusher http.Flusher
+	closed  bool // handler 已返回：此后的写一律丢弃（心跳等异步写者）
 }
 
 func (s *sseWriter) writeEvent(data []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
 	s.w.Write(data)
 	s.flusher.Flush()
 }
+
+func (s *sseWriter) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+}
+
+// sseHeartbeatInterval SSE 注释心跳间隔。任务长时间无帧（模型长思考、
+// 长工具）时连接仍有字节流动，客户端/代理的读空闲超时不会误断流。
+const sseHeartbeatInterval = 15 * time.Second
 
 // runHTTP 启动带 SSE 流式端点的 HTTP 服务器。
 func runHTTP(app *App, addr string) error {
@@ -102,7 +116,8 @@ func newHTTPMux(app *App) *http.ServeMux {
 			http.Error(w, "无效的请求体", http.StatusBadRequest)
 			return
 		}
-		if req.Message == "" {
+		resume := req.ResumeQueue && req.Message == ""
+		if req.Message == "" && !(resume && req.SessionID != "") {
 			http.Error(w, "message 字段必填", http.StatusBadRequest)
 			return
 		}
@@ -120,6 +135,21 @@ func newHTTPMux(app *App) *http.ServeMux {
 		}
 
 		sw := &sseWriter{w: w, flusher: flusher}
+		defer sw.close()
+		heartbeatDone := make(chan struct{})
+		defer close(heartbeatDone)
+		go func() {
+			t := time.NewTicker(sseHeartbeatInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-heartbeatDone:
+					return
+				case <-t.C:
+					sw.writeEvent([]byte(": ping\n\n"))
+				}
+			}
+		}()
 		// 协议信封写出口：统一盖章 seq（连接内单调）与 v（协议版本）。
 		seq := &atomic.Int64{}
 		writeFrame := func(env protocol.Envelope) {
@@ -182,10 +212,10 @@ func newHTTPMux(app *App) *http.ServeMux {
 			// 仅当任务尚未开始（RunSession 尚未 Acquire）时由 bgCancel 兜底。
 		}()
 
-		// 注册中断链路：/interrupt 按会话路由到本任务的 cancel。
+		// 注册中断链路：/interrupt 按会话路由到本任务的 cancel。每个请求
+		// 只注销自己的登记——忙时撞车的请求不会抹掉在跑任务的中断入口。
 		if app.interruptHandler != nil {
-			app.interruptHandler.RegisterSession(sessionID, bgCancel)
-			defer app.interruptHandler.UnregisterSession(sessionID)
+			defer app.interruptHandler.Register(sessionID, bgCancel)()
 		}
 
 		// 获取 App 级别的 handler 引用
@@ -233,8 +263,13 @@ func newHTTPMux(app *App) *http.ServeMux {
 		// 最近的工具批结束边界收到，前端立即收到确认（无需排队 SSE）。
 		// Steer 竞态失败（检查后任务恰好结束）则落回普通新 run 路径。
 		var events <-chan Event
+		if resume && (app.config.sessionManager == nil || app.config.sessionManager.IsBusy(req.SessionID)) {
+			// 唤醒撞上在跑的 run：队列会在该 run 结束后自行消费，无需再起一轮。
+			writeFrame(protocol.Envelope{Type: protocol.TypeMetadata, SessionID: req.SessionID})
+			return
+		}
 		if req.SessionID != "" && app.config.sessionManager != nil {
-			if app.config.steering != nil && app.config.sessionManager.IsBusy(req.SessionID) {
+			if !resume && app.config.steering != nil && app.config.sessionManager.IsBusy(req.SessionID) {
 				if err := app.config.steering.Steer(req.SessionID, req.Message); err == nil {
 					writeFrame(protocol.Envelope{
 						Type:      protocol.TypeSteer,
@@ -245,6 +280,18 @@ func newHTTPMux(app *App) *http.ServeMux {
 						Type:      protocol.TypeMetadata,
 						SessionID: req.SessionID,
 						Steered:   true,
+					})
+					return
+				}
+				// 会话忙但此刻不可插话（run 尚在准备/已在收尾）：改入排队
+				// 车道。直接开新 run 只会撞上会话锁报「正在运行中」，消息丢失。
+				if app.config.sessionManager.IsBusy(req.SessionID) {
+					item := app.config.steering.Enqueue(req.SessionID, req.Message)
+					writeFrame(protocol.Envelope{
+						Type:      protocol.TypeMetadata,
+						SessionID: req.SessionID,
+						Queued:    true,
+						Text:      item.ID,
 					})
 					return
 				}
@@ -842,8 +889,8 @@ func newHTTPMux(app *App) *http.ServeMux {
 	// --- Session 端点 ---
 	// GET /sessions — 列出所有会话摘要（不含消息体）。
 	// 前端据此恢复「最近对话」；session_id 由前端在 /chat 时自行指定。
-	// 磁盘上遗留 running 状态的会话（进程被杀时未及收尾）修正为 interrupted：
-	// 当前进程内存中并无活跃会话，running 只可能是上个进程留下的。
+	// 磁盘上遗留 running 状态的会话（进程被杀时未及收尾）修正为 interrupted；
+	// 本进程内正在跑的会话（IsBusy）保持 running——客户端据此在断流后转轮询跟踪。
 	mux.HandleFunc("GET /sessions", func(w http.ResponseWriter, r *http.Request) {
 		mgr := app.Sessions()
 		if mgr == nil {
@@ -856,7 +903,7 @@ func newHTTPMux(app *App) *http.ServeMux {
 			return
 		}
 		for _, s := range summaries {
-			if s.State == "running" {
+			if s.State == "running" && !mgr.IsBusy(s.ID) {
 				s.State = "interrupted"
 			}
 		}

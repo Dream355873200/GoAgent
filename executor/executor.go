@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+
+	"github.com/Dream355873200/GoAgent/observer"
 )
 
 // Config 控制执行器行为。
@@ -151,6 +153,12 @@ func (e *Executor) partition(calls []ToolCall) [][]ToolCall {
 // 被拒绝则直接返回错误结果，不执行工具。
 // 对齐 Claude Code 的 StreamingToolExecutor.executeTool() 内置权限检查。
 func (e *Executor) executeOne(ctx context.Context, call ToolCall) ToolResult {
+	// 调用 ID 随 ctx 下发：工具据此把自身事件（如子 agent 进度）关联到
+	// 所属的 tool_use（observer.ToolCallIDFromContext）。
+	if call.ID != "" {
+		ctx = observer.WithToolCallID(ctx, call.ID)
+	}
+
 	// 预检查（权限检查、输入验证、中间件、hooks 等）。
 	if call.PreCheck != nil {
 		if reason, denied := call.PreCheck(ctx); denied {

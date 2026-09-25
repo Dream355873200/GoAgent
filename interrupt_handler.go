@@ -31,12 +31,17 @@ var ErrSessionNotFound = errors.New("session not found")
 //	// 在 /interrupt handler 中
 //	handler.Interrupt(sessionID, "用户请求中断")
 type InterruptHandler struct {
-	sessions sync.Map // sessionID → context.CancelFunc
+	mu  sync.Mutex
+	seq uint64
+	// sessionID → 登记 token → cancel。同一会话可有多个登记（同时在途的
+	// 多个 /chat 请求）：各自只注销自己那一条，中断时全部取消——后来的
+	// 请求（如忙时撞车被拒）不会覆盖或删掉真正在跑那个任务的 cancel。
+	sessions map[string]map[uint64]context.CancelFunc
 }
 
 // NewInterruptHandler 创建中断处理器。
 func NewInterruptHandler() *InterruptHandler {
-	return &InterruptHandler{}
+	return &InterruptHandler{sessions: map[string]map[uint64]context.CancelFunc{}}
 }
 
 // WithCancel 创建一个带取消上下文的会话。
@@ -46,45 +51,82 @@ func (h *InterruptHandler) WithCancel(ctx context.Context) (context.Context, con
 	return context.WithCancel(ctx)
 }
 
-// RegisterSession 注册一个会话的取消函数。
-func (h *InterruptHandler) RegisterSession(sessionID string, cancel context.CancelFunc) {
-	h.sessions.Store(sessionID, cancel)
+// Register 为会话追加一条取消登记，返回只注销这一条的函数。
+func (h *InterruptHandler) Register(sessionID string, cancel context.CancelFunc) (unregister func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.sessions == nil {
+		h.sessions = map[string]map[uint64]context.CancelFunc{}
+	}
+	h.seq++
+	token := h.seq
+	if h.sessions[sessionID] == nil {
+		h.sessions[sessionID] = map[uint64]context.CancelFunc{}
+	}
+	h.sessions[sessionID][token] = cancel
+	return func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if m := h.sessions[sessionID]; m != nil {
+			delete(m, token)
+			if len(m) == 0 {
+				delete(h.sessions, sessionID)
+			}
+		}
+	}
 }
 
-// UnregisterSession 注销一个会话。
+// RegisterSession 注册一个会话的取消函数（替换该会话已有的全部登记）。
+// 并发请求场景请用 Register。
+func (h *InterruptHandler) RegisterSession(sessionID string, cancel context.CancelFunc) {
+	h.mu.Lock()
+	delete(h.sessions, sessionID)
+	h.mu.Unlock()
+	h.Register(sessionID, cancel)
+}
+
+// UnregisterSession 注销一个会话的全部登记。
 func (h *InterruptHandler) UnregisterSession(sessionID string) {
-	h.sessions.Delete(sessionID)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.sessions, sessionID)
 }
 
 // Interrupt 请求中断指定会话。
 // sessionID 为空时中断所有会话。
 func (h *InterruptHandler) Interrupt(sessionID string, reason string) error {
+	h.mu.Lock()
+	var cancels []context.CancelFunc
 	if sessionID != "" {
-		// 中断指定会话
-		val, ok := h.sessions.Load(sessionID)
+		m, ok := h.sessions[sessionID]
 		if !ok {
+			h.mu.Unlock()
 			return ErrSessionNotFound
 		}
-		cancel := val.(context.CancelFunc)
-		cancel()
-		h.sessions.Delete(sessionID)
-		return nil
+		for _, c := range m {
+			cancels = append(cancels, c)
+		}
+		delete(h.sessions, sessionID)
+	} else {
+		for _, m := range h.sessions {
+			for _, c := range m {
+				cancels = append(cancels, c)
+			}
+		}
+		h.sessions = map[string]map[uint64]context.CancelFunc{}
 	}
-
-	// 中断所有会话
-	h.sessions.Range(func(k, v any) bool {
-		cancel := v.(context.CancelFunc)
-		cancel()
-		h.sessions.Delete(k)
-		return true
-	})
+	h.mu.Unlock()
+	for _, c := range cancels {
+		c()
+	}
 	return nil
 }
 
 // HasSession 检查指定会话是否在运行。
 func (h *InterruptHandler) HasSession(sessionID string) bool {
-	_, ok := h.sessions.Load(sessionID)
-	return ok
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.sessions[sessionID]) > 0
 }
 
 // InterruptHandlerInterface 是 InterruptHandler 的接口。
