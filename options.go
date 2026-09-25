@@ -48,6 +48,7 @@ type appConfig struct {
 	sessionPromptDirFn  func(sessionID string) string   // 会话 → 提示词目录（覆盖全局）
 	sessionToolFilterFn func(sessionID, toolName string) bool // 会话 → 工具可见性谓词（true 保留）
 	sessionRoleCardFn   func(sessionID string) string                       // 会话 → 角色卡（注入 system prompt；空 = 无）
+	subAgentTraceFn     func(ctx Context) string                            // 子代理轨迹目录（nil = 不落盘）
 	sessionPermModeFn   func(sessionID string) (PermissionModeOption, bool) // 会话 → 权限模式覆写（ok=false 回退全局）
 	sandbox             Sandbox                       // 沙箱工厂（nil = 无沙箱，默认）
 	sandboxPolicy       Policy                        // 沙箱默认策略（WithSandbox 时生效）
@@ -324,6 +325,16 @@ func WithSessionToolFilter(fn func(sessionID, toolName string) bool) Option {
 func WithSessionRoleCard(fn func(sessionID string) string) Option {
 	return optionFunc(func(c *appConfig) {
 		c.sessionRoleCardFn = fn
+	})
+}
+
+// WithSubAgentTraceDir sets a resolver that returns the trace directory for
+// a sub-agent run (from the calling tool's Context). Each run appends its
+// full event stream (thinking/tool/text) as JSONL to <dir>/<toolUseID>.jsonl
+// — hosts use this to render read-only sub-agent timelines. nil = off.
+func WithSubAgentTraceDir(fn func(ctx Context) string) Option {
+	return optionFunc(func(c *appConfig) {
+		c.subAgentTraceFn = fn
 	})
 }
 

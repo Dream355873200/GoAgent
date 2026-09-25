@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/Dream355873200/GoAgent/agent"
 	"github.com/Dream355873200/GoAgent/bgtask"
@@ -59,7 +62,7 @@ type AgentToolInput struct {
 //	    prov,
 //	))
 func AgentToolOf(def agent.Definition, prov provider.Provider) ToolDef {
-	return agentToolDef(def, func() provider.Provider { return prov }, nil)
+	return agentToolDef(def, func() provider.Provider { return prov }, nil, nil)
 }
 
 // AgentTool 同 AgentToolOf，但 provider 在每次调用时取 App 当前的
@@ -74,10 +77,13 @@ func AgentToolOf(def agent.Definition, prov provider.Provider) ToolDef {
 //	    Tools: tools, MaxTurns: 20,
 //	}))
 func (a *App) AgentTool(def agent.Definition) ToolDef {
-	return agentToolDef(def, a.Provider, a.BgTasks)
+	a.mu.RLock()
+	traceFn := a.config.subAgentTraceFn
+	a.mu.RUnlock()
+	return agentToolDef(def, a.Provider, a.BgTasks, traceFn)
 }
 
-func agentToolDef(def agent.Definition, resolve func() provider.Provider, bgMgr func() *bgtask.Manager) ToolDef {
+func agentToolDef(def agent.Definition, resolve func() provider.Provider, bgMgr func() *bgtask.Manager, traceFn func(Context) string) ToolDef {
 	desc := fmt.Sprintf("启动专属 agent「%s」执行任务并返回其结论。%s\n"+
 		"该 agent 拥有独立的工具集和多轮推理循环——适合需要多步检索/分析的领域任务；"+
 		"返回值是它的最终结论（推理过程不回传，不占用你的上下文）。",
@@ -112,7 +118,8 @@ func agentToolDef(def agent.Definition, resolve func() provider.Provider, bgMgr 
 			}
 
 			progress := newAgentProgress(ctx, toolUseID, def.Name)
-			result, err := agent.NewRunner(resolve()).OnProgress(progress.update).Run(ctx, run, in.Task)
+			runner := agent.NewRunner(resolve()).OnProgress(progress.update).OnEvent(subAgentTracer(traceFn, ctx, toolUseID))
+			result, err := runner.Run(ctx, run, in.Task)
 			if err != nil {
 				progress.finish("failed", err.Error())
 				return "", fmt.Errorf("agent「%s」执行失败: %w", def.Name, err)
@@ -254,4 +261,38 @@ func (a *App) Provider() provider.Provider {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.provider
+}
+
+// subAgentTracer 把子代理细粒度事件追加为 JSONL 轨迹（宿主配置了
+// TraceDir 才生效；<dir>/<toolUseID>.jsonl，供只读时间线渲染）。
+func subAgentTracer(traceFn func(Context) string, ctx Context, toolUseID string) func(agent.AgentEvent) {
+	if traceFn == nil {
+		return nil
+	}
+	dir := traceFn(ctx)
+	if dir == "" || toolUseID == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil
+	}
+	path := filepath.Join(dir, toolUseID+".jsonl")
+	var mu sync.Mutex
+	return func(ev agent.AgentEvent) {
+		b, err := json.Marshal(map[string]any{
+			"ts": time.Now().UnixMilli(), "type": ev.Type, "text": ev.Text,
+			"tool": ev.Tool, "input": ev.Input, "result": ev.Result,
+		})
+		if err != nil {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		_, _ = f.Write(append(b, '\n'))
+	}
 }

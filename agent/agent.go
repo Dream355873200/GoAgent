@@ -78,6 +78,16 @@ type Progress struct {
 	Activity string
 }
 
+// AgentEvent 是子 agent 运行的细粒度事件（宿主据此记录完整轨迹，
+// 渲染只读工作过程时间线——对齐主 agent 的会话回放）。
+type AgentEvent struct {
+	Type   string // text | thinking | tool_start | tool_done | error
+	Text   string // text/thinking/error 内容
+	Tool   string // tool_start/tool_done 的工具名
+	Input  string // tool_start 的入参 JSON（截断）
+	Result string // tool_done 的结果文本（截断）
+}
+
 // Runner 执行子 agent。
 type Runner struct {
 	// defaultProvider 是没有指定 provider 时使用的默认 provider。
@@ -85,6 +95,11 @@ type Runner struct {
 
 	// onProgress 进度回调（可选）；Runner 内部加锁串行调用。
 	onProgress func(Progress)
+
+	// onEvent 细粒度事件回调（可选）；与 onProgress 同锁串行调用。
+	onEvent func(AgentEvent)
+
+	progMu sync.Mutex // 串行化进度/事件回调
 }
 
 // NewRunner 创建一个新的子 agent 运行器。
@@ -96,6 +111,22 @@ func NewRunner(defaultProvider provider.Provider) *Runner {
 func (r *Runner) OnProgress(fn func(Progress)) *Runner {
 	r.onProgress = fn
 	return r
+}
+
+// OnEvent 设置细粒度事件回调（文本/思考/工具调用/错误），返回 Runner 链式调用。
+func (r *Runner) OnEvent(fn func(AgentEvent)) *Runner {
+	r.onEvent = fn
+	return r
+}
+
+// emit 细粒度事件出口（progMu 与进度上报同锁，保证轨迹顺序稳定）。
+func (r *Runner) emit(ev AgentEvent) {
+	if r.onEvent == nil {
+		return
+	}
+	r.progMu.Lock()
+	defer r.progMu.Unlock()
+	r.onEvent(ev)
 }
 
 // Run 执行子 agent 并返回结果。
@@ -133,14 +164,13 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 	var totalUsage provider.Usage
 	turnCount := 0
 
-	var progMu sync.Mutex
 	toolUses := 0
 	report := func(activity string) {
 		if r.onProgress == nil {
 			return
 		}
-		progMu.Lock()
-		defer progMu.Unlock()
+		r.progMu.Lock()
+		defer r.progMu.Unlock()
 		r.onProgress(Progress{
 			Turn:     turnCount + 1,
 			ToolUses: toolUses,
@@ -168,10 +198,10 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 		}
 
 		// 累计 token 使用。
-		progMu.Lock()
+		r.progMu.Lock()
 		totalUsage.InputTokens += resp.Usage.InputTokens
 		totalUsage.OutputTokens += resp.Usage.OutputTokens
-		progMu.Unlock()
+		r.progMu.Unlock()
 
 		// 添加助手消息。
 		messages = append(messages, resp.Message)
@@ -180,6 +210,7 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 		toolCalls := message.ExtractToolCalls(resp.Message)
 		if len(toolCalls) == 0 {
 			// 无工具调用，子 agent 完成。
+			r.emit(AgentEvent{Type: "text", Text: message.ExtractText(resp.Message)})
 			return &RunResult{
 				FinalText: message.ExtractText(resp.Message),
 				Messages:  messages,
@@ -189,6 +220,22 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 		}
 		if text := strings.TrimSpace(message.ExtractText(resp.Message)); text != "" {
 			report(firstLine(text))
+		}
+		// 轨迹：本条的思考与文本（assistant 消息随流式到达后落定）
+		for _, c := range resp.Message.Content {
+			switch c.Type {
+			case "thinking":
+				if c.Thinking != "" {
+					r.emit(AgentEvent{Type: "thinking", Text: c.Thinking})
+				}
+			case "text":
+				if strings.TrimSpace(c.Text) != "" {
+					r.emit(AgentEvent{Type: "text", Text: c.Text})
+				}
+			}
+		}
+		for _, tc := range toolCalls {
+			r.emit(AgentEvent{Type: "tool_start", Tool: tc.Name, Input: previewRunese(string(tc.Input), 800)})
 		}
 
 		// 并行执行本轮工具调用，结果按调用顺序回填。
@@ -200,9 +247,9 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 				results[i] = message.NewToolResultMessage(tc.ID, fmt.Sprintf("未知工具: %s", tc.Name), true)
 				continue
 			}
-			progMu.Lock()
+			r.progMu.Lock()
 			toolUses++
-			progMu.Unlock()
+			r.progMu.Unlock()
 			report(ToolActivity(tc.Name, tc.Input))
 			wg.Add(1)
 			go func(i int, tc message.ToolCall) {
@@ -212,6 +259,7 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 				if isError {
 					result = "错误: " + toolErr.Error()
 				}
+				r.emit(AgentEvent{Type: "tool_done", Tool: tc.Name, Result: previewRunese(result, 2000)})
 				results[i] = message.NewToolResultMessage(tc.ID, result, isError)
 			}(i, tc)
 		}
@@ -233,4 +281,12 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 		TurnCount: turnCount,
 		Usage:     totalUsage,
 	}, nil
+}
+
+// previewRunese 截断长文本（轨迹与事件里的入参/结果预览）。
+func previewRunese(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
 }
