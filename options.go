@@ -47,6 +47,8 @@ type appConfig struct {
 	sessionProjectCtxFn func(sessionID string) []string // 会话 → 追加项目上下文文件
 	sessionPromptDirFn  func(sessionID string) string   // 会话 → 提示词目录（覆盖全局）
 	sessionToolFilterFn func(sessionID, toolName string) bool // 会话 → 工具可见性谓词（true 保留）
+	sessionRoleCardFn   func(sessionID string) string                       // 会话 → 角色卡（注入 system prompt；空 = 无）
+	sessionPermModeFn   func(sessionID string) (PermissionModeOption, bool) // 会话 → 权限模式覆写（ok=false 回退全局）
 	sandbox             Sandbox                       // 沙箱工厂（nil = 无沙箱，默认）
 	sandboxPolicy       Policy                        // 沙箱默认策略（WithSandbox 时生效）
 	autoPersist         *bool                         // nil 表示使用默认（true）
@@ -311,6 +313,27 @@ func WithSessionPromptDir(fn func(sessionID string) string) Option {
 func WithSessionToolFilter(fn func(sessionID, toolName string) bool) Option {
 	return optionFunc(func(c *appConfig) {
 		c.sessionToolFilterFn = fn
+	})
+}
+
+// WithSessionRoleCard sets a per-session role card injected into the system
+// prompt (after the base identity sections). Empty result = no card. Teams
+// use this to give member sessions their persistent identity: 「你是谁、
+// 会什么、能用什么工具、向谁汇报」.
+func WithSessionRoleCard(fn func(sessionID string) string) Option {
+	return optionFunc(func(c *appConfig) {
+		c.sessionRoleCardFn = fn
+	})
+}
+
+// WithSessionPermissionMode sets a per-session permission mode override:
+// when the resolver returns ok=true, that session's permission gate uses the
+// returned mode instead of the global one (WithPermissionMode / runtime
+// override). Teams use this so member sessions run in auto mode while the
+// main sessions keep the user-chosen mode.
+func WithSessionPermissionMode(fn func(sessionID string) (PermissionModeOption, bool)) Option {
+	return optionFunc(func(c *appConfig) {
+		c.sessionPermModeFn = fn
 	})
 }
 

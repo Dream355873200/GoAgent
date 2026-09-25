@@ -908,8 +908,17 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	// 2. Permission Gate。
 	permGate := permission.NewGate(wrapApprover(cfg.approver))
 
-	// 应用权限模式：运行时覆写（SetPermissionMode）优先于构造配置。
-	if m := a.permModeOverride.Load(); m >= 0 {
+	// 应用权限模式：会话级覆写（WithSessionPermissionMode，如团队成员的
+	// auto 模式）优先于运行时覆写（SetPermissionMode），再回退构造配置。
+	if cfg.sessionPermModeFn != nil && sess != nil {
+		if m, ok := cfg.sessionPermModeFn(sess.ID); ok {
+			permGate.SetMode(permission.PermissionMode(m))
+		} else if m := a.permModeOverride.Load(); m >= 0 {
+			permGate.SetMode(permission.PermissionMode(m))
+		} else if cfg.permissionMode != nil {
+			permGate.SetMode(*cfg.permissionMode)
+		}
+	} else if m := a.permModeOverride.Load(); m >= 0 {
 		permGate.SetMode(permission.PermissionMode(m))
 	} else if cfg.permissionMode != nil {
 		permGate.SetMode(*cfg.permissionMode)
@@ -1134,6 +1143,14 @@ func (a *App) buildSystemPrompt(cfg appConfig, memMgr *memory.Manager, workDir, 
 		builder.AddSection("tone_style", resolvePrompt(promptDir, prompts.ToneStyle), nil)
 		builder.AddSection("output_efficiency", resolvePrompt(promptDir, prompts.OutputEfficiency), nil)
 		builder.AddSection("reminder", resolvePrompt(promptDir, prompts.Reminder), nil)
+	}
+
+	// 角色卡（WithSessionRoleCard）：团队/多身份会话的持久身份层，紧随
+	// 基础身份段——「你是谁、会什么、能用什么工具、向谁汇报」。
+	if cfg.sessionRoleCardFn != nil && sessionID != "" {
+		if card := cfg.sessionRoleCardFn(sessionID); card != "" {
+			builder.AddSection("role_card", card, nil)
+		}
 	}
 
 	// 环境信息（平台/Shell/工作目录）：无条件注入——工作目录是模型的
