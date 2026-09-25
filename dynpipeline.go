@@ -52,9 +52,15 @@ type DynNodeSpec struct {
 	// Message 初始任务消息（仅无上游生产者的节点作为首条任务 Push）。
 	Message string `json:"message" desc:"节点的初始任务消息（无上游输入的节点必填）"`
 	// DependsOn 依赖节点名列表（全部完成后本节点才启动）。
-	DependsOn []string `json:"depends_on,omitempty" desc:"依赖的节点名列表"`
+	// 动态 DSL 契约：节点完全未声明 depends_on 时，自动等其全部上游
+	// 生产者（向它 injects 的节点）完成——LLM 缺省扇入依赖时的安全缺省；
+	// 显式声明了（哪怕只写一个）则完全按声明（可做提前启动的流式消费）。
+	// 精确正交的调度/队列语义请直接用 PipelineConfig。
+	DependsOn []string `json:"depends_on,omitempty" desc:"依赖的节点名列表（未声明时自动等待所有上游 injects 生产者完成）"`
 	// Injects 可推送队列的下游节点名列表（数据流动方向）。
-	Injects []string `json:"injects,omitempty" desc:"可向哪些下游节点推送任务"`
+	// 交付义务：每个声明的下游必须至少推送一条任务（无产出也要推送说明），
+	// 构建器会把该义务写进节点 instruction。
+	Injects []string `json:"injects,omitempty" desc:"可向哪些下游节点推送任务（每个下游至少推送一条）"`
 	// Concurrency 并发 worker 数（默认 1）。
 	Concurrency int `json:"concurrency,omitempty" desc:"并发 worker 数，默认 1"`
 	// Output 向下游声明本节点产出的数据格式约定（如 "Markdown，含 小节标题/要点列表"）。
@@ -148,21 +154,35 @@ func (a *App) BuildDynPipeline(spec *DynPipelineSpec) (PipelineConfig, error) {
 
 	// 构造 PipelineConfig：工具按名解析为 NamedTool。
 	// 注意：多个节点选同一个工具是合法的（共享 def，工具本身无状态）。
+	// 先收集「下游节点 → 上游生产者」映射：injects 蕴含调度依赖（下游必须
+	// 等所有上游完成）——否则扇入节点没写 depends_on 就直接开跑，无输入
+	// 空转；上游漏推的下游空队列秒「完成」（实测踩坑）。
+	producersOf := map[string][]string{}
+	for _, n := range spec.Nodes {
+		for _, inj := range n.Injects {
+			producersOf[inj] = append(producersOf[inj], n.Name)
+		}
+	}
 	cfg := PipelineConfig{Nodes: make([]PipelineNode, 0, len(spec.Nodes))}
 	for _, n := range spec.Nodes {
 		// MD 载体约定：output 字段拼接进本节点 instruction（约束产出格式），
 		// 并追加到所有直接下游的 instruction（告知消费格式）。
 		instruction := n.Instruction
-		downstreamNote := ""
 		if n.Output != "" {
 			instruction += "\n\n[产出格式约定] 你的产出将以 " + n.Output +
 				" 格式交给下游节点，严格遵循该格式。"
-			downstreamNote = "\n\n[输入格式约定] 上游 " + n.Name +
-				" 的产出格式为 " + n.Output + "，按该约定消费。"
+		}
+		// injects 蕴含调度依赖——但只补「完全没写 depends_on」的下游：
+		// 模型显式声明了依赖（哪怕只写一个）就是调度意图，尊重之；一个没写
+		// 才按直觉「等所有上游生产者完成」。全量并集会毁掉显式的流式消费
+		// 意图（提前启动边生产边消费），完全不蕴含又让扇入节点无输入空转。
+		deps := append([]string{}, n.DependsOn...)
+		if len(deps) == 0 {
+			deps = append(deps, producersOf[n.Name]...)
 		}
 		node := PipelineNode{
 			Name:      n.Name,
-			DependsOn: n.DependsOn,
+			DependsOn: deps,
 			Injects:   n.Injects,
 			Message:   n.Message,
 			Agent: &PipelineAgentDef{
@@ -173,14 +193,7 @@ func (a *App) BuildDynPipeline(spec *DynPipelineSpec) (PipelineConfig, error) {
 		// 根节点（无上游生产者）的 message 省略时，以 instruction 作为任务
 		// 种子——否则队列空转：节点不跑一次 LLM 就「完成」，整条流水线
 		// 瞬间假完成（实测踩坑：LLM 提交的 spec 普遍省略 message）。
-		hasUpstream := false
-		for _, m := range spec.Nodes {
-			for _, inj := range m.Injects {
-				if inj == n.Name {
-					hasUpstream = true
-				}
-			}
-		}
+		hasUpstream := len(producersOf[n.Name]) > 0
 		if node.Message == "" && !hasUpstream {
 			node.Message = n.Instruction
 		}
@@ -219,7 +232,9 @@ func (a *App) BuildDynPipeline(spec *DynPipelineSpec) (PipelineConfig, error) {
 				},
 			})
 			instruction += "\n\n[下游交付] 使用 push_task 工具，把你的每份产出按「" + n.Output +
-				"」格式逐条推送给下游节点（多次调用）；全部推完后结束。"
+				"」格式逐条推送给下游节点（多次调用）。交付义务：以下每个下游节点" +
+				"你都必须至少推送一条——确实没有产出的，也要推送一条简要说明，" +
+				"否则该下游会空等。全部推完后结束。下游清单: " + strings.Join(n.Injects, " / ") + "。"
 			node.Agent.Instruction = instruction
 			for _, dn := range n.Injects {
 				for k := range cfg.Nodes {
@@ -231,15 +246,6 @@ func (a *App) BuildDynPipeline(spec *DynPipelineSpec) (PipelineConfig, error) {
 			}
 		}
 		cfg.Nodes = append(cfg.Nodes, node)
-		if false {
-			for _, dn := range n.Injects {
-				for k := range cfg.Nodes {
-					if cfg.Nodes[k].Name == dn && cfg.Nodes[k].Agent != nil {
-						cfg.Nodes[k].Agent.Instruction += downstreamNote
-					}
-				}
-			}
-		}
 	}
 
 	// DAG 无环校验：复用 topoSort（在 newPipeline 里做），这里先做一次

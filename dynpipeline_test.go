@@ -139,3 +139,44 @@ func TestBuildDynPipelineRootMessageSeeding(t *testing.T) {
 		t.Fatalf("显式 message 应优先, got %q", cfg2.Nodes[0].Message)
 	}
 }
+
+// 动态 DSL 依赖契约：完全未声明 depends_on 的下游自动等待其全部上游
+// 生产者（LLM 缺省扇入依赖时的安全缺省）；显式声明则完全按声明
+// （保留提前启动的流式消费意图）。根节点 message 缺省以 instruction 种子。
+func TestBuildDynPipelineImpliedDeps(t *testing.T) {
+	app := New(WithMaxTurns(1))
+	spec := &DynPipelineSpec{Nodes: []DynNodeSpec{
+		{Name: "prep", Instruction: "准备"},
+		{Name: "scanA", Instruction: "扫描A", DependsOn: []string{"prep"}, Injects: []string{"merge"}},
+		{Name: "scanB", Instruction: "扫描B", DependsOn: []string{"prep"}, Injects: []string{"merge"}},
+		{Name: "merge", Instruction: "汇总"},
+	}}
+	cfg, err := app.BuildDynPipeline(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]PipelineNode{}
+	for _, n := range cfg.Nodes {
+		byName[n.Name] = n
+	}
+	// merge 未声明 depends_on → 蕴含全部上游生产者
+	if len(byName["merge"].DependsOn) != 2 {
+		t.Fatalf("merge 应蕴含 scanA/scanB 依赖, got %v", byName["merge"].DependsOn)
+	}
+	// 显式声明（scanA 只写 prep）→ 完全按声明，不追加
+	if len(byName["scanA"].DependsOn) != 1 || byName["scanA"].DependsOn[0] != "prep" {
+		t.Fatalf("显式 depends_on 应原样保留, got %v", byName["scanA"].DependsOn)
+	}
+	// 无上游 → message 缺省以 instruction 种子
+	if byName["prep"].Message != "准备" {
+		t.Fatalf("根节点应种子 instruction, got %q", byName["prep"].Message)
+	}
+	// 有上游 → 不种子（等队列推送）
+	if byName["merge"].Message != "" {
+		t.Fatalf("有上游的节点不应种子, got %q", byName["merge"].Message)
+	}
+	// 交付义务进 instruction
+	if !strings.Contains(byName["scanA"].Agent.Instruction, "每个下游节点") {
+		t.Fatal("scanA instruction 应含逐下游交付义务")
+	}
+}
