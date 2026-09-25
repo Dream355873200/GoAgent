@@ -385,10 +385,18 @@ func (a *App) CreatePipelineTool() NamedTool {
 					snap.Nodes = append(snap.Nodes, runNode{Name: n.Name, Instruction: n.Instruction, Tools: n.Tools, DependsOn: n.DependsOn, Injects: n.Injects, Status: "pending"})
 				}
 				runDir := ""
-				if ctx.WorkDir != "" {
+				workDir := ctx.WorkDir
+				if workDir == "" {
+					// 未绑定会话工作目录时回退进程 cwd——快照与轨迹不该因为
+					// 宿主没配 WithSessionWorkDir 就整体消失。
+					if wd, err := os.Getwd(); err == nil {
+						workDir = wd
+					}
+				}
+				if workDir != "" {
 					// 运行目录：<workdir>/.yume/pipelines/<runID>/，内含
 					// run.json（快照）与各节点轨迹 <node>.jsonl。
-					runDir = filepath.Join(ctx.WorkDir, ".yume", "pipelines", runID)
+					runDir = filepath.Join(workDir, ".yume", "pipelines", runID)
 					if err := os.MkdirAll(runDir, 0o755); err == nil {
 						defer func() { // 兜底定格：异常路径也留下快照
 							b, _ := json.MarshalIndent(snap, "", "  ")
