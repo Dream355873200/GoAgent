@@ -289,11 +289,19 @@ func (a *App) checkDynAcyclic(spec *DynPipelineSpec) error {
 // RunDynPipeline 构建 + 执行动态 pipeline（同步阻塞直到完成或失败）。
 // 供宿主在工具 Execute 里调用；OnEvent（若设置）透出节点事件。
 func (a *App) RunDynPipeline(ctx context.Context, spec *DynPipelineSpec, onEvent func(ev PipelineEvent)) error {
+	return a.RunDynPipelineTrace(ctx, spec, onEvent, "")
+}
+
+// RunDynPipelineTrace 同 RunDynPipeline，另把节点运行轨迹（思考/工具/文本）
+// 以 JSONL 追加写入 traceDir（每节点一个 <node>.jsonl）——宿主据此提供
+// 节点的只读工作过程时间线（对齐主 agent 的会话回放）。
+func (a *App) RunDynPipelineTrace(ctx context.Context, spec *DynPipelineSpec, onEvent func(ev PipelineEvent), traceDir string) error {
 	cfg, err := a.BuildDynPipeline(spec)
 	if err != nil {
 		return err
 	}
 	cfg.OnEvent = onEvent
+	cfg.TraceDir = traceDir
 	a.UsePipeline(cfg)
 	return a.RunPipeline(ctx)
 }
@@ -364,11 +372,13 @@ func (a *App) CreatePipelineTool() NamedTool {
 				}
 				runDir := ""
 				if ctx.WorkDir != "" {
-					runDir = filepath.Join(ctx.WorkDir, ".yume", "pipelines")
+					// 运行目录：<workdir>/.yume/pipelines/<runID>/，内含
+					// run.json（快照）与各节点轨迹 <node>.jsonl。
+					runDir = filepath.Join(ctx.WorkDir, ".yume", "pipelines", runID)
 					if err := os.MkdirAll(runDir, 0o755); err == nil {
 						defer func() { // 兜底定格：异常路径也留下快照
 							b, _ := json.MarshalIndent(snap, "", "  ")
-							_ = os.WriteFile(filepath.Join(runDir, runID+".json"), b, 0o644)
+							_ = os.WriteFile(filepath.Join(runDir, "run.json"), b, 0o644)
 						}()
 					} else {
 						runDir = ""
@@ -379,7 +389,7 @@ func (a *App) CreatePipelineTool() NamedTool {
 						return
 					}
 					b, _ := json.MarshalIndent(snap, "", "  ")
-					_ = os.WriteFile(filepath.Join(runDir, runID+".json"), b, 0o644)
+					_ = os.WriteFile(filepath.Join(runDir, "run.json"), b, 0o644)
 				}
 				nodeByID := map[string]*runNode{}
 				for i := range snap.Nodes {
@@ -434,7 +444,7 @@ func (a *App) CreatePipelineTool() NamedTool {
 						AgentActivity: text,
 					})
 				}
-				if err := a.RunDynPipeline(ctx, &spec, onEvent); err != nil {
+				if err := a.RunDynPipelineTrace(ctx, &spec, onEvent, runDir); err != nil {
 					return "", err
 				}
 				snap.FinishedAt = time.Now().UnixMilli()

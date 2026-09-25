@@ -14,8 +14,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/Dream355873200/GoAgent/compaction"
 	"github.com/Dream355873200/GoAgent/executor"
@@ -62,6 +66,11 @@ type PipelineConfig struct {
 	// 嵌入方无法把节点的限流等待/思考过程展示给用户。设置本回调后，
 	// 每个节点 worker 的 loop 事件（转换后的 PipelineEvent）都会透出。
 	OnEvent func(ev PipelineEvent)
+
+	// TraceDir 节点轨迹目录（可选）。设置后每个节点 worker 的运行轨迹
+	// （思考/工具调用/文本产出）以 JSONL 追加写入 <TraceDir>/<node>.jsonl，
+	// 供宿主回看节点的完整工作过程（像主 agent 时间线一样）。
+	TraceDir string
 
 	// SessionID 会话标识（可选）。设置后 RunPipeline 会像 App.run 一样
 	// 注入会话上下文（SessionID + WithSessionWorkDir 解析的工作目录）——
@@ -427,6 +436,7 @@ type pipeline struct {
 	// DAG 状态
 	doneCh       chan struct{} // pipeline 完成信号
 	doneOnce     sync.Once
+	traceMu      sync.Mutex      // 节点轨迹文件追加串行化（多 worker 并发）
 	nodesDone    map[string]bool // 节点完成标记
 	nodesMu      sync.Mutex
 	reviewDone   map[string]bool // Review 节点审核完成标记
@@ -1393,6 +1403,34 @@ func (p *pipeline) buildLightweightLoop(agentDef *PipelineAgentDef, nodeCtx cont
 	})
 }
 
+// traceAppend 追加一条节点轨迹行（TraceDir 未设置时空操作）。多 worker
+// 并发写同一节点文件由 traceMu 串行化；JSONL 供宿主按行解析回放。
+func (p *pipeline) traceAppend(node string, entry map[string]any) {
+	if p.cfg.TraceDir == "" {
+		return
+	}
+	entry["ts"] = time.Now().UnixMilli()
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	p.traceMu.Lock()
+	defer p.traceMu.Unlock()
+	f, err := os.OpenFile(filepath.Join(p.cfg.TraceDir, node+".jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
+}
+
+func tracePreview(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
+}
+
 // runLightweight 运行精简 loop 并收集最终文本。
 // 如果 LLM 返回空响应（无工具调用、无文本、无错误），返回错误而非静默空字符串。
 func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDef, input string) (string, error) {
@@ -1403,15 +1441,31 @@ func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDe
 	var finalText string
 	var toolStartCount, toolDoneCount, errorCount int
 	var lastError error
+	var textBuf strings.Builder
+	flushTextTrace := func() {
+		if textBuf.Len() > 0 {
+			p.traceAppend(agentDef.Name, map[string]any{"type": "text", "text": textBuf.String()})
+			textBuf.Reset()
+		}
+	}
 	for ev := range l.Run(ctx, input) {
 		switch ev.Type {
 		case loop.EvtTextDelta:
 			finalText += ev.Text
+			textBuf.WriteString(ev.Text)
+		case loop.EvtThinking:
+			// 思考模型推理过程（delta.reasoning_content）。此前被静默丢弃。
+			flushTextTrace()
+			p.traceAppend(agentDef.Name, map[string]any{"type": "thinking", "text": ev.Thinking})
+			p.emitEvent(agentDef.Name, "thinking", ev.Thinking, "")
 		case loop.EvtToolStart:
 			toolStartCount++
+			flushTextTrace()
+			p.traceAppend(agentDef.Name, map[string]any{"type": "tool_start", "tool": ev.ToolName, "input": tracePreview(string(ev.ToolInput), 800)})
 			p.logger.Info(fmt.Sprintf("runLightweight: agent=%s tool_start=%s", agentDef.Name, ev.ToolName))
 		case loop.EvtToolDone:
 			toolDoneCount++
+			p.traceAppend(agentDef.Name, map[string]any{"type": "tool_done", "tool": ev.ToolName, "result": tracePreview(ev.ToolResult, 2000)})
 			resultPreview := ev.ToolResult
 			if len(resultPreview) > 200 {
 				resultPreview = resultPreview[:200] + "..."
@@ -1420,6 +1474,8 @@ func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDe
 		case loop.EvtError:
 			errorCount++
 			lastError = ev.Error
+			flushTextTrace()
+			p.traceAppend(agentDef.Name, map[string]any{"type": "error", "text": ev.Error.Error()})
 			p.logger.Warn(fmt.Sprintf("runLightweight: agent=%s error=%v", agentDef.Name, ev.Error))
 			p.emitEvent(agentDef.Name, "error", ev.Error.Error(), "")
 		case loop.EvtInterrupted:
@@ -1430,9 +1486,6 @@ func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDe
 			// 429 状态行等：StatusKey 非空 = 原地更新语义，Text 空 = 清除。
 			// 此前被静默丢弃——嵌入方无法把节点的限流等待展示给用户。
 			p.emitEvent(agentDef.Name, "progress", ev.Text, ev.StatusKey)
-		case loop.EvtThinking:
-			// 思考模型推理过程（delta.reasoning_content）。此前被静默丢弃。
-			p.emitEvent(agentDef.Name, "thinking", ev.Thinking, "")
 		}
 	}
 
@@ -1450,6 +1503,8 @@ func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDe
 		}
 		p.logger.Info(fmt.Sprintf("runLightweight: agent=%s text_preview=%s", agentDef.Name, preview))
 	}
+
+	flushTextTrace()
 
 	// 空响应检测：LLM 既没有调用工具、也没有输出文本、也没有返回错误。
 	// 这通常意味着 provider 配置有误（API Key 无效、模型名错误、BaseURL 不通等），
