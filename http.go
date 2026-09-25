@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Dream355873200/GoAgent/message"
 	"github.com/Dream355873200/GoAgent/protocol"
 	"github.com/Dream355873200/GoAgent/session"
 	"github.com/Dream355873200/GoAgent/task"
@@ -929,8 +930,19 @@ func newHTTPMux(app *App) *http.ServeMux {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
+		// 元消息（输出截断恢复 / 思考-only 恢复 / stop hook 纠正等）是
+		// 运行机制内部注入的 user 角色消息——模型上下文需要它们，但回放
+		// 展示绝不能带：否则前端渲染成幻影用户气泡（历史重放里凭空多出
+		// 一条用户消息，挤压真实气泡与计时位置）。
+		visible := make([]message.Message, 0, len(sess.Messages))
+		for _, m := range sess.Messages {
+			if m.IsMeta {
+				continue
+			}
+			visible = append(visible, m)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(sess.Messages)
+		json.NewEncoder(w).Encode(visible)
 	})
 
 	// GET /usage — 获取 token 使用成本统计

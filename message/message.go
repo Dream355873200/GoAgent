@@ -22,7 +22,7 @@ type Message struct {
 	// 压缩和循环系统内部使用的元数据。
 	TokenEstimate     int  `json:"-"` // 估算的 token 数，由循环设置
 	Compacted         bool `json:"-"` // 此消息是否已被压缩
-	IsMeta            bool `json:"-"` // 元消息（恢复提示等）
+	IsMeta            bool `json:"is_meta,omitempty"` // 元消息（恢复提示等）：持久化保留（模型上下文），展示层回放必须过滤
 	IsCompactBoundary bool `json:"-"` // 标记 prompt cache 的压缩边界
 	IsCompactSummary  bool `json:"-"` // 标记压缩后的摘要消息
 }
