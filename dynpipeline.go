@@ -29,6 +29,12 @@ type DynPipelineSpec struct {
 	Nodes []DynNodeSpec `json:"nodes" desc:"DAG 节点列表，按依赖关系组织"`
 }
 
+// pushTaskInput push_task 工具的输入。
+type pushTaskInput struct {
+	To      string `json:"to" desc:"下游节点名（必须是该节点 Injects 声明的目标）"`
+	Content string `json:"content" desc:"要推送的产出内容（Markdown）"`
+}
+
 // DynNodeSpec 单个节点的声明。
 type DynNodeSpec struct {
 	// Name 节点唯一标识（DAG 内唯一，被 DependsOn/Injects 引用）。
@@ -45,6 +51,10 @@ type DynNodeSpec struct {
 	Injects []string `json:"injects,omitempty" desc:"可向哪些下游节点推送任务"`
 	// Concurrency 并发 worker 数（默认 1）。
 	Concurrency int `json:"concurrency,omitempty" desc:"并发 worker 数，默认 1"`
+	// Output 向下游声明本节点产出的数据格式约定（如 "Markdown，含 小节标题/要点列表"）。
+	// 会拼接进本节点 instruction 尾部（约束产出），并注入下游 instruction
+	//（告知消费格式）——MD 载体约定的机制化。
+	Output string `json:"output,omitempty" desc:"本节点产出格式约定（Markdown 描述）"`
 }
 
 // 动态 pipeline 的规模护栏：LLM 建图易犯的错不是拓扑错误，是拆太碎——
@@ -83,6 +93,10 @@ func (a *App) BuildDynPipeline(spec *DynPipelineSpec) (PipelineConfig, error) {
 	missing := map[string][]string{} // node → missing tools
 	for _, n := range spec.Nodes {
 		for _, tn := range n.Tools {
+			// push_task 由框架自动注入（见 BuildDynPipeline），不参与校验。
+			if tn == "push_task" {
+				continue
+			}
 			if _, ok := a.tools[tn]; !ok {
 				missing[n.Name] = append(missing[n.Name], tn)
 			}
@@ -130,6 +144,16 @@ func (a *App) BuildDynPipeline(spec *DynPipelineSpec) (PipelineConfig, error) {
 	// 注意：多个节点选同一个工具是合法的（共享 def，工具本身无状态）。
 	cfg := PipelineConfig{Nodes: make([]PipelineNode, 0, len(spec.Nodes))}
 	for _, n := range spec.Nodes {
+		// MD 载体约定：output 字段拼接进本节点 instruction（约束产出格式），
+		// 并追加到所有直接下游的 instruction（告知消费格式）。
+		instruction := n.Instruction
+		downstreamNote := ""
+		if n.Output != "" {
+			instruction += "\n\n[产出格式约定] 你的产出将以 " + n.Output +
+				" 格式交给下游节点，严格遵循该格式。"
+			downstreamNote = "\n\n[输入格式约定] 上游 " + n.Name +
+				" 的产出格式为 " + n.Output + "，按该约定消费。"
+		}
 		node := PipelineNode{
 			Name:      n.Name,
 			DependsOn: n.DependsOn,
@@ -137,7 +161,7 @@ func (a *App) BuildDynPipeline(spec *DynPipelineSpec) (PipelineConfig, error) {
 			Message:   n.Message,
 			Agent: &PipelineAgentDef{
 				Name:        n.Name,
-				Instruction: n.Instruction,
+				Instruction: instruction,
 			},
 		}
 		if n.Concurrency > 0 {
@@ -152,7 +176,50 @@ func (a *App) BuildDynPipeline(spec *DynPipelineSpec) (PipelineConfig, error) {
 			}
 			a.mu.RUnlock()
 		}
+		// 下游交付工具：带 Injects 的节点自动注入 push_task——此前只有描述
+		// 没有工具，节点 agent 根本无法向下游队列推数据（队列传输断路）。
+		if len(n.Injects) > 0 {
+			node.Agent.Tools = append(node.Agent.Tools, NamedTool{
+				Name: "push_task",
+				Def: ToolDef{
+					// to 的合法值在描述里逐个列出（模型无法凭空猜下游节点名）。
+					Description: "把一份产出推送给下游节点队列（MD 片段）。每个下游产出一项调一次。" +
+						"to 的合法值: " + strings.Join(n.Injects, " / "),
+					Input:      pushTaskInput{},
+					Permission: ReadOnly,
+					Concurrent: true,
+					Execute: func(ctx Context, in pushTaskInput) (string, error) {
+						mp := GetMessageQueue(ctx, in.To)
+						if mp == nil {
+							return "", fmt.Errorf("下游节点 %q 不可推送（未声明 Injects 或队列已关闭）", in.To)
+						}
+						mp.Push(in.Content)
+						return fmt.Sprintf("已推送给 %s（%d 字符）", in.To, len(in.Content)), nil
+					},
+				},
+			})
+			instruction += "\n\n[下游交付] 使用 push_task 工具，把你的每份产出按「" + n.Output +
+				"」格式逐条推送给下游节点（多次调用）；全部推完后结束。"
+			node.Agent.Instruction = instruction
+			for _, dn := range n.Injects {
+				for k := range cfg.Nodes {
+					if cfg.Nodes[k].Name == dn && cfg.Nodes[k].Agent != nil {
+						cfg.Nodes[k].Agent.Instruction += "\n\n[输入格式约定] 上游 " + n.Name +
+							" 的产出格式为 " + n.Output + "，按该约定消费。"
+					}
+				}
+			}
+		}
 		cfg.Nodes = append(cfg.Nodes, node)
+		if false {
+			for _, dn := range n.Injects {
+				for k := range cfg.Nodes {
+					if cfg.Nodes[k].Name == dn && cfg.Nodes[k].Agent != nil {
+						cfg.Nodes[k].Agent.Instruction += downstreamNote
+					}
+				}
+			}
+		}
 	}
 
 	// DAG 无环校验：复用 topoSort（在 newPipeline 里做），这里先做一次
@@ -241,6 +308,9 @@ func (a *App) CreatePipelineTool() NamedTool {
 		"节点间数据流：上游节点用 push_task 类工具向 Injects 声明的下游队列推任务。" +
 		"只适合依赖关系【任务固有】的多阶段任务（如先提取→再润色→再审核）；" +
 		"依赖关系需要你自己现场猜的任务请直接自己做或用子 agent。" +
+		"数据载体约定：队列任务与节点产出默认用 Markdown 片段（LLM-to-LLM），" +
+		"仅在下游是代码/需要 UI 渲染时用 JSON；每个节点的 output 字段向下游声明" +
+		"自己的产出格式，下游按该约定消费。" +
 		"校验失败会返回具体原因，修正 spec 后可重试。"
 	if names := a.ToolNames(); len(names) > 0 {
 		desc += "\n可用工具（节点的 tools 只能从这里选）: " + strings.Join(names, ", ")

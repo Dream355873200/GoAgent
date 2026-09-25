@@ -1211,6 +1211,10 @@ func (p *pipeline) Run(ctx context.Context) error {
 func (p *pipeline) runNode(ctx context.Context, nodeName string, doneCh chan<- string) {
 	node := p.nodes[nodeName]
 
+	// 节点生命周期事件：started / done。宿主据此维护 DAG 状态图
+	//（pending/running/done），与 OnEvent 的细粒度直播（thinking/progress）
+	// 职责分离。
+	p.emitEvent(nodeName, "node_started", "", "")
 	nodeCtx := ctx
 
 	// 注入 SharedData 到 context。
@@ -1296,6 +1300,7 @@ func (p *pipeline) runNode(ctx context.Context, nodeName string, doneCh chan<- s
 	}
 
 	p.markNodeDone(nodeName)
+	p.emitEvent(nodeName, "node_done", "", "")
 	doneCh <- nodeName
 }
 
