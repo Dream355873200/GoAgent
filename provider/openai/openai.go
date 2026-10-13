@@ -9,7 +9,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -707,31 +706,6 @@ func (p *Provider) fromFinishReason(reason string) provider.StopReason {
 // ---------- 消息转换 ----------
 
 // toOpenAIMessages 将框架消息转换为 OpenAI API 消息格式。
-// splitImagePrefix 识别工具结果中的图片标记："[IMAGE png <base64>]\n正文"。
-// 返回 (media, base64, ok)。约定的轻量协议：视觉工具把截图以该前缀内联。
-func splitImagePrefix(s string) (media, b64 string, ok bool) {
-	const prefix = "[IMAGE "
-	if !strings.HasPrefix(s, prefix) {
-		return "", "", false
-	}
-	rest := s[len(prefix):]
-	sp := strings.IndexByte(rest, ' ')
-	if sp < 0 {
-		return "", "", false
-	}
-	media = rest[:sp]
-	rest = rest[sp+1:]
-	nl := strings.IndexByte(rest, '\n')
-	if nl < 0 {
-		return "", "", false
-	}
-	b64 = rest[:nl]
-	if b64 == "" {
-		return "", "", false
-	}
-	return media, b64, true
-}
-
 // imageURLFor 按 (端点|模型) 实测记忆的编码组装图片。默认 OpenAI 标准
 // data URI；FLAI_IMAGE_URL_FORMAT=base64 可强制。中转兼容差异由
 // maybeSwitchImageFormat 在首个图片 4xx 时自动探测解决，不逐家适配。
@@ -860,25 +834,25 @@ func (p *Provider) toOpenAIMessages(_ string, systemPrompt string, msgs []messag
 					// 供视觉类工具（截图裁决）把图片送进支持视觉的模型。
 					// 防线：base64 必须可解码（压缩截断/损坏的标记直接降级为
 					// 文本），坏图发给任何端点都会 400 并卡死整轮。
-					if media, b64, ok := splitImagePrefix(content); ok {
-						if _, decErr := base64.StdEncoding.DecodeString(b64); decErr != nil {
+					if img, ok := message.SplitImageMarker(content); ok {
+						if !img.Valid {
 							// 标记里的图片数据损坏（截断/压缩损伤）→ 降级为纯文本
-							body := content
-							if idx := strings.Index(content, "\n"); idx >= 0 {
-								body = content[idx+1:]
-							}
 							result = append(result, chatMessage{
 								Role:       "tool",
-								Content:    "[图片已省略：数据无效]\n" + body,
+								Content:    "[图片已省略：数据无效]\n" + img.Body,
 								ToolCallID: block.ForToolUseID,
 							})
 							continue
 						}
+						text := img.Body
+						if text == "" {
+							text = "[截图已附上]"
+						}
 						result = append(result, chatMessage{
 							Role: "tool",
 							Content: []chatContentPart{
-								{Type: "text", Text: "[截图已附上]"},
-								{Type: "image_url", ImageURL: &chatImageURL{URL: p.imageURLFor(media, b64)}},
+								{Type: "text", Text: text},
+								{Type: "image_url", ImageURL: &chatImageURL{URL: p.imageURLFor(img.Media, img.Data)}},
 							},
 							ToolCallID: block.ForToolUseID,
 						})

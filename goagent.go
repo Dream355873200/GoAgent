@@ -1123,21 +1123,27 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	// 持久化策略：逐条即时落盘（而非整轮结束才写）。loop 的 FinalMessages
 	// 随事件流增长，每次出现新消息立刻 AppendMessage —— 进程被杀（用户
 	// 关闭应用）时已完成的步骤全部保留，重开可从断点恢复对话与执行进度。
+	//
+	// 新消息的起点必须在开跑前定格：MemoryStore.Get 返回的就是存储里的
+	// 会话对象，AppendMessage 会就地增长 sess.Messages——若每次按
+	// len(sess.Messages) 现算起点，会把刚追加的消息当成历史再跳一段。
 	agentLoop := loop.New(loopCfg)
+	baseCount := 0
+	if sess != nil {
+		baseCount = len(sess.Messages)
+	}
+	autoPersist := cfg.autoPersist == nil || *cfg.autoPersist
 	persistedCount := 0 // 已落盘的最终消息数（本轮新增部分）
 	persistMsgs := func() {
-		if sess == nil || cfg.sessionManager == nil {
-			return
-		}
-		autoPersist := cfg.autoPersist == nil || *cfg.autoPersist
-		if !autoPersist {
+		if sess == nil || cfg.sessionManager == nil || !autoPersist {
 			return
 		}
 		finalMsgs := agentLoop.FinalMessages()
-		for i := len(sess.Messages) + persistedCount; i < len(finalMsgs); i++ {
-			if err := cfg.sessionManager.AppendMessage(ctx, sess.ID, finalMsgs[i]); err == nil {
-				persistedCount++
+		for i := baseCount + persistedCount; i < len(finalMsgs); i++ {
+			if err := cfg.sessionManager.AppendMessage(ctx, sess.ID, finalMsgs[i]); err != nil {
+				break
 			}
+			persistedCount++
 		}
 	}
 	for ev := range agentLoop.Run(ctx, input) {
@@ -1147,21 +1153,22 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 			pubEv.Messages = agentLoop.FinalMessages()
 		}
 		persistMsgs()
+		if pubEv.Type == EventTurnComplete && cfg.transcriptSink != nil {
+			cfg.transcriptSink(sessionID, agentLoop.FinalMessages())
+		}
 		out <- pubEv
 	}
 	persistMsgs() // 循环结束（含 error 退出）时兜底补齐
+	finalMsgs := agentLoop.FinalMessages()
+	if cfg.transcriptSink != nil && len(finalMsgs) > 0 {
+		cfg.transcriptSink(sessionID, finalMsgs)
+	}
 
-	// 如果有 session 且启用了自动持久化，保存本轮新增的消息。
-	// 默认开启自动持久化；WithAutoPersist(false) 可禁用。
-	// 业务层也可自行从事件流收集数据并通过自己的逻辑持久化。
-	autoPersist := cfg.autoPersist == nil || *cfg.autoPersist
-	if sess != nil && cfg.sessionManager != nil && autoPersist {
-		finalMsgs := agentLoop.FinalMessages()
-		// 只持久化新增的消息（跳过 InitialMessages 部分）。
-		startIdx := len(sess.Messages)
-		for i := startIdx; i < len(finalMsgs); i++ {
-			_ = cfg.sessionManager.AppendMessage(ctx, sess.ID, finalMsgs[i])
-		}
+	// 会话对象推进到本轮结束时的上下文：同一事件流里的 queue 车道续跑
+	// （RunWithSessionHistory / RunSession 复用同一个 sess）必须看到上一轮
+	// 的对话，否则排队消息开跑时模型对刚才发生的事一无所知。
+	if sess != nil && len(finalMsgs) > 0 {
+		sess.Messages = finalMsgs
 	}
 }
 
@@ -1348,16 +1355,17 @@ func (a *middlewareAdapter) AfterTool(ctx context.Context, toolName string, resu
 // toPublicEvent converts an internal loop event to a public Event.
 func toPublicEvent(ev loop.Event) Event {
 	return Event{
-		Type:       EventType(ev.Type),
-		Text:       ev.Text,
-		Thinking:   ev.Thinking,
-		ToolName:   ev.ToolName,
-		ToolInput:  ev.ToolInput,
-		ToolUseID:  ev.ToolUseID,
-		ToolResult: ev.ToolResult,
-		StatusKey:  ev.StatusKey,
-		Usage:      ev.Usage,
-		Error:      ev.Error,
+		Type:        EventType(ev.Type),
+		Text:        ev.Text,
+		Thinking:    ev.Thinking,
+		ToolName:    ev.ToolName,
+		ToolInput:   ev.ToolInput,
+		ToolUseID:   ev.ToolUseID,
+		ToolResult:  ev.ToolResult,
+		ToolIsError: ev.ToolIsError,
+		StatusKey:   ev.StatusKey,
+		Usage:       ev.Usage,
+		Error:       ev.Error,
 
 		AgentID:       ev.AgentID,
 		AgentDesc:     ev.AgentDesc,

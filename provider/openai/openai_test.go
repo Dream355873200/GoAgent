@@ -1,9 +1,12 @@
 package openai
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/Dream355873200/GoAgent/message"
 	"github.com/Dream355873200/GoAgent/provider"
 )
 
@@ -61,5 +64,26 @@ func TestApplyExtraBody(t *testing.T) {
 	}
 	if m["model"] != "override" {
 		t.Errorf("ExtraBody 应覆盖标准字段: %v", m["model"])
+	}
+}
+
+// 工具结果里的内联图片标记 "[IMAGE png <base64>]\n正文" 必须转成多模态 tool 消息，
+// 且正文要跟着图片一起送达（此前只发「[截图已附上]」，图片说明被丢掉）。
+func TestToolResultImageMarker(t *testing.T) {
+	raw := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	b64 := base64.StdEncoding.EncodeToString(raw)
+
+	p := &Provider{imgFormats: map[string]string{}}
+	msgs := []message.Message{
+		{Role: message.RoleAssistant, Content: []message.ContentBlock{{Type: "tool_use", ToolUseID: "t1", ToolName: "look", Input: []byte(`{}`)}}},
+		{Role: message.RoleUser, Content: []message.ContentBlock{{Type: "tool_result", ForToolUseID: "t1", Text: "[IMAGE png " + b64 + "]\n第 3 帧：标题溢出"}}},
+	}
+	out := p.toOpenAIMessages("", "", msgs)
+	parts, isParts := out[len(out)-1].Content.([]chatContentPart)
+	if !isParts || len(parts) != 2 || parts[1].ImageURL == nil || !strings.HasSuffix(parts[1].ImageURL.URL, b64) {
+		t.Fatalf("tool 消息应为 text+image_url 多模态内容，实际 %#v", out[len(out)-1].Content)
+	}
+	if parts[0].Text != "第 3 帧：标题溢出" {
+		t.Fatalf("图片说明应随图送达，实际 %q", parts[0].Text)
 	}
 }

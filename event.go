@@ -112,6 +112,11 @@ type Event struct {
 	// ToolResult is set for EventToolDone.
 	ToolResult string
 
+	// ToolIsError is set for EventToolDone: the tool finished with an error and
+	// ToolResult carries the error message (lets UIs render failure states
+	// without guessing from the text).
+	ToolIsError bool
+
 	// StatusKey 非空时本事件是「状态行更新」而非追加消息：客户端按 Key
 	// 原地替换显示（如 429 重试的倒计时行「✻ 429 … Retrying in Xs ·
 	// attempt N/10」）。Text 为空 = 清除该状态行。

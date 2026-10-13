@@ -391,7 +391,7 @@ func convertMessages(msgs []message.Message) []anthropic.MessageParam {
 				blocks = append(blocks, anthropic.NewToolUseBlock(cb.ToolUseID, input, cb.ToolName))
 
 			case "tool_result":
-				blocks = append(blocks, anthropic.NewToolResultBlock(cb.ForToolUseID, cb.Text, cb.IsError))
+				blocks = append(blocks, toolResultBlock(cb))
 
 			case "thinking":
 				if cb.Thinking != "" {
@@ -616,4 +616,30 @@ var modelCapabilities = map[string]provider.Capabilities{
 		SupportsCaching: true,
 		ModelID:         "claude-haiku-4-5-20251001",
 	},
+}
+
+// toolResultBlock 工具结果转 Anthropic 内容块。结果以内联图片标记开头时转成
+// image + text 两段（否则模型只会收到一大段 base64 文字，既看不到图又白耗 token）；
+// 图片数据损坏时降级为纯文本。
+func toolResultBlock(cb message.ContentBlock) anthropic.ContentBlockParamUnion {
+	img, ok := message.SplitImageMarker(cb.Text)
+	if !ok {
+		return anthropic.NewToolResultBlock(cb.ForToolUseID, cb.Text, cb.IsError)
+	}
+	if !img.Valid {
+		return anthropic.NewToolResultBlock(cb.ForToolUseID, "[图片已省略：数据无效]\n"+img.Body, cb.IsError)
+	}
+	content := []anthropic.ToolResultBlockParamContentUnion{{
+		OfImage: &anthropic.ImageBlockParam{Source: anthropic.ImageBlockParamSourceUnion{
+			OfBase64: &anthropic.Base64ImageSourceParam{Data: img.Data, MediaType: anthropic.Base64ImageSourceMediaType(img.MIME())},
+		}},
+	}}
+	if img.Body != "" {
+		content = append(content, anthropic.ToolResultBlockParamContentUnion{OfText: &anthropic.TextBlockParam{Text: img.Body}})
+	}
+	return anthropic.ContentBlockParamUnion{OfToolResult: &anthropic.ToolResultBlockParam{
+		ToolUseID: cb.ForToolUseID,
+		Content:   content,
+		IsError:   anthropic.Bool(cb.IsError),
+	}}
 }

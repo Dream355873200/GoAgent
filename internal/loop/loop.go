@@ -138,8 +138,10 @@ type Event struct {
 	ToolInput  json.RawMessage
 	ToolUseID  string // 对齐 Claude Code ToolUseBlock.id
 	ToolResult string
-	Usage      *provider.Usage
-	Error      error
+	// ToolIsError EvtToolDone 时表示该工具以错误结束（结果文本为错误信息）
+	ToolIsError bool
+	Usage       *provider.Usage
+	Error       error
 	// StatusKey 非空时本事件是「状态行更新」而非追加消息：前端按 Key
 	// 原地替换显示（如 429 重试的倒计时行）。Text 为空 = 清除该状态行。
 	StatusKey string
@@ -1150,7 +1152,7 @@ mainLoop:
 func (l *Loop) reportToolResults(ctx context.Context, state *loopState, results []executor.ToolResult, out chan<- Event) {
 	for _, result := range results {
 		l.logDebug("tool_done: %s id=%s err=%v content_len=%d", result.Name, result.ToolUseID, result.IsError, len(result.Content))
-		out <- Event{Type: EvtToolDone, ToolName: result.Name, ToolResult: result.Content, ToolUseID: result.ToolUseID}
+		out <- Event{Type: EvtToolDone, ToolName: result.Name, ToolResult: result.Content, ToolUseID: result.ToolUseID, ToolIsError: result.IsError}
 		if l.cfg.Observer == nil {
 			continue
 		}

@@ -95,6 +95,10 @@ func EstimateContentBlockTokens(block ContentBlock) int {
 		if len(block.Text) == 0 {
 			return 1
 		}
+		// 内联图片按图片计（base64 按字符数折算会高估一个数量级，过早触发压缩）
+		if img, ok := SplitImageMarker(block.Text); ok && img.Valid {
+			return ImageTokenEstimate + len(img.Body)/CharsPerToken
+		}
 		return max(1, len(block.Text)/CharsPerToken)
 
 	case "image":

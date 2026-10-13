@@ -9,6 +9,7 @@ import (
 	"github.com/Dream355873200/GoAgent/compaction"
 	"github.com/Dream355873200/GoAgent/hooks"
 	"github.com/Dream355873200/GoAgent/internal/loop"
+	"github.com/Dream355873200/GoAgent/message"
 	"github.com/Dream355873200/GoAgent/observer"
 	"github.com/Dream355873200/GoAgent/permission"
 	"github.com/Dream355873200/GoAgent/plan"
@@ -116,6 +117,10 @@ type appConfig struct {
 	// 调用其 Reminders，把关键上下文（已读文件/宿主固定资产）重新
 	// 注入。nil = 不注入（默认）。
 	postCompact []compaction.ReminderSource
+
+	// 对话记录落地回调（WithTranscriptSink）：每个循环轮次完成及 run 结束时
+	// 以完整消息列表调用。nil = 不回调（默认）。
+	transcriptSink func(sessionID string, msgs []message.Message)
 }
 
 // ProviderConfig 是 LLM Provider 的配置，可直接传给 New()。
@@ -1035,6 +1040,20 @@ func WithSuspend() Option {
 func WithSteering() Option {
 	return optionFunc(func(c *appConfig) {
 		c.steering = NewSteeringHub()
+	})
+}
+
+// WithTranscriptSink 注册对话记录落地回调：每完成一个循环轮次（工具结果
+// 已写回上下文）以及每次 run 结束时，以该会话当前完整消息列表（含
+// tool_use / tool_result / thinking，压缩发生后为压缩后的列表）调用 fn。
+//
+// 面向自管存储的宿主（RunWithHistory / RunWithSessionHistory）：下一轮
+// 直接把最后一次收到的列表作为 history 传回，模型就能看到此前的工具调用
+// 与结果，而不必从事件流重建、也不会丢失 run 中途被中断时已完成的轮次。
+// fn 在 run 的 goroutine 内同步调用，应尽快返回；msgs 不得被修改。
+func WithTranscriptSink(fn func(sessionID string, msgs []message.Message)) Option {
+	return optionFunc(func(c *appConfig) {
+		c.transcriptSink = fn
 	})
 }
 

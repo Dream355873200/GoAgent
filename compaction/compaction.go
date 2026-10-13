@@ -305,8 +305,8 @@ func (m *Manager) HandleOverflow(ctx context.Context, messages []message.Message
 const imgTailMessages = 40
 var imagePathRe = regexp.MustCompile(`[A-Za-z]:\\[^\s"']+`)
 
-// recycleImageResult 判定并生成图片结果回收文本。
-// 返回 (替换文本, true) = 应回收；(空, false) = 保留完整原样。
+// recycleImageResult 判定并生成图片结果回收文本（调用方须先确认含图片标记）。
+// 返回 (替换文本, true) = 应回收；(空, false) = 保留完整原样——不是"可以截断"。
 func recycleImageResult(messages []message.Message, i int, text string) (string, bool) {
 	if !strings.Contains(text, imageMarker) {
 		return "", false
@@ -334,9 +334,11 @@ func (b *budgetCompressor) apply(messages []message.Message) ([]message.Message,
 			if block.Type == "tool_result" && len(block.Text) > b.maxSize {
 				original := len(block.Text)
 				// 图片豁免：内联图片结果走统一回收策略（禁 head+tail 截断）
-				if repl, ok := recycleImageResult(messages, i, block.Text); ok {
-					result[i].Content[j].Text = repl
-					freed += (original - len(repl)) / 4
+				if strings.Contains(block.Text, imageMarker) {
+					if repl, ok := recycleImageResult(messages, i, block.Text); ok {
+						result[i].Content[j].Text = repl
+						freed += (original - len(repl)) / 4
+					}
 					continue
 				}
 				result[i].Content[j].Text = block.Text[:b.maxSize/2] +
@@ -415,9 +417,11 @@ func (mc *microCompressor) apply(messages []message.Message, contextWindow int, 
 		for j, block := range msg.Content {
 			if block.Type == "tool_result" && len(block.Text) > MaxToolResultChars {
 				original := len(block.Text)
-				if repl, ok := recycleImageResult(result, i, block.Text); ok {
-					result[i].Content[j].Text = repl
-					freed += (original - len(repl)) / 4
+				if strings.Contains(block.Text, imageMarker) {
+					if repl, ok := recycleImageResult(result, i, block.Text); ok {
+						result[i].Content[j].Text = repl
+						freed += (original - len(repl)) / 4
+					}
 					continue
 				}
 				// 保留头尾各 10KB，中间用截断标记替换。
