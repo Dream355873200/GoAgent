@@ -432,13 +432,13 @@ func (a *App) CreatePipelineTool() NamedTool {
 					text := ev.Text
 					switch ev.Type {
 					case "node_started":
-						text = "▶ " + ev.Node
+						text = "开始执行: " + ev.Node
 						if rn := nodeByID[ev.Node]; rn != nil && rn.Status == "pending" {
 							rn.Status = "running"
 							saveSnap()
 						}
 					case "node_done":
-						text, status = "✓ "+ev.Node, "done"
+						text, status = "执行完成: "+ev.Node, "done"
 						if rn := nodeByID[ev.Node]; rn != nil {
 							rn.Status = "done"
 							saveSnap()
