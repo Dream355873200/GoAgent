@@ -10,6 +10,8 @@ import (
 )
 
 // ForkedAgentConfig 配置 forked agent。
+//
+// Deprecated: 未被框架使用。派生子任务改用 goagent.App.AgentTool 或 agent.Runner。将在后续版本删除。
 type ForkedAgentConfig struct {
 	// Provider 用于运行 forked agent 的提供者。
 	Provider provider.Provider
@@ -26,6 +28,8 @@ type ForkedAgentConfig struct {
 }
 
 // ToolDefinition 工具定义。
+//
+// Deprecated: 未被框架使用。派生子任务改用 goagent.App.AgentTool 或 agent.Runner。将在后续版本删除。
 type ToolDefinition struct {
 	Name        string
 	Description string
@@ -33,6 +37,8 @@ type ToolDefinition struct {
 }
 
 // ForkedAgentResult forked agent 执行结果。
+//
+// Deprecated: 未被框架使用。派生子任务改用 goagent.App.AgentTool 或 agent.Runner。将在后续版本删除。
 type ForkedAgentResult struct {
 	// Messages 生成的响应消息。
 	Messages []message.Message
@@ -53,6 +59,8 @@ type ForkedAgentResult struct {
 // - 运行独立的 agent loop，与父 agent 隔离
 // - 通常只运行 1 turn（maxTurns=1）
 // - 可选使用父 agent 的 system prompt 和 tools
+//
+// Deprecated: 未被框架使用。派生子任务改用 goagent.App.AgentTool 或 agent.Runner。将在后续版本删除。
 func RunForkedAgent(ctx context.Context, cfg ForkedAgentConfig, prompt string) (*ForkedAgentResult, error) {
 	if cfg.Provider == nil {
 		return nil, fmt.Errorf("RunForkedAgent: 需要 Provider")
@@ -114,6 +122,8 @@ func RunForkedAgent(ctx context.Context, cfg ForkedAgentConfig, prompt string) (
 
 // RunForkedAgentStream 流式运行 forked agent。
 // 返回一个 channel，接收响应文本片段。
+//
+// Deprecated: 未被框架使用。派生子任务改用 goagent.App.AgentTool 或 agent.Runner。将在后续版本删除。
 func RunForkedAgentStream(ctx context.Context, cfg ForkedAgentConfig, prompt string) (<-chan string, error) {
 	if cfg.Provider == nil {
 		return nil, fmt.Errorf("RunForkedAgentStream: 需要 Provider")
@@ -180,6 +190,8 @@ func RunForkedAgentStream(ctx context.Context, cfg ForkedAgentConfig, prompt str
 // 用于需要完整 agent 能力（工具、streaming 等）但需要隔离执行的任务。
 //
 // 对齐 Claude Code 的 runForkedAgent 机制。
+//
+// Deprecated: 未被框架使用。派生子任务改用 goagent.App.AgentTool 或 agent.Runner。将在后续版本删除。
 type ForkedAgent interface {
 	// Run 运行 forked agent 并返回结果。
 	Run(ctx context.Context, prompt string) (*ForkedAgentResult, error)
@@ -189,11 +201,15 @@ type ForkedAgent interface {
 }
 
 // DefaultForkedAgent 默认的 ForkedAgent 实现。
+//
+// Deprecated: 未被框架使用。派生子任务改用 goagent.App.AgentTool 或 agent.Runner。将在后续版本删除。
 type DefaultForkedAgent struct {
 	cfg ForkedAgentConfig
 }
 
 // NewDefaultForkedAgent 创建默认的 ForkedAgent。
+//
+// Deprecated: 未被框架使用。派生子任务改用 goagent.App.AgentTool 或 agent.Runner。将在后续版本删除。
 func NewDefaultForkedAgent(cfg ForkedAgentConfig) *DefaultForkedAgent {
 	if cfg.MaxTurns <= 0 {
 		cfg.MaxTurns = 1
@@ -210,6 +226,8 @@ func (a *DefaultForkedAgent) RunStream(ctx context.Context, prompt string) (<-ch
 }
 
 // ForkedAgentFromProvider 创建一个使用指定 provider 的 ForkedAgent。
+//
+// Deprecated: 未被框架使用。派生子任务改用 goagent.App.AgentTool 或 agent.Runner。将在后续版本删除。
 func ForkedAgentFromProvider(prov provider.Provider, systemPrompt string) *DefaultForkedAgent {
 	return NewDefaultForkedAgent(ForkedAgentConfig{
 		Provider:     prov,

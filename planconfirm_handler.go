@@ -2,7 +2,6 @@ package goagent
 
 import (
 	"sync"
-	"sync/atomic"
 )
 
 // PlanConfirmRequest 是发送给前端的计划确认请求。
@@ -69,7 +68,6 @@ func (r *PlanConfirmRequest) Reject() {
 type PlanConfirmHandler struct {
 	requests chan *PlanConfirmRequest
 	pending  sync.Map // requestID → *PlanConfirmRequest
-	nextID   atomic.Int64
 	mu       sync.Mutex
 	closed   bool
 }
@@ -147,9 +145,9 @@ type PlanConfirmHandlerInterface interface {
 var _ PlanConfirmHandlerInterface = (*PlanConfirmHandler)(nil)
 
 // InternalPlanConfirmRequest 内部使用的计划确认请求。
-// 包含 requestID 和 result channel。
+//
+// Deprecated: 未被任何代码使用，将在后续版本删除；计划确认请求见 PlanConfirmRequest。
 type InternalPlanConfirmRequest struct {
 	RequestID   string
 	PlanContent string
-	result      chan bool
 }

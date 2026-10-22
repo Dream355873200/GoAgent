@@ -5,24 +5,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/Dream355873200/GoAgent/internal/safename"
 	"github.com/Dream355873200/GoAgent/message"
 	"github.com/Dream355873200/GoAgent/protocol"
 	"github.com/Dream355873200/GoAgent/session"
+	"github.com/Dream355873200/GoAgent/statedir"
 	"github.com/Dream355873200/GoAgent/task"
 )
 
-// sseWriter 提供并发安全的 SSE 写入。
+// sseWriter 提供并发安全的 SSE 写入。每次写入前设置写超时：客户端半开
+// 或停止读取时写入失败即放弃该连接，而不是无限阻塞——阻塞会一路传导到
+// agent 循环，让任务停住、会话锁无法释放。
 type sseWriter struct {
 	mu      sync.Mutex
 	w       http.ResponseWriter
 	flusher http.Flusher
-	closed  bool // handler 已返回：此后的写一律丢弃（心跳等异步写者）
+	rc      *http.ResponseController
+	closed  bool // handler 已返回或写入失败：此后的写一律丢弃
 }
+
+// sseWriteTimeout 单次 SSE 写入的超时。
+const sseWriteTimeout = 30 * time.Second
 
 func (s *sseWriter) writeEvent(data []byte) {
 	s.mu.Lock()
@@ -30,7 +37,13 @@ func (s *sseWriter) writeEvent(data []byte) {
 	if s.closed {
 		return
 	}
-	s.w.Write(data)
+	if s.rc != nil {
+		_ = s.rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
+	}
+	if _, err := s.w.Write(data); err != nil {
+		s.closed = true
+		return
+	}
 	s.flusher.Flush()
 }
 
@@ -46,18 +59,24 @@ const sseHeartbeatInterval = 15 * time.Second
 
 // runHTTP 启动带 SSE 流式端点的 HTTP 服务器。
 func runHTTP(app *App, addr string) error {
-	// HTTP 模式下如果未配置审批者，使用自动审批。
-	// 开发者可以传入 PermissionHandler 实现异步审批。
+	// 未配置审批者时不自动批准：需要审批的工具调用会被拒绝。可信环境用
+	// WithApprover(AutoApprover())，交互审批用 WithApprover(NewPermissionHandler())。
 	if app.config.approver == nil {
-		app.config.approver = AutoApprover()
+		app.logger.Warn("goagent: HTTP 模式未配置审批者，需要审批的工具调用将被拒绝；" +
+			"可信环境请用 WithApprover(goagent.AutoApprover())，交互审批请用 WithApprover(goagent.NewPermissionHandler())")
+	}
+
+	// /interrupt 依赖中断处理器：未配置时自动启用，否则中断请求无效。
+	if app.interruptHandler == nil {
+		app.SetInterruptHandler(NewInterruptHandler())
 	}
 
 	// HTTP 模式下如果未配置会话管理器，自动创建基于文件系统的持久化
-	// （对齐 RunCLI 的行为；会话存储在 .yume/sessions/ 目录下）。
+	// （对齐 RunCLI 的行为；会话存储在状态目录的 sessions/ 下，默认 .yume/sessions/）。
 	// 没有它，/chat 只能走无状态的 App.Run —— 每条消息都是全新会话，
 	// 前端传的 session_id 形同虚设，模型每轮都失忆从头探索。
 	if app.config.sessionManager == nil {
-		sessDir := filepath.Join(".yume", "sessions")
+		sessDir := statedir.Join("", "sessions")
 		store := session.NewFileStore(sessDir)
 		app.config.sessionManager = session.NewManager(store)
 	}
@@ -93,7 +112,21 @@ func runHTTP(app *App, addr string) error {
 		mux.HandleFunc(pattern, handler)
 	}
 
-	return http.ListenAndServe(addr, mux)
+	listenAddr, loopbackOnly, err := resolveListenAddr(addr, app.config)
+	if err != nil {
+		return err
+	}
+	if listenAddr != addr {
+		fmt.Printf("  （未配置 WithHTTPAuthToken：仅监听本机 %s）\n", listenAddr)
+	}
+	srv := &http.Server{
+		Addr:              listenAddr,
+		Handler:           newHTTPSecurity(app.config, loopbackOnly).wrap(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	return srv.ListenAndServe()
 }
 
 // newHTTPMux 构建 HTTP API 的路由表（/chat /approve /tasks /plan ...）。
@@ -103,12 +136,6 @@ func runHTTP(app *App, addr string) error {
 func newHTTPMux(app *App) *http.ServeMux {
 
 	mux := http.NewServeMux()
-
-	// 活跃会话计数。
-	var activeSessions sync.WaitGroup
-
-	// 全局 Handler 注册表（按 session ID 管理）。
-	permHandlers := &sync.Map{}
 
 	// POST /chat — SSE 流式端点
 	mux.HandleFunc("POST /chat", func(w http.ResponseWriter, r *http.Request) {
@@ -121,6 +148,12 @@ func newHTTPMux(app *App) *http.ServeMux {
 		if req.Message == "" && !(resume && req.SessionID != "") {
 			http.Error(w, "message 字段必填", http.StatusBadRequest)
 			return
+		}
+		if req.SessionID != "" {
+			if err := safename.Check("session_id", req.SessionID); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 
 		// 设置 SSE 头。
@@ -135,7 +168,7 @@ func newHTTPMux(app *App) *http.ServeMux {
 			return
 		}
 
-		sw := &sseWriter{w: w, flusher: flusher}
+		sw := &sseWriter{w: w, flusher: flusher, rc: http.NewResponseController(w)}
 		defer sw.close()
 		heartbeatDone := make(chan struct{})
 		defer close(heartbeatDone)
@@ -159,28 +192,75 @@ func newHTTPMux(app *App) *http.ServeMux {
 			data, _ := json.Marshal(env)
 			sw.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", data)))
 		}
-		// 活跃会话计数。
-		activeSessions.Add(1)
-		defer activeSessions.Done()
-
-		// 为此会话创建 PermissionHandler（如果 App 使用了 PermissionHandler）。
+		// 未带 session_id 的请求也给本次运行一个真实的会话 ID：审批与提问按
+		// 会话路由回本连接（不持久化，语义同无状态单轮）。
 		sessionID := req.SessionID
 		if sessionID == "" {
-			sessionID = fmt.Sprintf("sess-%d", time.Now().UnixNano())
+			sessionID = newRequestID("sess")
 		}
 
-		// 检查 App 的 approver 是否为 PermissionHandler。
-		permHandler, isAsyncPerm := app.config.approver.(*PermissionHandler)
+		ctx := r.Context()
+		startTime := time.Now()
 
-		// 如果是异步权限模式，按会话绑定本连接的审批下发通道并起协程转发。
-		// 绑定生命周期与请求一致：handler 退出注销并关闭通道，转发协程
-		// 随 range 退出——不会遗留 stale 消费者与后续连接抢帧。
-		if isAsyncPerm {
-			permHandlers.Store(sessionID, permHandler)
-			defer func() {
-				permHandlers.Delete(sessionID)
-			}()
+		// 任务生命周期与 HTTP 连接解耦：前端刷新/离开只停止 SSE 转发，agent
+		// 任务继续跑完并落盘（消息逐条即时持久化，重新进入时从
+		// /sessions/{id}/messages 回放）。中断只能经 POST /interrupt。
+		bgCtx, bgCancel := context.WithCancel(context.WithoutCancel(ctx))
+		defer bgCancel()
 
+		// 准入分流必须在任何订阅之前完成：插话/排队请求不开新 run，若先
+		// 订阅会关闭正在运行的那条连接的审批/提问通道，返回时还会注销它。
+		// 会话忙且启用插话通道时，消息改走 guide 车道——任务在最近的工具批
+		// 结束边界收到；此刻不可插话时改入排队车道。
+		mgr := app.config.sessionManager
+		if resume && (mgr == nil || mgr.IsBusy(req.SessionID)) {
+			// 唤醒撞上在跑的 run：队列会在该 run 结束后自行消费，无需再起一轮。
+			writeFrame(protocol.Envelope{Type: protocol.TypeMetadata, SessionID: req.SessionID})
+			return
+		}
+		if req.SessionID != "" && mgr != nil && !resume && app.config.steering != nil && mgr.IsBusy(req.SessionID) {
+			if err := app.config.steering.Steer(req.SessionID, req.Message); err == nil {
+				writeFrame(protocol.Envelope{
+					Type:      protocol.TypeSteer,
+					SessionID: req.SessionID,
+					Text:      req.Message,
+				})
+				writeFrame(protocol.Envelope{
+					Type:      protocol.TypeMetadata,
+					SessionID: req.SessionID,
+					Steered:   true,
+				})
+				return
+			}
+			if mgr.IsBusy(req.SessionID) {
+				item := app.config.steering.Enqueue(req.SessionID, req.Message)
+				if mgr.IsBusy(req.SessionID) {
+					// 在跑的 run 收尾时会消费队列。
+					writeFrame(protocol.Envelope{
+						Type:      protocol.TypeMetadata,
+						SessionID: req.SessionID,
+						Queued:    true,
+						Text:      item.ID,
+					})
+					return
+				}
+				// 入队的同时 run 恰好结束：由本请求唤醒会话消费队列（空输入 =
+				// 取队头作为本轮输入），避免消息滞留到下一次请求。
+				req.Message = ""
+			}
+			// 会话已空闲：落到下面正常开新 run。
+		}
+
+		// 注册中断链路：/interrupt 按会话路由到本任务的 cancel。每个请求
+		// 只注销自己的登记——忙时撞车的请求不会抹掉在跑任务的中断入口。
+		if app.interruptHandler != nil {
+			defer app.interruptHandler.Register(sessionID, bgCancel)()
+		}
+
+		// 按会话绑定本连接的审批/提问下发通道并起协程转发。绑定生命周期与
+		// 请求一致：handler 退出注销并关闭通道，转发协程随 range 退出——
+		// 不会遗留 stale 消费者与后续连接抢帧。
+		if permHandler, ok := app.config.approver.(*PermissionHandler); ok {
 			permCh, unbindPerm := permHandler.Subscribe(sessionID)
 			defer unbindPerm()
 			go func() {
@@ -196,38 +276,7 @@ func newHTTPMux(app *App) *http.ServeMux {
 				}
 			}()
 		}
-
-		ctx := r.Context()
-		startTime := time.Now()
-
-		// 任务生命周期与 HTTP 连接解耦：后台 ctx 取消仅停止 SSE 转发
-		// （前端刷新/离开项目页），agent 任务本身继续跑完并落盘 —— 消息
-		// 逐条即时持久化，前端重新进入时从 /sessions/{id}/messages 回放。
-		// 中断只能经 POST /interrupt（用户点终止按钮），此时用后台 ctx 的
-		// cancel 精确终止任务。
-		bgCtx, bgCancel := context.WithCancel(context.WithoutCancel(ctx))
-		defer bgCancel() // 请求 handler 退出不杀任务：仅在无人消费时兜底回收
-		go func() {
-			<-ctx.Done()
-			// 前端连接断开：不 cancel bgCtx（任务继续）。
-			// 仅当任务尚未开始（RunSession 尚未 Acquire）时由 bgCancel 兜底。
-		}()
-
-		// 注册中断链路：/interrupt 按会话路由到本任务的 cancel。每个请求
-		// 只注销自己的登记——忙时撞车的请求不会抹掉在跑任务的中断入口。
-		if app.interruptHandler != nil {
-			defer app.interruptHandler.Register(sessionID, bgCancel)()
-		}
-
-		// 获取 App 级别的 handler 引用
-		askUserHandler := app.askUserHandler
-		planConfirmHandler := app.planConfirmHandler
-
-		// 如果有 askUserHandler，按会话绑定本连接的提问下发通道并起协程
-		// 转发（AskSession 命中本会话 → 帧写进本连接）。绑定生命周期与
-		// 请求一致，不与其它连接共享消费——多轮之后旧连接的转发器不会
-		// 残留抢帧（抢走 = 当前流收不到提问帧，工具在引擎侧无限阻塞）。
-		if askUserHandler != nil {
+		if askUserHandler := app.askUserHandler; askUserHandler != nil {
 			askCh, unbindAsk := askUserHandler.Subscribe(sessionID)
 			defer unbindAsk()
 			go func() {
@@ -242,64 +291,37 @@ func newHTTPMux(app *App) *http.ServeMux {
 				}
 			}()
 		}
-
-		// 如果有 planConfirmHandler，启动 goroutine 转发请求到 SSE
-		if planConfirmHandler != nil {
+		if planConfirmHandler := app.planConfirmHandler; planConfirmHandler != nil {
+			// 共享 channel 没有按会话的绑定：随请求结束退出，避免每个请求遗留一个协程。
+			forwardDone := make(chan struct{})
+			defer close(forwardDone)
 			go func() {
-				for req := range planConfirmHandler.Requests() {
-					writeFrame(protocol.Envelope{
-						Type:        protocol.TypePlanConfirm,
-						SessionID:   sessionID,
-						RequestID:   req.RequestID,
-						PlanContent: req.PlanContent,
-					})
+				for {
+					select {
+					case <-forwardDone:
+						return
+					case req, ok := <-planConfirmHandler.Requests():
+						if !ok {
+							return
+						}
+						writeFrame(protocol.Envelope{
+							Type:        protocol.TypePlanConfirm,
+							SessionID:   sessionID,
+							RequestID:   req.RequestID,
+							PlanContent: req.PlanContent,
+						})
+					}
 				}
 			}()
 		}
 
-		// 多轮对话：session_id 命中已有会话则自动加载历史并在结束后持久化；
-		// 未传 session_id 或未配置会话管理器时退化为无状态单轮（旧行为）。
-		// 用 bgCtx（与连接解耦）：SSE 断开不取消任务，/interrupt 才取消。
-		// 准入分流：会话忙且启用插话通道时，消息改走 guide 车道——任务在
-		// 最近的工具批结束边界收到，前端立即收到确认（无需排队 SSE）。
-		// Steer 竞态失败（检查后任务恰好结束）则落回普通新 run 路径。
+		// 多轮对话：session_id 命中已有会话则自动加载历史并逐条持久化；未传
+		// session_id 时按无状态单轮运行（不落盘）。用 bgCtx（与连接解耦）。
 		var events <-chan Event
-		if resume && (app.config.sessionManager == nil || app.config.sessionManager.IsBusy(req.SessionID)) {
-			// 唤醒撞上在跑的 run：队列会在该 run 结束后自行消费，无需再起一轮。
-			writeFrame(protocol.Envelope{Type: protocol.TypeMetadata, SessionID: req.SessionID})
-			return
-		}
-		if req.SessionID != "" && app.config.sessionManager != nil {
-			if !resume && app.config.steering != nil && app.config.sessionManager.IsBusy(req.SessionID) {
-				if err := app.config.steering.Steer(req.SessionID, req.Message); err == nil {
-					writeFrame(protocol.Envelope{
-						Type:      protocol.TypeSteer,
-						SessionID: req.SessionID,
-						Text:      req.Message,
-					})
-					writeFrame(protocol.Envelope{
-						Type:      protocol.TypeMetadata,
-						SessionID: req.SessionID,
-						Steered:   true,
-					})
-					return
-				}
-				// 会话忙但此刻不可插话（run 尚在准备/已在收尾）：改入排队
-				// 车道。直接开新 run 只会撞上会话锁报「正在运行中」，消息丢失。
-				if app.config.sessionManager.IsBusy(req.SessionID) {
-					item := app.config.steering.Enqueue(req.SessionID, req.Message)
-					writeFrame(protocol.Envelope{
-						Type:      protocol.TypeMetadata,
-						SessionID: req.SessionID,
-						Queued:    true,
-						Text:      item.ID,
-					})
-					return
-				}
-			}
+		if req.SessionID != "" && mgr != nil {
 			events = app.RunSession(bgCtx, req.SessionID, req.Message)
 		} else {
-			events = app.Run(bgCtx, req.Message)
+			events = app.RunWithSessionHistory(bgCtx, sessionID, nil, req.Message)
 		}
 
 		// 生命周期帧：run 开始（流内第一个数据帧，客户端据此绑定会话并
@@ -339,16 +361,13 @@ func newHTTPMux(app *App) *http.ServeMux {
 			return
 		}
 
-		// 查找对应的 PermissionHandler。
+		// 查找对应的 PermissionHandler。带 session_id 时只能解决属于该会话
+		// 的请求（一个会话不能替另一个会话作答）。
 		var resolved bool
-		if req.SessionID != "" {
-			if val, ok := permHandlers.Load(req.SessionID); ok {
-				handler := val.(*PermissionHandler)
-				resolved = handler.Resolve(req.RequestID, req.Allow, req.AlwaysAllow, req.Reason)
-			}
-		} else {
-			// 无 session ID 时，尝试 App 级别的 handler。
-			if handler, ok := app.config.approver.(*PermissionHandler); ok {
+		if handler, ok := app.config.approver.(*PermissionHandler); ok {
+			if req.SessionID != "" {
+				resolved = handler.ResolveForSession(req.SessionID, req.RequestID, req.Allow, req.AlwaysAllow, req.Reason)
+			} else {
 				resolved = handler.Resolve(req.RequestID, req.Allow, req.AlwaysAllow, req.Reason)
 			}
 		}
@@ -409,6 +428,24 @@ func newHTTPMux(app *App) *http.ServeMux {
 		})
 	})
 
+	// GET /pending-approval — 会话未决的权限审批（前端重载/重连后恢复审批卡）。
+	mux.HandleFunc("GET /pending-approval", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		sessionID := r.URL.Query().Get("session_id")
+		items := []map[string]any{}
+		if handler, ok := app.config.approver.(*PermissionHandler); ok && sessionID != "" {
+			for _, p := range handler.PendingBySession(sessionID) {
+				items = append(items, map[string]any{
+					"request_id": p.RequestID,
+					"tool_name":  p.ToolName,
+					"tool_input": p.ToolInput,
+					"permission": p.Permission,
+				})
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"pending": len(items) > 0, "items": items})
+	})
+
 	// POST /plan/confirm — 计划确认端点
 	// 前端接收到 plan_confirm SSE 事件后，通过此端点返回用户确认。
 	mux.HandleFunc("POST /plan/confirm", func(w http.ResponseWriter, r *http.Request) {
@@ -441,12 +478,18 @@ func newHTTPMux(app *App) *http.ServeMux {
 			http.Error(w, "无效的请求体", http.StatusBadRequest)
 			return
 		}
-
-		// 使用 InterruptHandler 处理中断
-		var err error
-		if interruptHandler := app.interruptHandler; interruptHandler != nil {
-			err = interruptHandler.Interrupt(req.SessionID, req.Reason)
+		// 必须指明会话：空 session_id 在中断处理器里表示"中断全部会话"，
+		// 不能经 HTTP 暴露。
+		if req.SessionID == "" {
+			http.Error(w, "session_id 字段必填", http.StatusBadRequest)
+			return
 		}
+		interruptHandler := app.interruptHandler
+		if interruptHandler == nil {
+			http.Error(w, "未启用中断处理（SetInterruptHandler）", http.StatusNotImplemented)
+			return
+		}
+		err := interruptHandler.Interrupt(req.SessionID, req.Reason)
 
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil {
@@ -526,30 +569,56 @@ func newHTTPMux(app *App) *http.ServeMux {
 		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "text": text})
 	})
 
-	// GET /mode — 当前权限模式（运行时覆写优先，否则构造配置，缺省 default）。
+	// GET /mode — 当前权限模式。带 ?session_id= 时返回该会话生效的模式（会话级
+	// 设置优先），否则返回全局模式（运行时覆写优先，否则构造配置，缺省 default）。
 	mux.HandleFunc("GET /mode", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if sid := r.URL.Query().Get("session_id"); sid != "" {
+			json.NewEncoder(w).Encode(map[string]any{"mode": permissionModeString(app.SessionPermissionMode(sid)), "session_id": sid})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]any{"mode": permissionModeString(app.CurrentPermissionMode())})
 	})
 
-	// POST /mode — 运行时切换权限模式（SetPermissionMode）。
-	// 立即生效：进行中的 run 直接改写权限门，后续 run 沿用覆写值。
-	// 合法值：default / accept_edits / plan / bypass / deny_all。
+	// POST /mode — 运行时切换权限模式，立即作用于进行中的运行。
+	//   - 带 session_id：只切换该会话（SetSessionPermissionMode）；mode 为空
+	//     表示撤销会话级设置，回到全局模式（ClearSessionPermissionMode）。
+	//   - 不带 session_id：切换全局模式（SetPermissionMode），不影响设置了
+	//     会话级模式的会话。
+	// 合法值：default / accept_edits / auto / plan / bypass / deny_all。
 	mux.HandleFunc("POST /mode", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Mode string `json:"mode"`
+			Mode      string `json:"mode"`
+			SessionID string `json:"session_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "无效的请求体", http.StatusBadRequest)
 			return
 		}
+		if req.SessionID != "" {
+			if err := safename.Check("session_id", req.SessionID); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if req.SessionID != "" && req.Mode == "" {
+			app.ClearSessionPermissionMode(req.SessionID)
+			json.NewEncoder(w).Encode(map[string]any{"status": "ok", "session_id": req.SessionID,
+				"mode": permissionModeString(app.SessionPermissionMode(req.SessionID))})
+			return
+		}
 		mode, ok := permissionModeFromString(req.Mode)
 		if !ok {
-			http.Error(w, "mode 必须是 default/accept_edits/plan/bypass/deny_all", http.StatusBadRequest)
+			http.Error(w, "mode 必须是 default/accept_edits/auto/plan/bypass/deny_all", http.StatusBadRequest)
+			return
+		}
+		if req.SessionID != "" {
+			app.SetSessionPermissionMode(req.SessionID, mode)
+			json.NewEncoder(w).Encode(map[string]any{"status": "ok", "session_id": req.SessionID, "mode": permissionModeString(mode)})
 			return
 		}
 		app.SetPermissionMode(mode)
-		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "mode": permissionModeString(mode)})
 	})
 
@@ -610,9 +679,6 @@ func newHTTPMux(app *App) *http.ServeMux {
 			http.Error(w, "无效的请求体", http.StatusBadRequest)
 			return
 		}
-
-		activeSessions.Add(1)
-		defer activeSessions.Done()
 
 		result, err := app.Execute(r.Context(), req.Message)
 		if err != nil {
@@ -921,7 +987,12 @@ func newHTTPMux(app *App) *http.ServeMux {
 			http.Error(w, "session system not enabled", http.StatusServiceUnavailable)
 			return
 		}
-		sess, err := mgr.Get(r.Context(), r.PathValue("id"))
+		id := r.PathValue("id")
+		if err := safename.Check("session_id", id); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		sess, err := mgr.Get(r.Context(), id)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1105,6 +1176,8 @@ func permissionModeString(m PermissionModeOption) string {
 		return "plan"
 	case PermissionDenyAll:
 		return "deny_all"
+	case PermissionAuto:
+		return "auto"
 	default:
 		return "default"
 	}
@@ -1122,6 +1195,8 @@ func permissionModeFromString(s string) (PermissionModeOption, bool) {
 		return PermissionBypass, true
 	case "deny_all":
 		return PermissionDenyAll, true
+	case "auto":
+		return PermissionAuto, true
 	default:
 		return PermissionDefault, false
 	}

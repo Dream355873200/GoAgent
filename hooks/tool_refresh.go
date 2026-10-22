@@ -124,9 +124,8 @@ func (r *ToolAutoRefresher) Start(ctx context.Context) {
 			case <-r.stopCh:
 				return
 			case <-ticker.C():
-				if _, changed, err := r.mgr.Refresh(ctx); err == nil && changed {
-					// 工具已刷新，OnChange 会被调用
-				}
+				// 工具变更由 Manager 的 OnChange 回调通知。
+				_, _, _ = r.mgr.Refresh(ctx)
 			}
 		}
 	}()

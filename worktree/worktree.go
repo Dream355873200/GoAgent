@@ -1,7 +1,7 @@
 // Package worktree 实现 git worktree 隔离机制。
 //
 // 对齐 Claude Code 的 EnterWorktree/ExitWorktree 工具。
-// 在 .yume/worktrees/ 目录下创建隔离的工作树，
+// 在 <状态目录>/worktrees/（默认 .yume/worktrees/）下创建隔离的工作树，
 // 每个 worktree 有独立的分支和工作目录。
 package worktree
 
@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/Dream355873200/GoAgent/statedir"
 )
 
 // Worktree 表示一个 git worktree。
@@ -94,7 +96,7 @@ func (m *Manager) createLocked(name string) (*Worktree, error) {
 	}
 
 	// 确保 worktrees 目录存在。
-	worktreesDir := filepath.Join(m.repoRoot, ".yume", "worktrees")
+	worktreesDir := statedir.Join(m.repoRoot, "worktrees")
 	if err := os.MkdirAll(worktreesDir, 0755); err != nil {
 		return nil, fmt.Errorf("创建 worktrees 目录失败: %w", err)
 	}

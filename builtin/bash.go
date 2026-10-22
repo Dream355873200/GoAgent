@@ -2,7 +2,7 @@ package builtin
 
 import (
 	"context"
-	"encoding/json"
+
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -115,12 +115,4 @@ func runCommand(ctx context.Context, name string, args ...string) (string, error
 	cmd := exec.CommandContext(childCtx, name, args...)
 	output, err := cmd.CombinedOutput()
 	return strings.TrimRight(string(output), "\n\r "), err
-}
-
-// parseJSON 是内部辅助函数，解析 JSON 输入。
-func parseJSON(data []byte, v any) error {
-	if len(data) == 0 {
-		return nil
-	}
-	return json.Unmarshal(data, v)
 }

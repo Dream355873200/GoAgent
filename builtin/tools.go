@@ -319,6 +319,7 @@ func WriteTool() goagent.ToolDef {
 			"覆盖已存在的文件前必须先 Read 它（防止凭旧印象覆盖丢改动）；新建文件无需先读。",
 		Input:      WriteInput{},
 		Permission: goagent.Normal,
+		FileEdit:   true,
 		Execute: func(ctx goagent.Context, in WriteInput) (string, error) {
 			p, err := resolvePathChecked(ctx, in.FilePath, goagent.OpWrite)
 			if err != nil {
@@ -387,6 +388,7 @@ func EditTool() goagent.ToolDef {
 			"凭记忆编辑会匹配失败。多处修改尽量合并成一次大块替换而不是多次小改。",
 		Input:      EditInput{},
 		Permission: goagent.Normal,
+		FileEdit:   true,
 		Execute: func(ctx goagent.Context, in EditInput) (string, error) {
 			p, err := resolvePathChecked(ctx, in.FilePath, goagent.OpWrite)
 			if err != nil {

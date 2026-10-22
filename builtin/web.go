@@ -1,12 +1,14 @@
 package builtin
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Dream355873200/GoAgent"
 )
@@ -155,8 +157,28 @@ type WebFetchInput struct {
 	MaxLength int `json:"max_length,omitempty" desc:"最大获取字符数，默认 50000"`
 }
 
-// WebFetchTool 返回网页获取工具定义。
+// WebFetchConfig 配置 WebFetch 工具。
+type WebFetchConfig struct {
+	// AllowPrivateNetwork 允许访问本机、内网、链路本地等非公网地址。默认
+	// false：WebFetch 是只读级工具、不经用户审批，网页内容中的注入指令可能
+	// 诱导模型抓取内网服务或云元数据地址（SSRF）。只在 agent 确实需要访问
+	// 内网文档、且运行环境可信时开启。
+	AllowPrivateNetwork bool
+}
+
+// WebFetchTool 返回网页获取工具定义（只允许访问公网地址）。
 func WebFetchTool() goagent.ToolDef {
+	return WebFetchToolWith(WebFetchConfig{})
+}
+
+// WebFetchToolWith 按配置返回网页获取工具定义。
+func WebFetchToolWith(cfg WebFetchConfig) goagent.ToolDef {
+	var client *http.Client
+	if cfg.AllowPrivateNetwork {
+		client = &http.Client{Timeout: 15 * time.Second}
+	} else {
+		client = publicOnlyClient(15 * time.Second)
+	}
 	return goagent.ToolDef{
 		Description: "获取并解析网页内容。返回页面的文本内容（去除了 HTML 标签）。" +
 			"用于获取文档、博客文章、技术资料等。",
@@ -166,12 +188,12 @@ func WebFetchTool() goagent.ToolDef {
 		Effect:             goagent.EffectReadOnly,
 		MaxResultSizeChars: 100000,
 		Execute: func(ctx goagent.Context, in WebFetchInput) (string, error) {
-			return executeWebFetch(in)
+			return executeWebFetch(ctx, client, in)
 		},
 	}
 }
 
-func executeWebFetch(in WebFetchInput) (string, error) {
+func executeWebFetch(ctx context.Context, client *http.Client, in WebFetchInput) (string, error) {
 	if in.URL == "" {
 		return "", fmt.Errorf("url 不能为空")
 	}
@@ -190,8 +212,7 @@ func executeWebFetch(in WebFetchInput) (string, error) {
 		maxLength = 200000
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	req, err := http.NewRequest("GET", in.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", in.URL, nil)
 	if err != nil {
 		return "", fmt.Errorf("创建请求失败: %w", err)
 	}
@@ -212,19 +233,22 @@ func executeWebFetch(in WebFetchInput) (string, error) {
 	contentType := resp.Header.Get("Content-Type")
 	if strings.HasPrefix(contentType, "text/html") {
 		// 提取纯文本
-		text := extractTextFromHTML(string(body))
-		if len(text) > maxLength {
-			text = text[:maxLength] + "..."
-		}
-		return text, nil
+		return truncateUTF8(extractTextFromHTML(string(body)), maxLength), nil
 	}
 
 	// 非 HTML 内容直接返回
-	result := string(body)
-	if len(result) > maxLength {
-		result = result[:maxLength] + "..."
+	return truncateUTF8(string(body), maxLength), nil
+}
+
+// truncateUTF8 把 s 截到不超过 n 字节（落在字符边界），截断时追加省略号。
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return result, nil
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "..."
 }
 
 // extractTextFromHTML 从 HTML 中提取纯文本。

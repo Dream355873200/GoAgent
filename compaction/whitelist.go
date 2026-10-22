@@ -8,6 +8,8 @@ package compaction
 
 // CompactableTools 是结果可以被微压缩的工具名称集合。
 // 这些工具的输出是信息性的，在模型响应后不需要持久保留在对话中。
+//
+// Deprecated: 压缩层不读取这份白名单；微压缩的工具范围见 MicrocompactConfig.CompactableTools（默认 DefaultCompactableTools）。将在后续版本删除。
 var CompactableTools = map[string]bool{
 	"Read":       true,
 	"Bash":       true,
@@ -20,12 +22,16 @@ var CompactableTools = map[string]bool{
 }
 
 // IsCompactable 返回指定工具的结果是否可以被微压缩。
+//
+// Deprecated: 压缩层不读取这份白名单，注册不产生任何效果；微压缩的工具范围见 MicrocompactConfig.CompactableTools（默认 DefaultCompactableTools）。将在后续版本删除。
 func IsCompactable(toolName string) bool {
 	return CompactableTools[toolName]
 }
 
 // RegisterCompactableTool 将工具名称添加到可压缩白名单。
 // 允许用户将自定义工具标记为可压缩。
+//
+// Deprecated: 压缩层不读取这份白名单，注册不产生任何效果；微压缩的工具范围见 MicrocompactConfig.CompactableTools（默认 DefaultCompactableTools）。将在后续版本删除。
 func RegisterCompactableTool(name string) {
 	CompactableTools[name] = true
 }

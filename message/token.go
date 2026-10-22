@@ -73,21 +73,40 @@ func (s TokenWarningState) String() string {
 	}
 }
 
+// EstimateTextTokens 估算一段文本的 token 数：ASCII 按 charsPerToken
+// 字节折算一个 token，非 ASCII 字符（中日韩文字等）每个按一个 token 计。
+// 只按字节数折算会把中文低估三到四倍（UTF-8 下一个汉字三字节，而分词器
+// 通常把一个汉字切成一个甚至更多 token）。
+func EstimateTextTokens(s string, charsPerToken int) int {
+	if s == "" {
+		return 0
+	}
+	if charsPerToken <= 0 {
+		charsPerToken = CharsPerToken
+	}
+	ascii, wide := 0, 0
+	for _, r := range s {
+		if r < 0x80 {
+			ascii++
+		} else {
+			wide++
+		}
+	}
+	return max(1, ascii/charsPerToken+wide)
+}
+
 // EstimateContentBlockTokens 估算单个内容块的 token 数。
 // 不同块类型有不同的 token 密度。
 func EstimateContentBlockTokens(block ContentBlock) int {
 	switch block.Type {
 	case "text":
-		if len(block.Text) == 0 {
-			return 0
-		}
-		return max(1, len(block.Text)/CharsPerToken)
+		return EstimateTextTokens(block.Text, CharsPerToken)
 
 	case "tool_use":
 		// tool_use 块包含 JSON 输入 — 使用 JSON 密度比率。
 		tokens := len(block.ToolName)/CharsPerToken + 5 // 工具名 + 帧开销
 		if len(block.Input) > 0 {
-			tokens += len(block.Input) / JSONCharsPerToken
+			tokens += EstimateTextTokens(string(block.Input), JSONCharsPerToken)
 		}
 		return max(1, tokens)
 
@@ -97,9 +116,9 @@ func EstimateContentBlockTokens(block ContentBlock) int {
 		}
 		// 内联图片按图片计（base64 按字符数折算会高估一个数量级，过早触发压缩）
 		if img, ok := SplitImageMarker(block.Text); ok && img.Valid {
-			return ImageTokenEstimate + len(img.Body)/CharsPerToken
+			return ImageTokenEstimate + EstimateTextTokens(img.Body, CharsPerToken)
 		}
-		return max(1, len(block.Text)/CharsPerToken)
+		return EstimateTextTokens(block.Text, CharsPerToken)
 
 	case "image":
 		return ImageTokenEstimate
@@ -108,15 +127,15 @@ func EstimateContentBlockTokens(block ContentBlock) int {
 		return DocumentTokenEstimate
 
 	case "thinking":
-		if len(block.Text) == 0 {
-			return 0
-		}
-		return max(1, len(block.Text)/ThinkingCharsPerToken)
+		return EstimateTextTokens(block.Thinking, ThinkingCharsPerToken)
+
+	case "redacted_thinking":
+		return EstimateTextTokens(block.Data, CharsPerToken)
 
 	default:
 		// 未知块类型 — 使用文本估算作为回退。
 		if len(block.Text) > 0 {
-			return len(block.Text) / CharsPerToken
+			return EstimateTextTokens(block.Text, CharsPerToken)
 		}
 		return 1
 	}

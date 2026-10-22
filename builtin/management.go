@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/Dream355873200/GoAgent/cron"
 	"github.com/Dream355873200/GoAgent/plan"
 	"github.com/Dream355873200/GoAgent/skill"
+	"github.com/Dream355873200/GoAgent/statedir"
 	"github.com/Dream355873200/GoAgent/task"
 	"github.com/Dream355873200/GoAgent/worktree"
 )
@@ -291,7 +291,7 @@ func SkillTool(reg *skill.Registry) goagent.ToolDef {
 
 // SessionSkillTool 会话感知的 Skill 工具：注册表按 ctx.SessionID 解析，
 // 描述经 SessionDescription 按会话内嵌各自的技能清单。resolve 返回 nil
-// 表示该会话无全局技能（仅项目 .yume/commands/ 可用）。
+// 表示该会话无全局技能（仅项目 <状态目录>/commands/ 可用）。
 func SessionSkillTool(resolve func(sessionID string) *skill.Registry) goagent.ToolDef {
 	return goagent.ToolDef{
 		Description: skillToolDescription(resolve("")),
@@ -325,7 +325,7 @@ func SessionSkillTool(resolve func(sessionID string) *skill.Registry) goagent.To
 	}
 }
 
-// listSkills 列出会话可用的全部 skill：项目 .yume/commands/（现场扫描，
+// listSkills 列出会话可用的全部 skill：项目 <状态目录>/commands/（现场扫描，
 // 新建文件立即生效）+ 全局注册表。同名时项目版覆盖全局。
 func listSkills(workDir string, reg *skill.Registry) string {
 	merged := map[string]string{} // name → 描述行
@@ -339,7 +339,7 @@ func listSkills(workDir string, reg *skill.Registry) string {
 	}
 	// 项目目录现场扫描（注册表预扫描可能滞后）
 	if workDir != "" {
-		if entries, err := os.ReadDir(filepath.Join(workDir, ".yume", "commands")); err == nil {
+		if entries, err := os.ReadDir(statedir.Join(workDir, "commands")); err == nil {
 			for _, e := range entries {
 				if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 					continue
@@ -348,7 +348,7 @@ func listSkills(workDir string, reg *skill.Registry) string {
 				if name == "" || strings.ContainsAny(name, `/\`) {
 					continue
 				}
-				data, err := os.ReadFile(filepath.Join(workDir, ".yume", "commands", e.Name()))
+				data, err := os.ReadFile(statedir.Join(workDir, "commands", e.Name()))
 				if err != nil {
 					continue
 				}
@@ -387,13 +387,13 @@ func extractSkillDesc(content string) string {
 	return ""
 }
 
-// readProjectSkill 读取会话项目目录下的 .yume/commands/<name>.md。
+// readProjectSkill 读取会话项目目录下的 <状态目录>/commands/<name>.md（状态目录默认 .yume）。
 // 文件不存在返回 ok=false；名称做路径消毒（防 "../" 逃逸）。
 func readProjectSkill(workDir, name, args string) (string, bool) {
 	if workDir == "" || name == "" || strings.ContainsAny(name, `/\`) || name == ".." || name == "." {
 		return "", false
 	}
-	path := filepath.Join(workDir, ".yume", "commands", name+".md")
+	path := statedir.Join(workDir, "commands", name+".md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", false

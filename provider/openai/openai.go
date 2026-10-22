@@ -10,11 +10,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
-	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,7 +35,7 @@ type Config struct {
 	// BaseURL 是 API 基础 URL。默认为 "http://localhost:11434/v1"（Ollama）。
 	BaseURL string
 
-	// Model 是模型名称。默认为 "qwen2.5:7b"。
+	// Model 是模型名称，可被 Request.Model 按请求覆盖。默认为 "qwen-rp:latest"。
 	Model string
 
 	// ContextWindow 是模型的上下文窗口大小。
@@ -44,6 +47,10 @@ type Config struct {
 	// DisableTools 为 true 时不发送 tools 参数。
 	// 用于不支持 function calling 的模型（如 RP 模型、旧模型等）。
 	DisableTools bool
+
+	// DisableStreamUsage 为 true 时流式请求不携带 stream_options.include_usage。
+	// 官方 OpenAI 流式只有带上它才返回用量；个别不认识该字段而报错的后端可关闭。
+	DisableStreamUsage bool
 
 	// ExtraBody 原样合并进每个 chat/completions 请求体（浅合并，ExtraBody 优先）。
 	// 逃生舱：各后端的私有参数（如某些网关的思考开关）无需改库即可透传。
@@ -99,13 +106,21 @@ const (
 
 // chatRequest 是 OpenAI Chat Completions API 的请求体。
 type chatRequest struct {
-	Model           string        `json:"model"`
-	Messages        []chatMessage `json:"messages"`
-	Tools           []chatTool    `json:"tools,omitempty"`
-	MaxTokens       int           `json:"max_tokens,omitempty"`
-	Stream          bool          `json:"stream"`
-	Temperature     *float64      `json:"temperature,omitempty"`
-	ReasoningEffort string        `json:"reasoning_effort,omitempty"` // 思考强度（o-series 约定；后端不支持时会校验报错）
+	Model           string         `json:"model"`
+	Messages        []chatMessage  `json:"messages"`
+	Tools           []chatTool     `json:"tools,omitempty"`
+	MaxTokens       int            `json:"max_tokens,omitempty"`
+	Stream          bool           `json:"stream"`
+	StreamOptions   *streamOptions `json:"stream_options,omitempty"` // 仅流式请求可带，非流式带上会被官方 API 拒绝
+	Temperature     *float64       `json:"temperature,omitempty"`
+	ReasoningEffort string         `json:"reasoning_effort,omitempty"` // 思考强度（o-series 约定；后端不支持时会校验报错）
+
+	// imgFormat 是组装本请求图片时使用的编码记忆值，供图片 4xx 自适应判断。
+	imgFormat string
+}
+
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // chatMessage 是 OpenAI 格式的消息。
@@ -188,6 +203,16 @@ func (u *chatUsage) cacheRead() int {
 	return u.PromptTokensDetails.CachedTokens
 }
 
+// toUsage 归一到 provider.Usage 口径：prompt_tokens 含缓存命中部分，InputTokens 需扣除。
+func (u *chatUsage) toUsage() provider.Usage {
+	cached := u.cacheRead()
+	return provider.Usage{
+		InputTokens:     max(u.PromptTokens-cached, 0),
+		OutputTokens:    u.CompletionTokens,
+		CacheReadTokens: cached,
+	}
+}
+
 // streamChunk 是 SSE 流中的一个数据块。
 type streamChunk struct {
 	ID      string              `json:"id"`
@@ -230,7 +255,6 @@ type streamFuncDelta struct {
 
 // ---------- Provider 接口实现 ----------
 
-// Stream 实现流式 API 调用。
 // applyExtraBody 把 Config.ExtraBody 浅合并进已序列化的请求体（ExtraBody 优先）。
 func (p *Provider) applyExtraBody(jsonBody []byte) ([]byte, error) {
 	p.mu.RLock()
@@ -249,9 +273,8 @@ func (p *Provider) applyExtraBody(jsonBody []byte) ([]byte, error) {
 	return json.Marshal(m)
 }
 
-// marshalChat 构建并序列化请求体（含 ExtraBody 合并）。
-func (p *Provider) marshalChat(req *provider.Request, stream bool) ([]byte, error) {
-	body := p.buildChatRequest(req, stream)
+// marshalChat 序列化请求体（含 ExtraBody 合并）。
+func (p *Provider) marshalChat(body chatRequest) ([]byte, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("序列化请求失败: %w", err)
@@ -286,13 +309,15 @@ func (p *Provider) doChat(ctx context.Context, jsonBody []byte) (*http.Response,
 // 裸 base64 支持不一），自动切换编码重试一次并按 端点|模型 记忆——一次
 // 探测，之后所有请求直接用对的格式，无需逐家中转适配。
 func (p *Provider) sendChat(ctx context.Context, req *provider.Request, stream bool) (*http.Response, error) {
-	jsonBody, err := p.marshalChat(req, stream)
+	body := p.buildChatRequest(req, stream)
+	jsonBody, err := p.marshalChat(body)
 	if err != nil {
 		return nil, err
 	}
 	resp, err := p.doChat(ctx, jsonBody)
-	if err != nil && requestHasImage(req.Messages) && p.maybeSwitchImageFormat(err) {
-		if jsonBody, err = p.marshalChat(req, stream); err == nil {
+	if err != nil && requestHasImage(req.Messages) && p.maybeSwitchImageFormat(body.Model, body.imgFormat, err) {
+		body = p.buildChatRequest(req, stream)
+		if jsonBody, err = p.marshalChat(body); err == nil {
 			resp, err = p.doChat(ctx, jsonBody)
 		}
 	}
@@ -300,18 +325,21 @@ func (p *Provider) sendChat(ctx context.Context, req *provider.Request, stream b
 }
 
 // dumpFailedRequest 调试辅助：FLAI_DEBUG_REQUEST=1 时，把被端点拒绝的请求
-// 体完整落盘，便于定位是哪个内容触发的 4xx。
+// 体完整落盘到临时目录，便于定位是哪个内容触发的 4xx。请求体含完整对话，
+// 只能属主可读：CreateTemp 以 0600 创建，且文件名唯一、并发失败不会互相覆盖。
 func dumpFailedRequest(jsonBody []byte) {
 	if os.Getenv("FLAI_DEBUG_REQUEST") != "1" {
 		return
 	}
-	dir := os.TempDir()
-	p := filepath.Join(dir, "ycode-failed-request.json")
-	if werr := os.WriteFile(p, jsonBody, 0o644); werr == nil {
-		fmt.Println("[openai] 失败请求已转储:", p)
+	f, err := os.CreateTemp("", "ycode-failed-request-"+time.Now().Format("20060102-150405")+"-*.json")
+	if err != nil {
+		return
 	}
+	defer f.Close()
+	_, _ = f.Write(jsonBody)
 }
 
+// Stream 实现流式 API 调用。
 func (p *Provider) Stream(ctx context.Context, req *provider.Request) (<-chan provider.StreamEvent, error) {
 	resp, err := p.sendChat(ctx, req, true)
 	if err != nil {
@@ -347,11 +375,7 @@ func (p *Provider) Complete(ctx context.Context, req *provider.Request) (*provid
 
 	var usage provider.Usage
 	if chatResp.Usage != nil {
-		usage = provider.Usage{
-			InputTokens:     chatResp.Usage.PromptTokens,
-			OutputTokens:    chatResp.Usage.CompletionTokens,
-			CacheReadTokens: chatResp.Usage.cacheRead(),
-		}
+		usage = chatResp.Usage.toUsage()
 	}
 
 	return &provider.Response{
@@ -395,13 +419,21 @@ func (p *Provider) buildChatRequest(req *provider.Request, stream bool) chatRequ
 	p.mu.RLock()
 	model := p.config.Model
 	disableTools := p.config.DisableTools
+	streamUsage := !p.config.DisableStreamUsage
 	p.mu.RUnlock()
+	if req.Model != "" {
+		model = req.Model
+	}
 
-	msgs := p.toOpenAIMessages("", req.SystemPrompt, req.Messages)
+	imgFormat := p.imageFormat(model)
 	cr := chatRequest{
-		Model:    model,
-		Messages: msgs,
-		Stream:   stream,
+		Model:     model,
+		Messages:  p.toOpenAIMessages(imgFormat, req.SystemPrompt, req.Messages),
+		Stream:    stream,
+		imgFormat: imgFormat,
+	}
+	if stream && streamUsage {
+		cr.StreamOptions = &streamOptions{IncludeUsage: true}
 	}
 	if req.MaxTokens > 0 {
 		cr.MaxTokens = req.MaxTokens
@@ -436,30 +468,77 @@ func (p *Provider) buildChatRequest(req *provider.Request, stream bool) chatRequ
 func (p *Provider) handleHTTPError(resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 
-	switch resp.StatusCode {
-	case 413:
+	switch code := resp.StatusCode; {
+	case code == http.StatusRequestEntityTooLarge:
 		return &provider.PromptTooLongError{
 			Message: fmt.Sprintf("请求过大 (HTTP 413): %s", string(body)),
 		}
-	case 429:
+	case code == http.StatusTooManyRequests:
 		// 429 = 速率限制（TPM/RPM 配额），等待后重试必然可行。
 		// 与 529 过载区分：OverloadError 会触发后备模型切换，
 		// 而速率限制切模型无济于事（同一账号同限额）——必须等待。
 		return &provider.RateLimitError{
-			Message: fmt.Sprintf("速率限制 (HTTP 429): %s", string(body)),
+			Message:    fmt.Sprintf("速率限制 (HTTP 429): %s", string(body)),
+			RetryAfter: parseRetryAfter(resp.Header),
 		}
-	case 529:
+	case code == 529:
 		return &provider.OverloadError{
 			Message: fmt.Sprintf("服务过载 (HTTP 529): %s", string(body)),
 		}
-	default:
-		if resp.StatusCode >= 500 {
-			return &provider.OverloadError{
-				Message: fmt.Sprintf("服务器错误 (HTTP %d): %s", resp.StatusCode, string(body)),
-			}
+	case code >= 500:
+		return &provider.OverloadError{
+			Message: fmt.Sprintf("服务器错误 (HTTP %d): %s", code, string(body)),
 		}
-		return fmt.Errorf("API 错误 (HTTP %d): %s", resp.StatusCode, string(body))
+	case code >= 400 && isContextOverflow(body):
+		// 各家超窗多返回 400（个别 422），只能按错误体识别。
+		return &provider.PromptTooLongError{
+			Message: fmt.Sprintf("上下文超限 (HTTP %d): %s", code, string(body)),
+		}
 	}
+	return fmt.Errorf("API 错误 (HTTP %d): %s", resp.StatusCode, string(body))
+}
+
+// contextOverflowMarkers 是各后端超出上下文窗口时错误体中的特征文本（小写）。
+var contextOverflowMarkers = []string{
+	"context_length_exceeded", // OpenAI / Azure
+	"maximum context length",  // OpenAI、vLLM、DeepSeek、OpenRouter、Mistral
+	"prompt is too long",      // Anthropic 兼容端点
+	"too many tokens",
+	"context window",
+	"exceed_context_size",                  // llama.cpp server
+	"exceeds the maximum number of tokens", // Gemini 兼容端点
+	"exceeded model token limit",           // Moonshot
+}
+
+func isContextOverflow(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	for _, m := range contextOverflowMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// maxRetryAfter 是 Retry-After 的上限，防止异常值溢出 time.Duration。
+const maxRetryAfter = 24 * time.Hour
+
+// parseRetryAfter 解析 Retry-After 响应头（秒数或 HTTP 日期），缺失或无效时返回 0。
+func parseRetryAfter(header http.Header) time.Duration {
+	v := strings.TrimSpace(header.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	var d time.Duration
+	if secs, err := strconv.ParseFloat(v, 64); err == nil {
+		if !(secs > 0) { // 同时排除 NaN
+			return 0
+		}
+		d = time.Duration(min(secs, maxRetryAfter.Seconds()) * float64(time.Second))
+	} else if t, err := http.ParseTime(v); err == nil {
+		d = time.Until(t)
+	}
+	return max(min(d, maxRetryAfter), 0)
 }
 
 // consumeStream 消费 SSE 流并发送事件到通道。
@@ -475,6 +554,10 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, out c
 	}
 	toolStates := make(map[int]*toolCallState)
 	var assistantText strings.Builder
+	// finish 块与随后的纯 usage 块都可能携带用量（后者可能晚于 finish_reason
+	// 到达）：只保留最后一次（累计终值），流结束时上报一次。
+	var usage *chatUsage
+	finished := false
 
 	// 空闲看门狗：超时关闭响应体，阻塞中的 Scan 随即返回错误。
 	var idleFired atomic.Bool
@@ -520,18 +603,10 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, out c
 			continue
 		}
 
+		if chunk.Usage != nil {
+			usage = chunk.Usage
+		}
 		if len(chunk.Choices) == 0 {
-			// 可能是只有 usage 的最终块。
-			if chunk.Usage != nil {
-				out <- provider.StreamEvent{
-					Type: provider.EventUsage,
-					Usage: &provider.Usage{
-						InputTokens:     chunk.Usage.PromptTokens,
-						OutputTokens:    chunk.Usage.CompletionTokens,
-						CacheReadTokens: chunk.Usage.cacheRead(),
-					},
-				}
-			}
 			continue
 		}
 
@@ -575,72 +650,63 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, out c
 			}
 		}
 
-		// 处理结束原因。
-		if choice.FinishReason != nil && *choice.FinishReason != "" {
-			finishReason := *choice.FinishReason
+		// 处理结束原因。个别后端会重复下发 finish_reason，只认第一次，
+		// 否则工具调用会被重复派发。
+		if finished || choice.FinishReason == nil || *choice.FinishReason == "" {
+			continue
+		}
+		finished = true
+		finishReason := *choice.FinishReason
 
-			// 在流结束前，发射已完成的工具调用。
-			if finishReason == "tool_calls" || finishReason == "stop" {
-				for _, state := range toolStates {
-					if state.name != "" {
-						args := state.arguments.String()
-						if args == "" {
-							args = "{}"
-						}
-						out <- provider.StreamEvent{
-							Type: provider.EventToolUseStart,
-							ToolCall: &message.ToolCall{
-								ID:    state.id,
-								Name:  state.name,
-								Input: json.RawMessage(args),
-							},
-						}
-					}
-				}
+		// 按 index 升序：工具串行执行的先后次序必须与模型给出的一致。
+		var calls []message.ToolCall
+		for _, idx := range slices.Sorted(maps.Keys(toolStates)) {
+			state := toolStates[idx]
+			if state.name == "" {
+				continue
 			}
+			args := state.arguments.String()
+			if args == "" {
+				args = "{}"
+			}
+			calls = append(calls, message.ToolCall{ID: state.id, Name: state.name, Input: json.RawMessage(args)})
+		}
 
-			// 发送 usage（如果有的话）。
-			if chunk.Usage != nil {
-				out <- provider.StreamEvent{
-					Type: provider.EventUsage,
-					Usage: &provider.Usage{
-						InputTokens:     chunk.Usage.PromptTokens,
-						OutputTokens:    chunk.Usage.CompletionTokens,
-						CacheReadTokens: chunk.Usage.cacheRead(),
-					},
-				}
-			}
-
-			// 组装完整的 assistant message。
-			fullMsg := message.Message{Role: message.RoleAssistant}
-			if text := assistantText.String(); text != "" {
-				fullMsg.Content = append(fullMsg.Content, message.ContentBlock{
-					Type: "text",
-					Text: text,
-				})
-			}
-			for _, state := range toolStates {
-				if state.name != "" {
-					args := state.arguments.String()
-					if args == "" {
-						args = "{}"
-					}
-					fullMsg.Content = append(fullMsg.Content, message.ContentBlock{
-						Type:      "tool_use",
-						ToolUseID: state.id,
-						ToolName:  state.name,
-						Input:     json.RawMessage(args),
-					})
-				}
-			}
-
-			// 发送完成事件。
-			out <- provider.StreamEvent{
-				Type:       provider.EventMessageComplete,
-				Message:    &fullMsg,
-				StopReason: p.fromFinishReason(finishReason),
+		// 在流结束前，发射已完成的工具调用。
+		if finishReason == "tool_calls" || finishReason == "stop" {
+			for i := range calls {
+				out <- provider.StreamEvent{Type: provider.EventToolUseStart, ToolCall: &calls[i]}
 			}
 		}
+
+		// 组装完整的 assistant message。
+		fullMsg := message.Message{Role: message.RoleAssistant}
+		if text := assistantText.String(); text != "" {
+			fullMsg.Content = append(fullMsg.Content, message.ContentBlock{
+				Type: "text",
+				Text: text,
+			})
+		}
+		for _, c := range calls {
+			fullMsg.Content = append(fullMsg.Content, message.ContentBlock{
+				Type:      "tool_use",
+				ToolUseID: c.ID,
+				ToolName:  c.Name,
+				Input:     c.Input,
+			})
+		}
+
+		// 发送完成事件。
+		out <- provider.StreamEvent{
+			Type:       provider.EventMessageComplete,
+			Message:    &fullMsg,
+			StopReason: p.fromFinishReason(finishReason),
+		}
+	}
+
+	if usage != nil {
+		u := usage.toUsage()
+		out <- provider.StreamEvent{Type: provider.EventUsage, Usage: &u}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -705,37 +771,43 @@ func (p *Provider) fromFinishReason(reason string) provider.StopReason {
 
 // ---------- 消息转换 ----------
 
-// toOpenAIMessages 将框架消息转换为 OpenAI API 消息格式。
-// imageURLFor 按 (端点|模型) 实测记忆的编码组装图片。默认 OpenAI 标准
-// data URI；FLAI_IMAGE_URL_FORMAT=base64 可强制。中转兼容差异由
-// maybeSwitchImageFormat 在首个图片 4xx 时自动探测解决，不逐家适配。
-func (p *Provider) imageURLFor(media, b64 string) string {
-	dataURI := "data:image/" + media + ";base64," + b64
-	if strings.EqualFold(os.Getenv("FLAI_IMAGE_URL_FORMAT"), "base64") {
+// imageURLFor 按记忆的编码组装图片。默认 OpenAI 标准 data URI；
+// FLAI_IMAGE_URL_FORMAT=base64 可强制。中转兼容差异由 maybeSwitchImageFormat
+// 在首个图片 4xx 时自动探测解决，不逐家适配。
+func imageURLFor(format, media, b64 string) string {
+	if format == "base64" || strings.EqualFold(os.Getenv("FLAI_IMAGE_URL_FORMAT"), "base64") {
 		return b64
 	}
-	key := p.imgFormatKey()
-	p.mu.RLock()
-	f := p.imgFormats[key]
-	p.mu.RUnlock()
-	if f == "base64" {
-		return b64
-	}
-	return dataURI
+	return "data:image/" + media + ";base64," + b64
 }
 
 // imgFormatKey 缓存键：端点 + 模型（同一中转不同模型要求可能不同）。
-func (p *Provider) imgFormatKey() string {
+// BaseURL 构造后不再变化，无需加锁。
+func (p *Provider) imgFormatKey(model string) string {
+	return p.config.BaseURL + "|" + model
+}
+
+// imageFormat 返回 端点|模型 记忆的图片编码（"" 表示默认 data URI）。
+func (p *Provider) imageFormat(model string) string {
+	key := p.imgFormatKey(model)
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.config.BaseURL + "|" + p.config.Model
+	return p.imgFormats[key]
 }
 
 // maybeSwitchImageFormat 图片相关 4xx 时切换编码并记忆，返回 true 表示
-// 值得用另一种格式重试一次。
-func (p *Provider) maybeSwitchImageFormat(err error) bool {
+// 值得用另一种格式重试一次。used 是失败请求组装时读到的编码。
+func (p *Provider) maybeSwitchImageFormat(model, used string, err error) bool {
 	if err == nil {
 		return false
+	}
+	var (
+		ptl  *provider.PromptTooLongError
+		rate *provider.RateLimitError
+		over *provider.OverloadError
+	)
+	if errors.As(err, &ptl) || errors.As(err, &rate) || errors.As(err, &over) {
+		return false // 已识别的错误与图片编码无关，错误体里出现 image 字样也不应误切
 	}
 	msg := strings.ToLower(err.Error())
 	hit := strings.Contains(msg, "base64") || strings.Contains(msg, "image") ||
@@ -743,19 +815,21 @@ func (p *Provider) maybeSwitchImageFormat(err error) bool {
 	if !hit {
 		return false
 	}
-	key := p.imgFormatKey()
+	key := p.imgFormatKey(model)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.imgFormats == nil { // 防御：任何构造路径漏掉初始化也不崩
 		p.imgFormats = map[string]string{}
 	}
-	cur := p.imgFormats[key]
-	next := "base64"
-	if cur == "base64" {
-		next = "datauri"
+	// 仅当记忆值仍是失败请求所用的编码时才切换：并发失败的请求只切一次，
+	// 不会把编码来回翻转；已被其他请求切换过的直接用新值重试。
+	if p.imgFormats[key] == used {
+		next := "base64"
+		if used == "base64" {
+			next = "datauri"
+		}
+		p.imgFormats[key] = next
 	}
-	p.imgFormats[key] = next
-	fmt.Println("[openai] 图片编码自适应:", key, "->", next, "（下次请求生效）")
 	return true
 }
 
@@ -771,7 +845,9 @@ func requestHasImage(msgs []message.Message) bool {
 	return false
 }
 
-func (p *Provider) toOpenAIMessages(_ string, systemPrompt string, msgs []message.Message) []chatMessage {
+// toOpenAIMessages 将框架消息转换为 OpenAI API 消息格式；imgFormat 是图片编码
+// 记忆值（见 imageFormat）。
+func (p *Provider) toOpenAIMessages(imgFormat, systemPrompt string, msgs []message.Message) []chatMessage {
 	var result []chatMessage
 
 	// 系统提示作为第一条消息。
@@ -852,7 +928,7 @@ func (p *Provider) toOpenAIMessages(_ string, systemPrompt string, msgs []messag
 							Role: "tool",
 							Content: []chatContentPart{
 								{Type: "text", Text: text},
-								{Type: "image_url", ImageURL: &chatImageURL{URL: p.imageURLFor(img.Media, img.Data)}},
+								{Type: "image_url", ImageURL: &chatImageURL{URL: imageURLFor(imgFormat, img.Media, img.Data)}},
 							},
 							ToolCallID: block.ForToolUseID,
 						})

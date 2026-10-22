@@ -5,6 +5,58 @@ Dream355873200/GoAgent 的本地增强副本。amobileCreater 的 engine 通过
 go.mod `replace` 指向此处。**每次向 GitHub 推送前**：把下面对应条目
 整理进正式 commit，然后移除 replace 升级版本号。
 
+## 2026-10-22（v0.13 架构收敛）
+
+完整升级说明见 [UPGRADE-v0.13.md](UPGRADE-v0.13.md)（在 v0.12 之上）。推送前需要宿主侧确认的要点：
+
+- **CLI**：终端界面移到 `cli` 包，根包不再依赖 bubbletea。`app.RunCLI()` 需要
+  `import _ ".../cli"`，或改为 `cli.Run(app)`；未导入时提示后返回。
+- **对话记录与模型视图**：自动摘要不再改写对话记录，而是追加一条摘要记录（`IsCompactSummary`
+  + `CompactBoundary`，同时 `IsMeta`，随 `OnMessage` 落盘）；视图由 `compaction.Project` 还原。
+  重新加载会话不再重复请求摘要。`EventDone.Messages` / `WithTranscriptSink` 改为完整对话记录；
+  展示历史需过滤 `IsMeta`。
+- **统一执行路径**：`internal/loop` 新增作用域（检查链 + 观测 + provider），子循环经 `NewChild`
+  结构性继承。`agent.Runner` 改用主循环实现（有界并发、panic 恢复、压缩、截断续写）；
+  `agent.ToolDef` 新增 `Permission` / `Serial`。宿主工具里直接派生的子 agent 也过所在运行的检查链。
+  子运行的工具与用量进入 observer，但不再发会话开始/结束事件。`runPolicy` / `gatedTool` 移除；
+  v0.12 给 `teams.Config` 加的检查链字段移除。
+- **会话运行时**："始终允许"在会话内跨运行有效（`SessionGrants`）；`SetPermissionMode` / Guard 增删
+  作用于所有在跑运行；新增 `SetSessionPermissionMode` 等会话级模式，`POST /mode` 支持 `session_id`；
+  无会话的运行各自隔离键值存储；`CloseSession` 释放内存状态。
+- **清理**：internal/loop 未接线机制删除；公开包未接线机制标 Deprecated（下一版删除）；`.yume`
+  改为 `WithStateDir` / `statedir`（默认不变）。
+- **顺带修复**：`app.Group(...).Use(mw)` 分组中间件此前从未执行；`LLMJudge` 未发送裁判 system
+  prompt；手动压缩的微压缩此前不生效且就地改写消息；图片占位符的路径提取与宿主工具名耦合。
+- **测试**：新增 `cleanup_fix_test.go`、`runner_fix_test.go`、`sessionruntime_fix_test.go`、
+  `transcript_fix_test.go`、`cli_fix_test.go`、`agent/runner_test.go`、
+  `internal/loop/projection_test.go` 等；`go test -race ./...` 全部通过。
+
+## 2026-10-22（v0.12 稳定性与安全加固）
+
+完整升级说明（行为变化、迁移方法、新增 API、修复清单）见 [UPGRADE-v0.12.md](UPGRADE-v0.12.md)。
+推送前需要宿主侧确认的要点：
+
+- **HTTP**：RunHTTP 不再自动批准；未配置 `WithHTTPAuthToken` 只监听回环；跨站请求拒绝
+  （前端跨源用 `WithHTTPAllowedOrigins`）；`/interrupt` 需 `session_id`；新增 `/pending-approval`。
+- **子运行继承权限门**：create_pipeline / run_team / `AgentTools()` / 运行中调用的 `RunPipeline`
+  继承父运行的权限门、plan、hooks、中间件，工具按声明级别检查；宿主固定工具集的 pipeline 可设
+  `PipelineConfig.TrustedTools`。嵌套上限 `MaxSubRunDepth = 3`。`run_team` 补上 Execute。
+- **Pipeline**：DependsOn 真正等依赖完成；队列无界不再死锁；审核按 index 逐条处置、未处置轮末自动
+  批准、`OnTaskResult` 收到真实结果；审核节点结果全部处置后才完成；回调串行；supervisor 收尾轮改为
+  `PipelineConfig.FinalizePrompt`（旧的 `progress_update(enrichment_complete)` 提示词不再默认运行）；
+  `UsePipeline` 只存配置、每次 `RunPipeline` 新实例，动态 pipeline 不再覆盖宿主 pipeline。
+- **权限模式**：新增 `PermissionAuto`（非只读调用逐个由 YOLO 分类器判定，`/mode` 取值 `auto`）；
+  bypass 不再完全不检查——高风险操作（`permission.HighRisk`：危险级工具、递归删除、强推、提权、
+  上传文件、内联脚本、写系统目录、碰凭据等，以及命中 ask 规则的调用）先经分类器判定。分类器默认
+  装配（`WithYoloClassifier(false)` 关闭，`WithYoloClassifierModel` 指定小模型），不可用时改为
+  询问、无审批者则拒绝。旧版分类器装配了但从未运行。
+- **工具**：入参按 schema 校验（`WithToolInputValidation(false)` 关闭）；AcceptEdits 只放行
+  `FileEdit` 工具（高风险的编辑除外）；WebFetch 默认只访问公网（`builtin.WebFetchToolWith`）。
+- **会话**：只有 `RunSession` 自动落盘，逐条同步写入；会话 ID 须为安全文件名。
+- **用量**：`Usage.InputTokens` 统一不含缓存，每条响应只记一次。
+- **测试**：新增 `subrun_fix_test.go`、`retrieval_fix_test.go`、`fix_regression_test.go`、
+  `builtin/netguard_test.go` 及各子包 `*_fix_test.go`；`go test -race ./...` 全部通过。
+
 ## 2026-09-22（思考强度 + 运行时切模型）
 
 - **思考强度链路（全链打通）**：

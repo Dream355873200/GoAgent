@@ -3,7 +3,11 @@
 // 或与其他 LLM 框架集成。
 package message
 
-import "encoding/json"
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+)
 
 // Role 表示消息的发送者。
 type Role string
@@ -19,12 +23,24 @@ type Message struct {
 	Role    Role           `json:"role"`
 	Content []ContentBlock `json:"content"`
 
+	// UID 是对话记录中的消息身份：由 agent 循环在消息进入对话时分配，
+	// 持久化按 UID 去重追加。为空表示派生消息（压缩摘要、折叠占位、
+	// 文件恢复等只属于模型视图的内容），不写入对话记录。
+	UID string `json:"uid,omitempty"`
+
 	// 压缩和循环系统内部使用的元数据。
 	TokenEstimate     int  `json:"-"` // 估算的 token 数，由循环设置
 	Compacted         bool `json:"-"` // 此消息是否已被压缩
 	IsMeta            bool `json:"is_meta,omitempty"` // 元消息（恢复提示等）：持久化保留（模型上下文），展示层回放必须过滤
 	IsCompactBoundary bool `json:"-"` // 标记 prompt cache 的压缩边界
-	IsCompactSummary  bool `json:"-"` // 标记压缩后的摘要消息
+
+	// IsCompactSummary 标记压缩摘要。agent 循环把自动摘要作为摘要记录追加进
+	// 对话记录（它同时是元消息，展示层回放不显示）；compaction.Project 据此
+	// 从对话记录还原发给模型的视图，重新加载时不必再请求模型摘要一遍。
+	IsCompactSummary bool `json:"is_compact_summary,omitempty"`
+	// CompactBoundary 是摘要之后保留的第一条消息的 UID：对话记录中在它之前
+	// 的消息都已被摘要覆盖。为空表示摘要覆盖了摘要记录之前的全部消息。
+	CompactBoundary string `json:"compact_boundary,omitempty"`
 }
 
 // ContentBlock 是消息中的一段内容。
@@ -50,6 +66,40 @@ type ContentBlock struct {
 
 	// Thinking 内容（模型的推理过程）
 	Thinking string `json:"thinking,omitempty"`
+	// Signature 是 thinking 块的签名。Anthropic 要求回传 thinking 块时附带
+	// 原始签名，缺失会被 API 拒绝。redacted_thinking 块的密文存放在 Data。
+	Signature string `json:"signature,omitempty"`
+}
+
+// NewUID 生成一个随机的消息 UID。
+func NewUID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("message: crypto/rand 不可用: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// CloneContent 返回消息内容块的独立副本。压缩等需要改写内容的逻辑必须
+// 先克隆：Message 是值类型，但 Content 切片与原消息共享底层数组。
+func (m Message) CloneContent() Message {
+	if m.Content != nil {
+		m.Content = append([]ContentBlock(nil), m.Content...)
+	}
+	return m
+}
+
+// IsToolResultMessage 报告消息是否为只含 tool_result 块的用户消息。
+func IsToolResultMessage(m Message) bool {
+	if m.Role != RoleUser || len(m.Content) == 0 {
+		return false
+	}
+	for _, b := range m.Content {
+		if b.Type != "tool_result" {
+			return false
+		}
+	}
+	return true
 }
 
 // ToolCall 从 tool_use 内容块中提取，供执行器使用。

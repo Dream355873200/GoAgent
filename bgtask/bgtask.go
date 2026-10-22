@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/statedir"
 )
 
 // Status 是后台任务的状态。
@@ -95,7 +96,7 @@ type Manager struct {
 // NewManager 创建一个新的后台任务管理器。
 func NewManager(outputDir string) *Manager {
 	if outputDir == "" {
-		outputDir = filepath.Join(".yume", "tasks")
+		outputDir = statedir.Join("", "tasks")
 	}
 	return &Manager{
 		tasks:     make(map[string]*TaskState),

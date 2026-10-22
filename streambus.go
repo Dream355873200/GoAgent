@@ -1,6 +1,20 @@
 package goagent
 
-import "sync"
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"sync"
+)
+
+// newRequestID 生成不可猜测的交互请求 ID（审批/提问/计划确认）。递增序号
+// 可被枚举，配合无鉴权的回答端点即可代替别人作答。
+func newRequestID(prefix string) string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("goagent: crypto/rand 不可用: " + err.Error())
+	}
+	return prefix + "-" + hex.EncodeToString(b[:])
+}
 
 // streamSlot 是一条连接（SSE / WebSocket）的下行通道：请求开始时注册、
 // 请求结束时注销，slot 内部用互斥锁协调「发送 / 关闭」竞态——关闭后
@@ -47,12 +61,13 @@ func (s *streamSlot[T]) close() {
 //     当前流收不到帧，工具在引擎侧无限期阻塞。
 //
 // 绑定生命周期与 HTTP 请求严格一致（handler 里 defer 注销），stale
-// 消费者不再存在。未命中任何绑定连接时返回 false，调用方落到共享
-// channel（SDK 直连消费模式，行为向后兼容）。
+// 消费者不再存在。未命中该会话的绑定连接时返回 false，调用方落到共享
+// channel（SDK 直连消费模式，行为向后兼容）。不会回落到"最近绑定的
+// 连接"：那会把 A 会话的审批/提问（含完整工具入参）推给 B 会话，并
+// 允许 B 代替 A 作答。
 type streamBus[T any] struct {
 	mu      sync.Mutex
 	streams map[string]*streamSlot[T] // sessionID → 活跃连接
-	latest  *streamSlot[T]            // 最近绑定的连接（顺序执行宿主 = 当前 run）
 }
 
 func newStreamBus[T any]() *streamBus[T] {
@@ -68,7 +83,6 @@ func (b *streamBus[T]) Subscribe(sessionID string) (<-chan T, func()) {
 		old.close() // 同会话换连接（重连）：旧通道关闭，旧转发器退出
 	}
 	b.streams[sessionID] = slot
-	b.latest = slot
 	b.mu.Unlock()
 	return slot.ch, func() { b.unsubscribe(sessionID, slot) }
 }
@@ -84,14 +98,16 @@ func (b *streamBus[T]) unsubscribe(sessionID string, slot *streamSlot[T]) {
 	b.mu.Unlock()
 }
 
-// Send 路由：sessionID 精确命中 → 该连接；否则（含空会话）→ 最近绑定的
-// 连接；一条绑定都没有 → false。发送走 slot 的非阻塞 select，缓冲满视为
-// 拥塞失败。
+// Send 路由到 sessionID 绑定的连接。会话为空时，只有恰好一条绑定连接
+// （单用户宿主）才路由过去，有多条时不猜。没有可用连接时返回 false。
+// 发送走 slot 的非阻塞 select，缓冲满视为拥塞失败。
 func (b *streamBus[T]) Send(sessionID string, item T) bool {
 	b.mu.Lock()
 	slot := b.streams[sessionID]
-	if slot == nil {
-		slot = b.latest
+	if slot == nil && sessionID == "" && len(b.streams) == 1 {
+		for _, s := range b.streams {
+			slot = s
+		}
 	}
 	b.mu.Unlock()
 	return slot != nil && slot.send(item)

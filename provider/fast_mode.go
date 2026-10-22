@@ -6,6 +6,8 @@ import (
 )
 
 // FastModeConfig 快速模式配置。
+//
+// Deprecated: 未被框架使用。将在后续版本删除。
 type FastModeConfig struct {
 	// Enabled 是否启用快速模式。
 	Enabled bool
@@ -18,6 +20,8 @@ type FastModeConfig struct {
 }
 
 // DefaultFastModeConfig 返回默认快速模式配置。
+//
+// Deprecated: 未被框架使用。将在后续版本删除。
 func DefaultFastModeConfig() FastModeConfig {
 	return FastModeConfig{
 		Enabled:   false,
@@ -29,13 +33,16 @@ func DefaultFastModeConfig() FastModeConfig {
 
 // FastModeProvider 快速模式包装器。
 // 对齐 Claude Code 的 fast mode 机制。
+//
+// Deprecated: 未被框架使用。将在后续版本删除。
 type FastModeProvider struct {
 	provider Provider
 	config   FastModeConfig
-	fallback Provider
 }
 
 // NewFastModeProvider 创建快速模式包装器。
+//
+// Deprecated: 未被框架使用。将在后续版本删除。
 func NewFastModeProvider(provider Provider, config FastModeConfig) *FastModeProvider {
 	if config.Model == "" {
 		config.Model = DefaultFastModeConfig().Model
@@ -123,6 +130,8 @@ func (f *FastModeProvider) IsEnabled() bool {
 }
 
 // IsFastEligible 判断请求是否符合快速模式条件。
+//
+// Deprecated: 未被框架使用。将在后续版本删除。
 func IsFastEligible(req *Request) bool {
 	// 简单请求适合快速模式：
 	// - 没有工具调用

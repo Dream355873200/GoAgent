@@ -154,7 +154,7 @@ func TestPipelineNodeLevelSandboxOverride(t *testing.T) {
 	app, results := newProbePipeline(t, PipelineConfig{SessionID: "sess-2"})
 	app.config.sandbox = NewDirSandbox(runBase)
 	app.config.sandboxPolicy = Policy{}
-	app.pipeline.cfg.Nodes[0].Sandbox = &Policy{}
+	app.pipelineCfg.Nodes[0].Sandbox = &Policy{}
 	// 让节点沙箱可区分：节点级用另一个 base。通过自定义工厂实现。
 	app.config.sandbox = multiBaseSandbox{run: NewDirSandbox(runBase), node: NewDirSandbox(nodeBase)}
 

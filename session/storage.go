@@ -8,13 +8,17 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
+	"github.com/Dream355873200/GoAgent/internal/safename"
 	"github.com/Dream355873200/GoAgent/message"
 )
 
@@ -43,8 +47,13 @@ type Record struct {
 }
 
 // Storage 管理会话的 JSONL 持久化。
+//
+// 同一进程内的写入串行化并逐条 fsync；读取不限制单行长度，损坏的行
+// （例如进程被杀时写了一半的末行）被跳过，不会让整个会话不可读。
+// 会话 ID 必须能安全地作为文件名（见 internal/safename），否则拒绝。
 type Storage struct {
 	dir string // 存储目录
+	mu  sync.Mutex
 }
 
 // NewStorage 创建一个新的存储管理器。
@@ -52,32 +61,41 @@ func NewStorage(dir string) *Storage {
 	return &Storage{dir: dir}
 }
 
-// sessionPath 返回会话文件的路径。
-func (s *Storage) sessionPath(sessionID string) string {
-	return filepath.Join(s.dir, sessionID+".jsonl")
+// sessionPath 返回会话文件的路径；会话 ID 不合法（含路径分隔符、".."
+// 等）时返回错误。
+func (s *Storage) sessionPath(sessionID string) (string, error) {
+	return safename.Join("会话 ID", s.dir, sessionID, ".jsonl")
 }
 
 // Write 将一条记录追加到会话的 JSONL 文件。
 func (s *Storage) Write(sessionID string, record Record) error {
-	// 确保目录存在。
-	if err := os.MkdirAll(s.dir, 0755); err != nil {
-		return fmt.Errorf("创建存储目录失败: %w", err)
-	}
-
-	path := s.sessionPath(sessionID)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	path, err := s.sessionPath(sessionID)
 	if err != nil {
-		return fmt.Errorf("打开会话文件失败: %w", err)
+		return err
 	}
-	defer f.Close()
-
 	data, err := json.Marshal(record)
 	if err != nil {
 		return fmt.Errorf("序列化记录失败: %w", err)
 	}
 
-	_, err = f.Write(append(data, '\n'))
-	return err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(s.dir, 0755); err != nil {
+		return fmt.Errorf("创建存储目录失败: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("打开会话文件失败: %w", err)
+	}
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		f.Close()
+		return fmt.Errorf("写入会话文件失败: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("同步会话文件失败: %w", err)
+	}
+	return f.Close()
 }
 
 // WriteMessage 写入一条消息记录。
@@ -171,9 +189,13 @@ func (s *Storage) ReadLastCheckpoint(sessionID string) (*Checkpoint, error) {
 	return nil, nil
 }
 
-// ReadAll 读取会话文件的所有记录。
+// ReadAll 读取会话文件的所有记录。无法解析的行被跳过（写了一半的末行、
+// 外部损坏），其余记录照常返回。
 func (s *Storage) ReadAll(sessionID string) ([]Record, error) {
-	path := s.sessionPath(sessionID)
+	path, err := s.sessionPath(sessionID)
+	if err != nil {
+		return nil, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("打开会话文件失败: %w", err)
@@ -181,29 +203,23 @@ func (s *Storage) ReadAll(sessionID string) ([]Record, error) {
 	defer f.Close()
 
 	var records []Record
-	scanner := bufio.NewScanner(f)
-	// 增大缓冲区以处理大消息。
-	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
-
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
+	r := bufio.NewReaderSize(f, 1024*1024)
+	for {
+		line, readErr := r.ReadBytes('\n')
+		line = bytes.TrimSpace(line)
+		if len(line) > 0 {
+			var record Record
+			if err := json.Unmarshal(line, &record); err == nil {
+				records = append(records, record)
+			}
 		}
-
-		var record Record
-		if err := json.Unmarshal(line, &record); err != nil {
-			return nil, fmt.Errorf("第 %d 行解析失败: %w", lineNum, err)
+		if readErr == io.EOF {
+			break
 		}
-		records = append(records, record)
+		if readErr != nil {
+			return nil, fmt.Errorf("读取会话文件失败: %w", readErr)
+		}
 	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("读取会话文件失败: %w", err)
-	}
-
 	return records, nil
 }
 
@@ -217,39 +233,51 @@ func (s *Storage) ListSessions() ([]string, error) {
 		return nil, fmt.Errorf("读取存储目录失败: %w", err)
 	}
 
-	var sessions []string
+	type item struct {
+		id  string
+		mod time.Time
+	}
+	var items []item
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
-		if ext := filepath.Ext(name); ext == ".jsonl" {
-			sessions = append(sessions, name[:len(name)-len(ext)])
+		ext := filepath.Ext(name)
+		if ext != ".jsonl" {
+			continue
 		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		items = append(items, item{id: name[:len(name)-len(ext)], mod: info.ModTime()})
 	}
 
 	// 按修改时间排序（最新在前）。
-	sort.Slice(sessions, func(i, j int) bool {
-		iInfo, _ := os.Stat(s.sessionPath(sessions[i]))
-		jInfo, _ := os.Stat(s.sessionPath(sessions[j]))
-		if iInfo == nil || jInfo == nil {
-			return false
-		}
-		return iInfo.ModTime().After(jInfo.ModTime())
-	})
-
+	sort.Slice(items, func(i, j int) bool { return items[i].mod.After(items[j].mod) })
+	sessions := make([]string, len(items))
+	for i, it := range items {
+		sessions[i] = it.id
+	}
 	return sessions, nil
 }
 
 // Delete 删除指定会话的存储文件。
 func (s *Storage) Delete(sessionID string) error {
-	path := s.sessionPath(sessionID)
+	path, err := s.sessionPath(sessionID)
+	if err != nil {
+		return err
+	}
 	return os.Remove(path)
 }
 
-// Exists 检查指定会话是否存在。
+// Exists 检查指定会话是否存在（会话 ID 不合法时为 false）。
 func (s *Storage) Exists(sessionID string) bool {
-	path := s.sessionPath(sessionID)
-	_, err := os.Stat(path)
+	path, err := s.sessionPath(sessionID)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
 	return err == nil
 }

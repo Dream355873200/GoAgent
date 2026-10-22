@@ -4,7 +4,10 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/Dream355873200/GoAgent/observer"
 )
@@ -12,6 +15,10 @@ import (
 // Config 控制执行器行为。
 type Config struct {
 	MaxConcurrency int // 最大并行工具执行数，默认 10
+
+	// PanicHandler 在工具 panic 时调用（可选），用于记录堆栈。panic 本身
+	// 总会被恢复并转成错误结果返回给模型，不会带走进程。
+	PanicHandler func(toolName string, recovered any, stack []byte)
 }
 
 // Class 工具副作用分级——决定并行编排策略。三级替代旧的 bool：
@@ -81,6 +88,7 @@ type ToolResult struct {
 // Executor 管理工具执行的并发控制。
 type Executor struct {
 	maxConcurrency int
+	onPanic        func(toolName string, recovered any, stack []byte)
 }
 
 // New 创建一个新的 Executor。
@@ -88,7 +96,7 @@ func New(cfg Config) *Executor {
 	if cfg.MaxConcurrency <= 0 {
 		cfg.MaxConcurrency = 10
 	}
-	return &Executor{maxConcurrency: cfg.MaxConcurrency}
+	return &Executor{maxConcurrency: cfg.MaxConcurrency, onPanic: cfg.PanicHandler}
 }
 
 // Execute 使用适当的串行/并发编排运行一批工具调用。
@@ -148,15 +156,37 @@ func (e *Executor) partition(calls []ToolCall) [][]ToolCall {
 	return batches
 }
 
+// canceledResult 构造一个"未执行即取消"的结果。
+func canceledResult(call ToolCall, why string) ToolResult {
+	return ToolResult{ToolUseID: call.ID, Name: call.Name, Content: why, IsError: true}
+}
+
 // executeOne 运行单个工具调用。
-// 如果 ToolCall.PreCheck 不为 nil，先执行预检查（权限/验证），
-// 被拒绝则直接返回错误结果，不执行工具。
-// 对齐 Claude Code 的 StreamingToolExecutor.executeTool() 内置权限检查。
-func (e *Executor) executeOne(ctx context.Context, call ToolCall) ToolResult {
+// ctx 已取消时不再启动工具；PreCheck 拒绝时直接返回错误结果；
+// 工具 panic 被恢复并转成错误结果。
+func (e *Executor) executeOne(ctx context.Context, call ToolCall) (res ToolResult) {
 	// 调用 ID 随 ctx 下发：工具据此把自身事件（如子 agent 进度）关联到
 	// 所属的 tool_use（observer.ToolCallIDFromContext）。
 	if call.ID != "" {
 		ctx = observer.WithToolCallID(ctx, call.ID)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			if e.onPanic != nil {
+				e.onPanic(call.Name, r, debug.Stack())
+			}
+			res = ToolResult{
+				ToolUseID: call.ID,
+				Name:      call.Name,
+				Content:   fmt.Sprintf("错误: 工具 %s 内部异常（panic）: %v", call.Name, r),
+				IsError:   true,
+			}
+		}
+	}()
+
+	if ctx.Err() != nil {
+		return canceledResult(call, "已取消：工具尚未开始执行")
 	}
 
 	// 预检查（权限检查、输入验证、中间件、hooks 等）。
@@ -171,6 +201,9 @@ func (e *Executor) executeOne(ctx context.Context, call ToolCall) ToolResult {
 		}
 	}
 
+	if call.Execute == nil {
+		return ToolResult{ToolUseID: call.ID, Name: call.Name, Content: fmt.Sprintf("错误: 工具 %s 没有实现", call.Name), IsError: true}
+	}
 	content, err := call.Execute(ctx, call.Input)
 	if err != nil {
 		return ToolResult{
@@ -200,16 +233,6 @@ func (e *Executor) executeConcurrent(ctx context.Context, calls []ToolCall) []To
 			defer wg.Done()
 			sem <- struct{}{}        // 获取信号量
 			defer func() { <-sem }() // 释放信号量
-
-			if ctx.Err() != nil {
-				results[idx] = ToolResult{
-					ToolUseID: c.ID,
-					Name:      c.Name,
-					Content:   "已取消",
-					IsError:   true,
-				}
-				return
-			}
 			results[idx] = e.executeOne(ctx, c)
 		}(i, call)
 	}
@@ -220,6 +243,11 @@ func (e *Executor) executeConcurrent(ctx context.Context, calls []ToolCall) []To
 
 // --- StreamingExecutor ---
 
+// CancelGrace 是 ctx 取消后等待在跑工具收尾的时长。工具拿到已取消的 ctx
+// 应尽快返回；超时仍未返回的工具，其结果由调用方按"被中断"合成，迟到的
+// 真实结果被丢弃。
+var CancelGrace = 3 * time.Second
+
 // StreamingExecutor 允许工具在 LLM 仍在流式传输响应时开始执行。
 // 这是 Claude Code 架构中的关键延迟优化。
 //
@@ -227,26 +255,35 @@ func (e *Executor) executeConcurrent(ctx context.Context, calls []ToolCall) []To
 //
 //	se := NewStreamingExecutor(executor)
 //	// 在 API 流式传输期间：
-//	se.Add(toolCall)              // 解析后立即开始执行
+//	se.Add(ctx, toolCall)         // 解析后立即开始执行
 //	completed := se.Poll()        // 非阻塞检查结果
 //	// 流式传输结束后：
 //	remaining := se.Wait(ctx)     // 等待所有剩余工具
+//
+// 每个工具的结果只会从 Poll 或 Wait 中返回一次，调用方必须把两者的结果
+// 合并使用。
 type StreamingExecutor struct {
 	executor      *Executor
 	mu            sync.Mutex
 	pending       []ToolCall
-	completed     chan ToolResult
-	wg            sync.WaitGroup
 	running       int
 	allConcurrent bool
-	ctx           context.Context // 保存调用方的 context
+	ctx           context.Context // 最近一次 Add/Wait 的 ctx，Poll 启动排队工具时使用
+
+	completed   chan ToolResult
+	abandoned   chan struct{} // 关闭后，迟到的结果不再投递
+	abandonOnce sync.Once
 }
 
 // NewStreamingExecutor 创建一个新的流式执行器。
 func NewStreamingExecutor(exec *Executor) *StreamingExecutor {
+	if exec == nil {
+		exec = New(Config{})
+	}
 	return &StreamingExecutor{
 		executor:      exec,
 		completed:     make(chan ToolResult, 64),
+		abandoned:     make(chan struct{}),
 		allConcurrent: true,
 		ctx:           context.Background(),
 	}
@@ -259,7 +296,6 @@ func (se *StreamingExecutor) Add(ctx context.Context, call ToolCall) {
 	se.mu.Lock()
 	defer se.mu.Unlock()
 
-	// 保存调用方的 context，供后续 drainPending 使用。
 	se.ctx = ctx
 
 	if call.effect() == ClassExclusive {
@@ -290,53 +326,77 @@ func (se *StreamingExecutor) Poll() []ToolResult {
 	}
 }
 
-// Wait 阻塞直到所有排队和运行中的工具完成。
+// Wait 阻塞直到所有排队和运行中的工具完成。ctx 取消后不再启动排队中的
+// 工具（它们以"已取消"结果返回），并最多再等 CancelGrace 让在跑的工具
+// 收尾；仍未结束的工具不出现在返回值里。
 func (se *StreamingExecutor) Wait(ctx context.Context) []ToolResult {
-	// 循环：每次 drain 启动一批 pending 工具，等待它们完成后再检查剩余 pending。
-	// 确保非并发工具一个接一个执行时不会遗漏。
 	var results []ToolResult
 	for {
 		se.mu.Lock()
 		se.ctx = ctx
-		se.drainPending(ctx)
+		if ctx.Err() != nil {
+			results = append(results, se.cancelPendingLocked()...)
+		} else {
+			se.drainPending(ctx)
+		}
 		running := se.running
-		pending := len(se.pending)
 		se.mu.Unlock()
 
-		if running == 0 && pending == 0 {
-			break
+		if running == 0 {
+			return results
 		}
 
-		// 等待当前 running 的工具完成。
-		se.wg.Wait()
-
-		// 排空已完成的结果（同时递减 running 并 drainPending）。
-		var roundResults []ToolResult
-		for {
-			select {
-			case r := <-se.completed:
-				roundResults = append(roundResults, r)
-				se.mu.Lock()
-				se.running--
-				se.mu.Unlock()
-			default:
-				goto nextRound
-			}
-		}
-	nextRound:
-		// 收集本轮结果
-		results = append(results, roundResults...)
-	}
-
-	// 最终排空已完成的通道。
-	for {
 		select {
 		case r := <-se.completed:
 			results = append(results, r)
-		default:
+			se.mu.Lock()
+			se.running--
+			se.mu.Unlock()
+		case <-ctx.Done():
+			se.mu.Lock()
+			results = append(results, se.cancelPendingLocked()...)
+			se.mu.Unlock()
+			return append(results, se.waitRunning(CancelGrace)...)
+		}
+	}
+}
+
+// waitRunning 在 grace 时长内收集在跑工具的结果，超时后放弃剩余工具。
+func (se *StreamingExecutor) waitRunning(grace time.Duration) []ToolResult {
+	var results []ToolResult
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	for {
+		se.mu.Lock()
+		running := se.running
+		se.mu.Unlock()
+		if running == 0 {
+			return results
+		}
+		select {
+		case r := <-se.completed:
+			results = append(results, r)
+			se.mu.Lock()
+			se.running--
+			se.mu.Unlock()
+		case <-timer.C:
+			se.abandonOnce.Do(func() { close(se.abandoned) })
 			return results
 		}
 	}
+}
+
+// cancelPendingLocked 把尚未启动的工具转成"已取消"结果。调用方须持有 se.mu。
+func (se *StreamingExecutor) cancelPendingLocked() []ToolResult {
+	if len(se.pending) == 0 {
+		return nil
+	}
+	out := make([]ToolResult, 0, len(se.pending))
+	for _, c := range se.pending {
+		out = append(out, canceledResult(c, "已取消：工具尚未开始执行"))
+	}
+	se.pending = nil
+	return out
 }
 
 // Discard 取消所有待处理的工具（用于模型后备切换）。
@@ -363,11 +423,12 @@ func (se *StreamingExecutor) canStartNow(call ToolCall) bool {
 
 func (se *StreamingExecutor) startTool(ctx context.Context, call ToolCall) {
 	se.running++
-	se.wg.Add(1)
 	go func() {
-		defer se.wg.Done()
 		result := se.executor.executeOne(ctx, call)
-		se.completed <- result
+		select {
+		case se.completed <- result:
+		case <-se.abandoned:
+		}
 	}()
 }
 

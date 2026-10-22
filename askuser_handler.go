@@ -158,7 +158,7 @@ func (h *AskUserHandler) AskSessionCtx(ctx context.Context, sessionID string, qu
 	h.mu.Unlock()
 
 	id := h.nextID.Add(1)
-	requestID := fmt.Sprintf("ask-%d", id)
+	requestID := newRequestID("ask")
 
 	responseCh := make(chan string, 1)
 	req := &AskUserRequest{

@@ -3,7 +3,6 @@ package compaction
 
 import (
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -110,45 +109,21 @@ func applyToolResultBudget(messages []message.Message, maxChars int, compactable
 	result := make([]message.Message, len(messages))
 	copy(result, messages)
 
-	// 图片结果块收集：超出预算的图片结果不能 head+tail 截断（会产出损坏
-	// base64，发给端点必 400 且会话永久卡死）。策略：最近 imgTailMessages
-	// 条消息内的图片**全部完整保留**（覆盖"一轮多张参考图"的对比场景；
-	// 1 个用户回合 ≈ 2~6 条消息），更早的整体回收为占位符——占位符携带
-	// 原图文件路径，模型之后可用 vision_ask/Read 重新查看。
-	const imgTailMessages = 40
-	type blockRef struct{ i, j int }
-	var imgBlocks []blockRef
-	for i, msg := range result {
-		for j, block := range msg.Content {
-			if block.Type == "tool_result" && isCompactableTool(block.ToolName, compactableTools) &&
-				len(block.Text) > maxChars && strings.Contains(block.Text, imageMarker) {
-				imgBlocks = append(imgBlocks, blockRef{i, j})
-			}
-		}
-	}
-	recycle := map[string]bool{}
-	for _, r := range imgBlocks {
-		if r.i < len(result)-imgTailMessages {
-			recycle[fmt.Sprintf("%d:%d", r.i, r.j)] = true
-		}
-	}
-	var pathRe = regexp.MustCompile(`[A-Za-z]:\\[^\s"']+`)
-
+	// 内联图片结果不能 head+tail 截断（会产出损坏 base64，发给端点必 400
+	// 且会话永久卡死）：最近 imgTailMessages 条消息内的图片完整保留，更早的
+	// 整体回收为占位符（见 imagePlaceholder）。
+	names := toolNamesByID(messages)
+	cow := cowText{}
 	for i, msg := range result {
 		for j, block := range msg.Content {
 			// 只处理compactable工具的结果
-			if block.Type == "tool_result" && isCompactableTool(block.ToolName, compactableTools) && len(block.Text) > maxChars {
+			if block.Type == "tool_result" && isCompactableTool(names[block.ForToolUseID], compactableTools) && len(block.Text) > maxChars {
 				original := len(block.Text)
-                // 内联图片结果：禁止 head+tail 截断（会产出损坏 base64，
-                // 发给端点必 400 且会话永久卡死）。最近 40 条消息内的图片
-                // 完整保留（多图对比场景友好），更早的整体回收为占位符
-                //（携带原图路径，模型可随时用 vision_ask 重新查看）。
 				if strings.Contains(block.Text, imageMarker) {
-					if recycle[fmt.Sprintf("%d:%d", i, j)] {
-						path := pathRe.FindString(block.Text)
-						result[i].Content[j].Text = "[截图已省略：历史图片已回收，原图保存在 " + path +
-							"；如需再次查看，用 vision_ask 读取该文件路径]"
-						freed += (original - len(result[i].Content[j].Text)) / 4
+					if i < len(result)-imgTailMessages {
+						text := imagePlaceholder(block.Text)
+						cow.set(result, i, j, text)
+						freed += (original - len(text)) / 4
 					}
 					continue
 				}
@@ -161,12 +136,10 @@ func applyToolResultBudget(messages []message.Message, maxChars int, compactable
 				if tailSize > original/2 {
 					tailSize = original / 2
 				}
-				head := block.Text[:headSize]
-				tail := block.Text[original-tailSize:]
-				result[i].Content[j].Text = head +
-					fmt.Sprintf("\n\n[... 中间 %d 字符已截断 ...]\n\n", original-headSize-tailSize) +
-					tail
-				freed += (original - len(result[i].Content[j].Text)) / 4
+				text := headTail(block.Text, headSize, tailSize,
+					fmt.Sprintf("\n\n[... 中间 %d 字符已截断 ...]\n\n", original-headSize-tailSize))
+				cow.set(result, i, j, text)
+				freed += (original - len(text)) / 4
 			}
 		}
 	}
@@ -179,6 +152,20 @@ func isCompactableTool(toolName string, compactableTools []string) bool {
 	return slices.Contains(compactableTools, toolName)
 }
 
+// toolNamesByID 返回 tool_use ID 到工具名的映射：tool_result 块只带
+// ForToolUseID，工具名要从对应的 tool_use 块取。
+func toolNamesByID(messages []message.Message) map[string]string {
+	names := make(map[string]string)
+	for _, msg := range messages {
+		for _, block := range msg.Content {
+			if block.Type == "tool_use" && block.ToolUseID != "" {
+				names[block.ToolUseID] = block.ToolName
+			}
+		}
+	}
+	return names
+}
+
 // removeConsumedToolResults 移除已被助手消费的工具结果内容。
 // 只处理 CompactableTools 中的工具类型。
 func removeConsumedToolResults(messages []message.Message, compactableTools []string) ([]message.Message, int) {
@@ -187,6 +174,7 @@ func removeConsumedToolResults(messages []message.Message, compactableTools []st
 	copy(result, messages)
 
 	// 追踪哪些 tool_use ID 已被"消费"（后续有助手响应）。
+	names := toolNamesByID(messages)
 	consumed := make(map[string]bool)
 
 	// 正向扫描：找到已被助手文本跟随的工具结果。
@@ -195,7 +183,7 @@ func removeConsumedToolResults(messages []message.Message, compactableTools []st
 			// 标记所有前置工具结果为已消费（只记录compactable工具）。
 			for j := i - 1; j >= 0; j-- {
 				for _, block := range messages[j].Content {
-					if block.Type == "tool_result" && isCompactableTool(block.ToolName, compactableTools) {
+					if block.Type == "tool_result" && isCompactableTool(names[block.ForToolUseID], compactableTools) {
 						consumed[block.ForToolUseID] = true
 					}
 				}
@@ -207,19 +195,16 @@ func removeConsumedToolResults(messages []message.Message, compactableTools []st
 	}
 
 	// 将已消费的工具结果替换为标记（只处理compactable工具）。
-	// 图片结果跳过：它们由 Pass 1 的保留策略管理（最新 2 张完整可读）。
+	// 图片结果跳过：它们由 Pass 1 的保留策略管理。
+	cow := cowText{}
 	for i, msg := range result {
 		for j, block := range msg.Content {
 			if block.Type == "tool_result" && consumed[block.ForToolUseID] && len(block.Text) > 100 {
-				// 只处理compactable工具
-				if !isCompactableTool(block.ToolName, compactableTools) {
-					continue
-				}
 				if strings.Contains(block.Text, imageMarker) {
 					continue
 				}
 				original := len(block.Text)
-				result[i].Content[j].Text = fmt.Sprintf("[内容已处理，移除 %d 字符]", original)
+				cow.set(result, i, j, fmt.Sprintf("[内容已处理，移除 %d 字符]", original))
 				freed += original / 4
 			}
 		}

@@ -16,7 +16,7 @@
 //	    Permission:  goagent.ReadOnly,
 //	    Execute:     func(ctx goagent.Context, in GreetInput) (string, error) { ... },
 //	})
-//	app.RunCLI()
+//	cli.Run(app) // 终端界面：github.com/Dream355873200/GoAgent/cli
 package goagent
 
 import (
@@ -48,6 +48,7 @@ import (
 	"github.com/Dream355873200/GoAgent/reminder"
 	"github.com/Dream355873200/GoAgent/session"
 	"github.com/Dream355873200/GoAgent/sessionmem"
+	"github.com/Dream355873200/GoAgent/statedir"
 	"github.com/Dream355873200/GoAgent/sysprompt"
 	"github.com/Dream355873200/GoAgent/task"
 )
@@ -62,18 +63,22 @@ type App struct {
 	tools       map[string]*registeredTool
 	toolOrder   []string // insertion order
 	middlewares []MiddlewareWithFilter
-	groups      []*ToolGroup
 	config      appConfig
 
 	// 内部子系统（由 New() 按需初始化）。
-	taskStore  task.StoreInterface // Task 系统存储（WithTaskTools 启用时初始化）
-	planMgr    plan.StoreInterface // Plan Mode 管理器（WithPlanTools 启用时初始化）
-	hooksMgr   *hooks.Manager      // Hooks 管理器
-	bgTaskMgr  *bgtask.Manager     // 后台任务管理器
-	mcpClients []*mcp.Client       // MCP 客户端列表
+	taskStore   task.StoreInterface   // Task 系统存储（WithTaskTools 启用时初始化）
+	planMgr     plan.StoreInterface   // Plan Mode 管理器（WithPlanTools 启用时初始化）
+	hooksMgr    *hooks.Manager        // Hooks 管理器
+	bgTaskMgr   *bgtask.Manager       // 内置后台任务管理器（自定义存储时为 nil）
+	bgTaskStore bgtask.StoreInterface // 后台任务存储（内置 Manager 或宿主自定义）
+	mcpClients  []*mcp.Client         // MCP 客户端列表
+
+	// runtimes 是各会话跨运行常驻的状态：sessionID → *sessionRuntime（见
+	// sessionruntime.go；CloseSession 释放）。
+	runtimes sync.Map
 
 	// Pipeline DAG 编排（可选）
-	pipeline *pipeline
+	pipelineCfg *PipelineConfig // UsePipeline 保存的配置；每次 RunPipeline 新建运行实例
 
 	// HTTP/WebSocket 处理器（可选）
 	askUserHandler     *AskUserHandler     // 异步提问处理器
@@ -85,10 +90,13 @@ type App struct {
 	analyticsTracker *analytics.Tracker       // 分析追踪器
 	obsRegistry      *observer.SyncObservable // Observer 注册表
 
-	// 权限模式运行时切换：-1 = 未覆写（沿用构造配置）；activeGate 指向最近
-	// 一次 run 构建的权限门，使模式切换即时作用于进行中的 run。
+	// 全局权限模式的运行时覆写：-1 = 未覆写（沿用构造配置）。
 	permModeOverride atomic.Int32
-	activeGate       atomic.Pointer[permission.Gate]
+
+	// gates 登记所有进行中运行的权限门（见 acquireGate），使模式切换与
+	// Guard 增删即时作用于它们——多个会话可以同时在跑。
+	gatesMu sync.Mutex
+	gates   map[*permission.Gate]*liveGate
 }
 
 // registeredTool wraps a user-defined tool with its generated schema.
@@ -149,19 +157,24 @@ func New(opts ...Option) *App {
 
 	// 后台任务系统（WithBgTaskTools 启用时才初始化）。
 	if app.config.enableBgTaskTools {
+		var store bgtask.StoreInterface
 		if app.config.bgTaskStore != nil {
-			app.bgTaskMgr = app.config.bgTaskStore.(*bgtask.Manager)
+			store = app.config.bgTaskStore
+			// 自定义存储不是内置 Manager 时，终态通知等依赖 Manager 的能力不可用。
+			app.bgTaskMgr, _ = store.(*bgtask.Manager)
 		} else {
 			app.bgTaskMgr = bgtask.NewManager("")
+			store = app.bgTaskMgr
 		}
+		app.bgTaskStore = store
 		if bgTaskToolsProvider != nil {
-			app.UseTools(bgTaskToolsProvider(app.bgTaskMgr)...)
+			app.useToolsSkipDuplicates(bgTaskToolsProvider(store)...)
 		}
 		// 终态自动通知进主循环：任务完成/失败/终止 → steering queue
 		// 车道注入（RunSession 结束后自动续跑，模型立即知晓结果并跟进，
 		// 无需用户轮询催促；无活跃会话 ID 的任务由宿主自行处理）。
 		// 空闲会话的通知暂存队列，下次 RunSession 消费。
-		if app.config.steering != nil {
+		if app.config.steering != nil && app.bgTaskMgr != nil {
 			mgr := app.bgTaskMgr
 			hub := app.config.steering
 			mgr.OnTaskDone = func(t bgtask.TaskState) {
@@ -181,7 +194,7 @@ func New(opts ...Option) *App {
 			app.taskStore = task.NewStore()
 		}
 		if taskToolsProvider != nil {
-			app.UseTools(taskToolsProvider(app.taskStore)...)
+			app.useToolsSkipDuplicates(taskToolsProvider(app.taskStore)...)
 		}
 	}
 
@@ -198,7 +211,7 @@ func New(opts ...Option) *App {
 			}
 		}
 		if issueToolsProvider != nil {
-			app.UseTools(issueToolsProvider(store)...)
+			app.useToolsSkipDuplicates(issueToolsProvider(store)...)
 		}
 	}
 
@@ -207,16 +220,16 @@ func New(opts ...Option) *App {
 		if app.config.planStore != nil {
 			app.planMgr = app.config.planStore
 		} else {
-			app.planMgr = plan.NewManager(".yume/plans")
+			app.planMgr = plan.NewManager(statedir.Join("", "plans"))
 		}
 		if planToolsProvider != nil {
-			app.UseTools(planToolsProvider(app.planMgr)...)
+			app.useToolsSkipDuplicates(planToolsProvider(app.planMgr)...)
 		}
 	}
 
 	// AskUser 工具（WithAskTools 启用时才注册）。
 	if app.config.enableAskTools && askToolsProvider != nil {
-		app.UseTools(askToolsProvider()...)
+		app.useToolsSkipDuplicates(askToolsProvider()...)
 	}
 
 	// 自动注册内置工具（WithBuiltinTools）。
@@ -225,15 +238,18 @@ func New(opts ...Option) *App {
 	}
 
 	// 注册子 agent 工具（WithSubAgents）：与 App.AgentTool 同一实现。
+	if len(app.config.subAgentDefs) > 0 && app.provider == nil {
+		app.logger.Warn("goagent: WithSubAgents 需要 provider，子 agent 工具未注册")
+	}
 	if app.provider != nil {
 		for _, def := range app.config.subAgentDefs {
-			app.Tool("Agent_"+def.Name, app.AgentTool(def))
+			app.useToolsSkipDuplicates(NamedTool{Name: "Agent_" + def.Name, Def: app.AgentTool(def)})
 		}
 	}
 
 	// 注册 ToolKit 工具（WithToolKits）。
 	for _, kit := range app.config.toolKits {
-		app.UseTools(kit.Tools()...)
+		app.useToolsSkipDuplicates(kit.Tools()...)
 	}
 
 	// 初始化 MCP 服务器并注册其工具。
@@ -269,7 +285,8 @@ func bgTaskDoneText(t bgtask.TaskState) string {
 
 // Tool registers a tool with the given name and definition.
 // The ToolDef.Input struct is reflected into a JSON Schema automatically.
-// Panics if a tool with the same name is already registered.
+// Panics if a tool with the same name is already registered, or if Execute
+// does not have the signature func(goagent.Context, T) (string, error).
 func (a *App) Tool(name string, def ToolDef) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -281,6 +298,9 @@ func (a *App) Tool(name string, def ToolDef) {
 func (a *App) registerToolLocked(name string, def ToolDef) {
 	if _, exists := a.tools[name]; exists {
 		panic(fmt.Sprintf("goagent: tool %q already registered", name))
+	}
+	if err := validateExecute(def); err != nil {
+		panic(fmt.Sprintf("goagent: tool %q: %v", name, err))
 	}
 
 	a.tools[name] = &registeredTool{
@@ -294,6 +314,21 @@ func (a *App) registerToolLocked(name string, def ToolDef) {
 func (a *App) UseTools(tools ...NamedTool) {
 	for _, t := range tools {
 		a.Tool(t.Name, t.Def)
+	}
+}
+
+// useToolsSkipDuplicates 供 New() 装配内置工具、ToolKit 时使用：与已注册
+// 工具重名的跳过并告警（例如 WithBuiltinTools 与 WithToolKits(builtin.FileKit())
+// 同时启用），而不是在构造期 panic。
+func (a *App) useToolsSkipDuplicates(tools ...NamedTool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, t := range tools {
+		if _, exists := a.tools[t.Name]; exists {
+			a.logger.Warn("goagent: 工具重名，跳过后注册的同名工具", "tool", t.Name)
+			continue
+		}
+		a.registerToolLocked(t.Name, t.Def)
 	}
 }
 
@@ -328,7 +363,7 @@ func (a *App) Use(mw Middleware, opts ...MiddlewareOption) {
 // 通过 builtinToolsProvider 延迟注入，避免 import cycle。
 func (a *App) autoRegisterBuiltinTools() {
 	if builtinToolsProvider != nil {
-		a.UseTools(builtinToolsProvider()...)
+		a.useToolsSkipDuplicates(builtinToolsProvider()...)
 	}
 }
 
@@ -396,7 +431,7 @@ func (a *App) Run(ctx context.Context, input string) <-chan Event {
 	events := make(chan Event, 64)
 	go func() {
 		defer close(events)
-		a.run(ctx, input, nil, events)
+		a.run(ctx, input, nil, events, false)
 	}()
 	return events
 }
@@ -423,12 +458,12 @@ func (a *App) RunWithHistory(ctx context.Context, history []message.Message, inp
 	events := make(chan Event, 64)
 	go func() {
 		defer close(events)
-		// 构建一个虚拟 session 来传递历史消息。
+		// 构建一个虚拟 session 来传递历史消息（不落盘：持久化由调用方负责）。
 		sess := &session.Session{
 			ID:       "ephemeral",
 			Messages: history,
 		}
-		a.run(ctx, input, sess, events)
+		a.run(ctx, input, sess, events, false)
 	}()
 	return events
 }
@@ -438,13 +473,21 @@ func (a *App) RunWithHistory(ctx context.Context, history []message.Message, inp
 // 虚拟会话）。会话 ID 真实化后，按 SessionID 路由的机制全部可用：
 // steering guide 车道（SessionID ≠ "ephemeral" 才启用）、queue 车道（本轮结束
 // 后依次消费排队消息自动续跑，语义与 RunSession 一致）、工具回调拿到的
-// Context.SessionID 也是真实值。
+// Context.SessionID 也是真实值。配置了会话管理器时，同一会话不能与
+// RunSession / 另一次 RunWithSessionHistory 并发运行。
 func (a *App) RunWithSessionHistory(ctx context.Context, sessionID string, history []message.Message, input string) <-chan Event {
 	events := make(chan Event, 64)
 	go func() {
 		defer close(events)
+		if mgr := a.config.sessionManager; mgr != nil {
+			if err := mgr.Acquire(sessionID); err != nil {
+				events <- Event{Type: EventError, Error: err}
+				return
+			}
+			defer mgr.Release(sessionID)
+		}
 		sess := &session.Session{ID: sessionID, Messages: history}
-		a.run(ctx, input, sess, events)
+		a.run(ctx, input, sess, events, false)
 		// queue 车道续跑：本轮结束后依次消费排队消息（同一会话、同一事件流），
 		// 直到队列排空或 ctx 被取消（用户中断则停止消费，消息留在队列里）。
 		if a.config.steering != nil {
@@ -454,7 +497,7 @@ func (a *App) RunWithSessionHistory(ctx context.Context, sessionID string, histo
 					break
 				}
 				events <- Event{Type: EventQueueRun, Text: next}
-				a.run(ctx, next, sess, events)
+				a.run(ctx, next, sess, events, false)
 			}
 		}
 	}()
@@ -518,7 +561,7 @@ func (a *App) RunSession(ctx context.Context, sessionID string, input string) <-
 		_ = mgr.UpdateState(ctx, sessionID, sessionStateRunning)
 
 		// 运行 agent，传入历史消息。
-		a.run(ctx, input, sess, events)
+		a.run(ctx, input, sess, events, true)
 
 		// queue 车道续跑：本轮结束后依次消费排队消息（同一会话、同一
 		// 事件流），直到队列排空或 ctx 被取消（用户中断则停止消费，
@@ -531,12 +574,12 @@ func (a *App) RunSession(ctx context.Context, sessionID string, input string) <-
 					break
 				}
 				events <- Event{Type: EventQueueRun, Text: next}
-				a.run(ctx, next, sess, events)
+				a.run(ctx, next, sess, events, true)
 			}
 		}
 
 		// 更新状态为空闲。
-		_ = mgr.UpdateState(ctx, sessionID, sessionStateIdle)
+		_ = mgr.UpdateState(context.WithoutCancel(ctx), sessionID, sessionStateIdle)
 	}()
 	return events
 }
@@ -563,8 +606,9 @@ func (a *App) Sessions() *session.Manager {
 	return a.config.sessionManager
 }
 
-// BgTasks 返回后台任务管理器。
-// 需先启用 WithBgTaskTools()，否则返回 nil。
+// BgTasks 返回内置后台任务管理器。
+// 未启用 WithBgTaskTools、或通过 WithBgTaskStore 使用自定义存储时返回 nil
+// （自定义存储经 BgTaskStore 获取）。
 func (a *App) BgTasks() *bgtask.Manager {
 	return a.bgTaskMgr
 }
@@ -572,7 +616,7 @@ func (a *App) BgTasks() *bgtask.Manager {
 // BgTaskStore 返回后台任务存储接口。
 // 需先启用 WithBgTaskTools()，否则返回 nil。
 func (a *App) BgTaskStore() bgtask.StoreInterface {
-	return a.bgTaskMgr
+	return a.bgTaskStore
 }
 
 // TaskStore 返回 Task 存储接口。
@@ -640,16 +684,22 @@ func (a *App) Analytics() analytics.Summary {
 
 // ModelID 返回当前使用的模型 ID。
 func (a *App) ModelID() string {
-	if a.provider == nil {
+	a.mu.RLock()
+	p := a.provider
+	a.mu.RUnlock()
+	if p == nil {
 		return ""
 	}
-	return a.provider.Capabilities().ModelID
+	return p.Capabilities().ModelID
 }
 
 // SetModel 动态切换当前使用的模型。
 // 如果 provider 不支持运行时切换，返回 false。
 func (a *App) SetModel(modelID string) bool {
-	if switcher, ok := a.provider.(provider.ModelSwitcher); ok {
+	a.mu.RLock()
+	p := a.provider
+	a.mu.RUnlock()
+	if switcher, ok := p.(provider.ModelSwitcher); ok {
 		switcher.SetModel(modelID)
 		return true
 	}
@@ -750,6 +800,8 @@ func (a *App) Execute(ctx context.Context, input string) (*ExecuteResult, error)
 			if ev.Usage != nil {
 				totalUsage.InputTokens += ev.Usage.InputTokens
 				totalUsage.OutputTokens += ev.Usage.OutputTokens
+				totalUsage.CacheReadTokens += ev.Usage.CacheReadTokens
+				totalUsage.CacheCreateTokens += ev.Usage.CacheCreateTokens
 			}
 		case EventError:
 			lastErr = ev.Error
@@ -768,14 +820,31 @@ type ExecuteResult struct {
 	TotalUsage provider.Usage
 }
 
-// RunCLI starts an interactive CLI REPL. Blocks until the user exits.
-func (a *App) RunCLI() {
-	runCLI(a)
-}
-
 // RunHTTP starts an HTTP server with SSE streaming. Blocks until the server stops.
 func (a *App) RunHTTP(addr string) error {
 	return runHTTP(a, addr)
+}
+
+// SetApprover 替换审批者（WithApprover 的运行时形态），对之后开始的运行生效。
+func (a *App) SetApprover(ap Approver) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.config.approver = ap
+}
+
+// SetSessionManager 替换会话管理器（WithSessionManager 的运行时形态）。应在
+// 开始运行之前调用。
+func (a *App) SetSessionManager(mgr *session.Manager) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.config.sessionManager = mgr
+}
+
+// MemoryDir 返回 WithMemoryDir 配置的记忆目录（未配置时为空）。
+func (a *App) MemoryDir() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.config.memoryDir
 }
 
 // SetAskUserHandler 设置异步提问处理器。
@@ -808,16 +877,20 @@ func (a *App) SetInterruptHandler(h *InterruptHandler) {
 	a.interruptHandler = h
 }
 
-// SetPermissionMode 运行时切换权限模式。立即生效：
-//   - 进行中的 run：直接改写其权限门的模式；
-//   - 后续 run：构造权限门时优先采用此覆写（高于构造时的 WithPermissionMode）。
+// SetPermissionMode 运行时切换全局权限模式。立即生效：
+//   - 进行中的运行：直接改写其权限门的模式（模式来自会话级设置的运行除外，
+//     见 SetSessionPermissionMode、WithSessionPermissionMode）；
+//   - 后续运行：构造权限门时采用此覆写（高于构造时的 WithPermissionMode）。
 //
-// 典型用途是宿主在 UI 上提供模式切换（如 规划/自动编辑/全部放行）。
+// 典型用途是宿主在 UI 上提供模式切换（如 规划/自动编辑/全部放行）。多个
+// 用户共用一个 App 时，只想改变某个会话的模式应使用 SetSessionPermissionMode。
 func (a *App) SetPermissionMode(mode PermissionModeOption) {
 	a.permModeOverride.Store(int32(mode))
-	if g := a.activeGate.Load(); g != nil {
-		g.SetMode(permission.PermissionMode(mode))
-	}
+	a.eachLiveGate(func(g *permission.Gate, lg *liveGate) {
+		if !lg.sessionMode {
+			g.SetMode(permission.PermissionMode(mode))
+		}
+	})
 }
 
 // CurrentPermissionMode 返回当前生效的权限模式：运行时覆写优先，否则回退
@@ -833,40 +906,41 @@ func (a *App) CurrentPermissionMode() PermissionModeOption {
 }
 
 // AddPermissionGuard 运行期注册一条权限策略 Guard（单调：可拒不可放）。
-// 立即对当前活跃 Gate 生效（含在跑 run 的下一次工具调用），并记入构造
-// 配置——后续 run 构造新 Gate 时延续。同名覆盖。
+// 立即对所有进行中运行的权限门生效（从各自的下一次工具调用起），并记入
+// 构造配置——后续运行构造新权限门时延续。同名覆盖。
 func (a *App) AddPermissionGuard(gd permission.Guard) {
 	a.mu.Lock()
+	guards := make([]permission.Guard, 0, len(a.config.permissionGuards)+1)
 	replaced := false
-	for i := range a.config.permissionGuards {
-		if a.config.permissionGuards[i].Name == gd.Name {
-			a.config.permissionGuards[i] = gd // 同名覆盖
+	for _, old := range a.config.permissionGuards {
+		if old.Name == gd.Name {
+			old = gd // 同名覆盖
 			replaced = true
-			break
 		}
+		guards = append(guards, old)
 	}
 	if !replaced {
-		a.config.permissionGuards = append(a.config.permissionGuards, gd)
+		guards = append(guards, gd)
 	}
+	a.config.permissionGuards = guards
 	a.mu.Unlock()
-	if g := a.activeGate.Load(); g != nil {
-		g.AddGuard(gd)
-	}
+	a.eachLiveGate(func(g *permission.Gate, _ *liveGate) { g.AddGuard(gd) })
 }
 
 // RemovePermissionGuard 运行期注销一条权限策略 Guard。
 func (a *App) RemovePermissionGuard(name string) {
 	a.mu.Lock()
-	for i := range a.config.permissionGuards {
-		if a.config.permissionGuards[i].Name == name {
-			a.config.permissionGuards = append(a.config.permissionGuards[:i], a.config.permissionGuards[i+1:]...)
-			break
+	kept := make([]permission.Guard, 0, len(a.config.permissionGuards))
+	for _, gd := range a.config.permissionGuards {
+		if gd.Name != name {
+			kept = append(kept, gd)
 		}
 	}
+	// 换成新切片而不是就地删除：进行中的 run 持有旧配置的浅拷贝，就地
+	// 删除会改写它正在遍历的底层数组。
+	a.config.permissionGuards = kept
 	a.mu.Unlock()
-	if g := a.activeGate.Load(); g != nil {
-		g.RemoveGuard(name)
-	}
+	a.eachLiveGate(func(g *permission.Gate, _ *liveGate) { g.RemoveGuard(name) })
 }
 
 // SetThinkingEffort 运行时切换思考强度档位（off/low/medium/high）。
@@ -885,8 +959,9 @@ func (a *App) CurrentThinkingEffort() string {
 }
 
 // run is the internal entry point that wires up all subsystems and starts the agent loop.
-// sess 为 nil 时创建无状态会话；非 nil 时使用已有历史消息。
-func (a *App) run(ctx context.Context, input string, sess *session.Session, out chan<- Event) {
+// sess 为 nil 时创建无状态会话；非 nil 时使用已有历史消息。persist 为 true
+// 时（RunSession）新进入对话的消息逐条写入会话存储。
+func (a *App) run(ctx context.Context, input string, sess *session.Session, out chan<- Event, persist bool) {
 	// 提取 SessionID（sess 可能为 nil，如 pipeline supervisor、RunWithHistory
 	// 等场景）。会话级 resolver（工作目录/项目上下文/提示词/工具可见性）都
 	// 以此为键，故在锁内读配置前先取。
@@ -896,6 +971,9 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	}
 	a.mu.RLock()
 	cfg := a.config
+	prov := a.provider
+	fallback := a.fallback
+	askHandler := a.askUserHandler
 	tools := a.buildToolSet()
 	// 会话级工具可见性：谓词不过滤的会话保持全量（默认）。不同会话可
 	// 携带不同装配档位——工具注册表仍是进程级一份。
@@ -923,8 +1001,10 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	a.mu.RUnlock()
 
 	// 子系统初始化。
+	rt := a.sessionRuntime(sessionID)
 
-	// 1. Compaction Manager（对齐 Claude Code 流程）。
+	// 1. Compaction Manager（对齐 Claude Code 流程）。按会话常驻：自动摘要的
+	// 熔断状态需要跨运行保留，按运行新建会让熔断每条用户消息都被重置。
 	// 提示词目录按会话解析：压缩 / YOLO 分类与系统提示词同一档位，缺文件
 	// 各自回退嵌入默认值——提示词组可只覆盖其中几段。
 	promptDir := effectivePromptDir(cfg, sessionID)
@@ -936,55 +1016,17 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	if promptDir != "" {
 		compCfg.PromptFile = filepath.Join(promptDir, prompts.Compact)
 	}
-	compMgr := compaction.NewManager(compCfg)
+	compMgr := rt.compactionManager(compCfg)
 	// 设置 Provider 以支持新的 Compact() 方法（对齐 Claude Code 流程）。
-	if a.provider != nil {
-		compMgr.SetProvider(a.provider)
+	if prov != nil {
+		compMgr.SetProvider(prov)
 	}
 
-	// 2. Permission Gate。
-	permGate := permission.NewGate(wrapApprover(cfg.approver))
-
-	// 应用权限模式：会话级覆写（WithSessionPermissionMode，如团队成员的
-	// auto 模式）优先于运行时覆写（SetPermissionMode），再回退构造配置。
-	if cfg.sessionPermModeFn != nil && sess != nil {
-		if m, ok := cfg.sessionPermModeFn(sess.ID); ok {
-			permGate.SetMode(permission.PermissionMode(m))
-		} else if m := a.permModeOverride.Load(); m >= 0 {
-			permGate.SetMode(permission.PermissionMode(m))
-		} else if cfg.permissionMode != nil {
-			permGate.SetMode(*cfg.permissionMode)
-		}
-	} else if m := a.permModeOverride.Load(); m >= 0 {
-		permGate.SetMode(permission.PermissionMode(m))
-	} else if cfg.permissionMode != nil {
-		permGate.SetMode(*cfg.permissionMode)
-	}
-	a.activeGate.Store(permGate)
-
-	// 应用权限规则（如有配置）。
-	if cfg.permissionRules != nil {
-		permGate.SetRules(cfg.permissionRules)
-	}
-
-	// 应用外部策略 Guard 链（单调：可拒不可放；运行期追加见 AddPermissionGuard）。
-	for _, gd := range cfg.permissionGuards {
-		permGate.AddGuard(gd)
-	}
-
-	// 注入 YOLO LLM 分类器（对齐 Claude Code 的 YOLO classifier）。
-	// 需要 provider 才能调用子模型进行权限分类。
-	if a.provider != nil {
-		yoloCfg := permission.YoloClassifierConfig{
-			Mode: "both", // 两阶段：fast → thinking
-		}
-		if cfg.yoloPromptFile != "" {
-			yoloCfg.PromptFile = cfg.yoloPromptFile
-		} else if promptDir != "" {
-			yoloCfg.PromptFile = filepath.Join(promptDir, prompts.YoloClassifier)
-		}
-		permGate.SetClassifier(permission.NewYoloClassifier(a.provider, yoloCfg))
-	}
+	// 2. Permission Gate：模式、会话共享的"始终允许"授权、规则、Guard、编辑类
+	// 工具与可选分类器（见 newGate）。登记为进行中，运行期间的模式切换与
+	// Guard 增删即时生效。
+	permGate, releaseGate := a.acquireGate(rt)
+	defer releaseGate()
 
 	// 3. Memory Manager。项目上下文 = 全局文件 + 会话级追加（不同会话
 	// 可携带不同领域规范，单进程多档位并存）。
@@ -997,9 +1039,13 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		ProjectContext: projectCtx,
 	})
 
-	// 4. Executor。
+	// 4. Executor。工具 panic 被执行器恢复为错误结果，这里只负责记录堆栈。
+	logger := a.logger
 	exec := executor.New(executor.Config{
 		MaxConcurrency: cfg.maxConcurrency,
+		PanicHandler: func(tool string, r any, stack []byte) {
+			logger.Error("goagent: 工具 panic 已恢复", "tool", tool, "panic", fmt.Sprint(r), "stack", string(stack))
+		},
 	})
 
 	// 5. Budget Tracker。
@@ -1009,8 +1055,8 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 
 	// 6. SessionMemory（会话内定期记忆提取）。
 	var sessMem *sessionmem.SessionMemory
-	if cfg.sessionMemoryCfg != nil && a.provider != nil {
-		sessMem = sessionmem.New(a.provider, *cfg.sessionMemoryCfg)
+	if cfg.sessionMemoryCfg != nil && prov != nil {
+		sessMem = sessionmem.New(prov, *cfg.sessionMemoryCfg)
 	}
 
 	// 提取 SessionID 已上移到 run 入口（会话级 resolver 依赖）。
@@ -1068,27 +1114,31 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	// 构建 loop 配置。
 	// Observer 合并 ctx 边界注入链（observer.IntoContext）：benchmark 等
 	// 单次 run 临时采集的 observer 与 App 级 observer 同时收到事件。
+	hooksRunner := &hooksRunnerAdapter{mgr: a.hooksMgr}
+	loopMws := toLoopMiddlewares(mws)
 	loopCfg := loop.Config{
-		Provider:     a.provider,
-		Fallback:     a.fallback,
+		Provider:     prov,
+		Fallback:     fallback,
 		Tools:        tools,
-		Middlewares:  toLoopMiddlewares(mws),
+		Middlewares:  loopMws,
 		SystemPrompt: systemPrompt,
 		MaxTurns:     cfg.maxTurns,
 		Compaction:   compMgr,
 
-		ReasoningEffort: a.CurrentThinkingEffort(),
+		ReasoningEffort: cfg.thinkingEffort,
 		Permission:      permGate,
 		// Memory 不下传：memMgr 的上下文段已由 buildSystemPrompt 组装进
 		// systemPrompt，循环再追加一遍会让项目上下文重复出现。
 		Executor:    exec,
 		Budget:      budgetTracker,
-		Hooks:       &hooksRunnerAdapter{mgr: a.hooksMgr},
+		Hooks:       hooksRunner,
 		Observer:    observer.ResolveObserver(ctx, a.obsRegistry.Observer()),
 		SessionID:   sessionID,
 		Logger:      a.logger,
-		Debug:       a.config.debug,
-		SuspendGate: a.config.suspendGate,
+		Debug:       cfg.debug,
+		SuspendGate: cfg.suspendGate,
+
+		SkipInputValidation: cfg.skipInputValidation,
 	}
 
 	// PlanChecker 仅在 Plan 系统启用时注入。
@@ -1096,13 +1146,20 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		loopCfg.PlanChecker = &planCheckerAdapter{mgr: a.planMgr}
 	}
 
+	// 本次运行的作用域（检查链与观测出口）由循环随 ctx 交给每一次工具执行，
+	// 在运行中派生的子运行（create_pipeline、run_team、子 agent）经
+	// loop.NewChild 继承。会话运行时与提问处理器同样随 ctx 下发：工具的
+	// Store/Load 读写本会话的键值存储，内置 AskUser 工具按会话路由提问。
+	ctx = withSessionRuntime(ctx, rt)
+	ctx = withAskUserHandler(ctx, askHandler)
+
 	// 插话通道：仅真实会话（sess 非空且非 ephemeral）接线。beginRun
 	// 打开 guide 车道，run 结束（含 error/interrupt 退出）时 endRun
 	// 关闭并把未消费的插话降级进 queue 车道——插话永不丢失。
-	if a.config.steering != nil && sess != nil && sessionID != "" && sessionID != "ephemeral" {
-		loopCfg.Steering = steerSourceAdapter{hub: a.config.steering, sessionID: sessionID}
-		a.config.steering.beginRun(sessionID)
-		defer a.config.steering.endRun(sessionID)
+	if cfg.steering != nil && sess != nil && sessionID != "" && sessionID != "ephemeral" {
+		loopCfg.Steering = steerSourceAdapter{hub: cfg.steering, sessionID: sessionID}
+		cfg.steering.beginRun(sessionID)
+		defer cfg.steering.endRun(sessionID)
 	}
 
 	// 注册 PostSampling hook（SessionMemory）。
@@ -1119,46 +1176,34 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		loopCfg.InitialMessages = sess.Messages
 	}
 
-	// 运行 agent 循环。
-	// 持久化策略：逐条即时落盘（而非整轮结束才写）。loop 的 FinalMessages
-	// 随事件流增长，每次出现新消息立刻 AppendMessage —— 进程被杀（用户
-	// 关闭应用）时已完成的步骤全部保留，重开可从断点恢复对话与执行进度。
-	//
-	// 新消息的起点必须在开跑前定格：MemoryStore.Get 返回的就是存储里的
-	// 会话对象，AppendMessage 会就地增长 sess.Messages——若每次按
-	// len(sess.Messages) 现算起点，会把刚追加的消息当成历史再跳一段。
-	agentLoop := loop.New(loopCfg)
-	baseCount := 0
-	if sess != nil {
-		baseCount = len(sess.Messages)
-	}
-	autoPersist := cfg.autoPersist == nil || *cfg.autoPersist
-	persistedCount := 0 // 已落盘的最终消息数（本轮新增部分）
-	persistMsgs := func() {
-		if sess == nil || cfg.sessionManager == nil || !autoPersist {
-			return
-		}
-		finalMsgs := agentLoop.FinalMessages()
-		for i := baseCount + persistedCount; i < len(finalMsgs); i++ {
-			if err := cfg.sessionManager.AppendMessage(ctx, sess.ID, finalMsgs[i]); err != nil {
-				break
+	// 持久化：每条消息进入对话时由循环同步回调、逐条追加——先于任何压缩
+	// 改写，写入的是完整原貌；进程被杀时已发生的步骤全部保留。自动摘要以
+	// 摘要记录的形式同样经这里落盘，重新加载时由 compaction.Project 直接还原
+	// 模型视图；其他派生消息不进入对话记录。
+	// 用户中断后的收尾消息同样要落盘，所以写入不随运行 ctx 取消。
+	if persist && sess != nil && cfg.sessionManager != nil && (cfg.autoPersist == nil || *cfg.autoPersist) {
+		storeCtx := context.WithoutCancel(ctx)
+		mgr := cfg.sessionManager
+		id := sess.ID
+		loopCfg.OnMessage = func(m message.Message) {
+			if err := mgr.AppendMessage(storeCtx, id, m); err != nil {
+				logger.Warn("goagent: 会话消息落盘失败", "session", id, "error", err)
 			}
-			persistedCount++
 		}
 	}
+
+	agentLoop := loop.New(loopCfg)
 	for ev := range agentLoop.Run(ctx, input) {
 		pubEv := toPublicEvent(ev)
-		// EventDone 时附带完整消息列表，供业务层持久化。
+		// EventDone 时附带完整对话记录（含摘要记录），供业务层持久化。
 		if pubEv.Type == EventDone {
 			pubEv.Messages = agentLoop.FinalMessages()
 		}
-		persistMsgs()
 		if pubEv.Type == EventTurnComplete && cfg.transcriptSink != nil {
 			cfg.transcriptSink(sessionID, agentLoop.FinalMessages())
 		}
 		out <- pubEv
 	}
-	persistMsgs() // 循环结束（含 error 退出）时兜底补齐
 	finalMsgs := agentLoop.FinalMessages()
 	if cfg.transcriptSink != nil && len(finalMsgs) > 0 {
 		cfg.transcriptSink(sessionID, finalMsgs)
@@ -1275,22 +1320,6 @@ func (a *App) SessionSystemPrompt(sessionID string) string {
 	return a.buildSystemPrompt(cfg, nil, workDir, sessionID)
 }
 
-// buildPromptVars 构建提示词模板变量。
-func (a *App) buildPromptVars() map[string]string {
-	vars := map[string]string{
-		"cwd":     ".",
-		"OS":      sysprompt.DetectPlatform(),
-		"date":    sysprompt.CurrentDate(),
-		"boolean": "false",
-	}
-	if root := sysprompt.DetectGitRoot(); root != "" {
-		vars["boolean"] = "true"
-		vars["cwd"] = root
-		vars["gitStatus"] = sysprompt.GetGitStatusText(root)
-	}
-	return vars
-}
-
 // buildToolSet converts registered tools into the format needed by the loop.
 func (a *App) buildToolSet() []loop.ToolEntry {
 	entries := make([]loop.ToolEntry, 0, len(a.toolOrder))
@@ -1348,8 +1377,11 @@ func (a *middlewareAdapter) BeforeTool(ctx context.Context, toolName string, inp
 }
 
 func (a *middlewareAdapter) AfterTool(ctx context.Context, toolName string, result string, err error) {
+	if !a.inner.matches(toolName) {
+		return
+	}
 	c := newContextFromStd(ctx)
-	a.inner.AfterTool(c, toolName, &Result{Content: result}, err)
+	a.inner.AfterTool(c, toolName, &Result{Content: result, IsError: err != nil}, err)
 }
 
 // toPublicEvent converts an internal loop event to a public Event.
@@ -1377,11 +1409,20 @@ func toPublicEvent(ev loop.Event) Event {
 }
 
 // approverAdapter wraps a public goagent.Approver into a permission.Approver.
+// 宿主审批器实现了 ContextApprover 时，审批在工具调用的 ctx 下进行（ctx 带
+// 会话 ID，取消即应拒绝）。
 type approverAdapter struct {
 	inner Approver
 }
 
 func (a *approverAdapter) Approve(toolName string, input string, level permission.Level) (bool, bool) {
+	return a.inner.Approve(toolName, input, Permission(level))
+}
+
+func (a *approverAdapter) ApproveContext(ctx context.Context, toolName string, input string, level permission.Level) (bool, bool) {
+	if ca, ok := a.inner.(ContextApprover); ok {
+		return ca.ApproveWithContext(ctx, toolName, input, Permission(level))
+	}
 	return a.inner.Approve(toolName, input, Permission(level))
 }
 
@@ -1402,7 +1443,7 @@ type hooksRunnerAdapter struct {
 }
 
 func (h *hooksRunnerAdapter) RunPreToolUse(ctx context.Context, toolName string, input json.RawMessage) (block bool, message string, err error) {
-	result, err := h.mgr.RunPreToolUse(ctx, toolName, input, "")
+	result, err := h.mgr.RunPreToolUse(ctx, toolName, input, SessionIDFromContext(ctx))
 	if err != nil {
 		return false, "", err
 	}
@@ -1414,11 +1455,11 @@ func (h *hooksRunnerAdapter) RunPreToolUse(ctx context.Context, toolName string,
 
 func (h *hooksRunnerAdapter) RunPostToolUse(ctx context.Context, toolName string, input json.RawMessage, result string, toolErr error) {
 	// PostToolUse 不阻塞，忽略错误（仅日志用途）。
-	_ = h.mgr.RunPostToolUse(ctx, toolName, input, result, toolErr, "")
+	_ = h.mgr.RunPostToolUse(ctx, toolName, input, result, toolErr, SessionIDFromContext(ctx))
 }
 
 func (h *hooksRunnerAdapter) RunStop(ctx context.Context, stopReason, lastText string, messages []message.Message) (block bool, message string, err error) {
-	result, err := h.mgr.RunStop(ctx, "", stopReason, lastText, messages)
+	result, err := h.mgr.RunStop(ctx, SessionIDFromContext(ctx), stopReason, lastText, messages)
 	if err != nil {
 		return false, "", err
 	}

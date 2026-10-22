@@ -8,8 +8,11 @@ package cost
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/Dream355873200/GoAgent/provider"
 )
 
 // ModelPricing 定义模型的定价信息。
@@ -184,24 +187,66 @@ func (t *Tracker) Reset() {
 	t.records = nil
 }
 
-// calculateCost 计算单次 API 调用的 USD 成本。
+// calculateCost 计算单次 API 调用的 USD 成本。未知模型记为 0（不再按
+// Sonnet 价格猜测），宿主可用 SetPricing 补充定价。
 func (t *Tracker) calculateCost(model string, inputTokens, outputTokens, cacheRead, cacheWrite int) float64 {
-	pricing, ok := t.pricing[model]
+	pricing, ok := lookupPricing(t.pricing, model)
 	if !ok {
-		// 未知模型，使用 sonnet 的定价作为默认。
-		pricing = defaultPricing["claude-sonnet-4-6"]
+		return 0
 	}
+	return pricing.cost(inputTokens, outputTokens, cacheRead, cacheWrite)
+}
 
-	cost := float64(inputTokens) * pricing.InputPerMillion / 1_000_000
-	cost += float64(outputTokens) * pricing.OutputPerMillion / 1_000_000
-	if cacheRead > 0 && pricing.CacheReadPerMillion > 0 {
-		cost += float64(cacheRead) * pricing.CacheReadPerMillion / 1_000_000
-	}
-	if cacheWrite > 0 && pricing.CacheWritePerMillion > 0 {
-		cost += float64(cacheWrite) * pricing.CacheWritePerMillion / 1_000_000
-	}
+func (p ModelPricing) cost(inputTokens, outputTokens, cacheRead, cacheWrite int) float64 {
+	c := float64(inputTokens) * p.InputPerMillion / 1_000_000
+	c += float64(outputTokens) * p.OutputPerMillion / 1_000_000
+	c += float64(cacheRead) * p.CacheReadPerMillion / 1_000_000
+	c += float64(cacheWrite) * p.CacheWritePerMillion / 1_000_000
+	return c
+}
 
-	return cost
+// LookupPricing 在内置定价表中查找模型定价，容忍 "-v1"、"-v1:0"、日期等
+// 后缀（如 "claude-sonnet-4-6-v1" 命中 "claude-sonnet-4-6"）。
+func LookupPricing(model string) (ModelPricing, bool) {
+	return lookupPricing(defaultPricing, model)
+}
+
+// Estimate 按内置定价表估算一次调用的 USD 成本；未知模型返回 0。
+// usage 的 InputTokens 不含缓存部分（见 provider.Usage 的口径约定）。
+func Estimate(model string, usage provider.Usage) float64 {
+	p, ok := LookupPricing(model)
+	if !ok {
+		return 0
+	}
+	return p.cost(usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.CacheCreateTokens)
+}
+
+func lookupPricing(table map[string]ModelPricing, model string) (ModelPricing, bool) {
+	if p, ok := table[model]; ok {
+		return p, true
+	}
+	base := normalizeModelID(model)
+	if p, ok := table[base]; ok {
+		return p, true
+	}
+	return ModelPricing{}, false
+}
+
+// normalizeModelID 去掉云厂商与版本后缀：Bedrock 的 "-v1"、"-v1:0"，
+// 以及 "-20251001" 这类日期后缀。
+func normalizeModelID(model string) string {
+	m := model
+	if i := strings.LastIndex(m, ":"); i > 0 {
+		m = m[:i]
+	}
+	m = strings.TrimSuffix(m, "-v1")
+	m = strings.TrimSuffix(m, "-v2")
+	if i := strings.LastIndex(m, "-"); i > 0 {
+		if tail := m[i+1:]; len(tail) == 8 && strings.Trim(tail, "0123456789") == "" {
+			m = m[:i]
+		}
+	}
+	return m
 }
 
 func safePercent(part, total float64) float64 {

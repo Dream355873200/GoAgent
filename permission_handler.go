@@ -3,7 +3,7 @@ package goagent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 )
@@ -27,9 +27,13 @@ type PermissionRequest struct {
 	// Description 是工具调用的简要描述。
 	Description string `json:"description,omitempty"`
 
+	// SessionID 是发起审批的会话（由运行 ctx 决定）。
+	SessionID string `json:"session_id,omitempty"`
+
 	// once 确保只能调用一次 Approve/Deny。
 	once sync.Once
 	ch   chan permissionResponse
+	seq  int64
 }
 
 type permissionResponse struct {
@@ -117,19 +121,53 @@ func (h *PermissionHandler) Subscribe(sessionID string) (<-chan *PermissionReque
 }
 
 // Resolve 通过 requestID 解决一个待处理的权限请求。
-// 这是供 HTTP handler 等外部接口调用的便捷方法。
+// 这是供 HTTP handler 等外部接口调用的便捷方法。request_id 是随机生成
+// 的不可猜测值；需要校验会话归属时用 ResolveForSession。
 func (h *PermissionHandler) Resolve(requestID string, allow bool, alwaysAllow bool, reason string) bool {
-	val, ok := h.pending.LoadAndDelete(requestID)
+	return h.resolve(requestID, "", false, allow, alwaysAllow, reason)
+}
+
+// ResolveForSession 同 Resolve，但只解决属于 sessionID 的请求：一个会话
+// 不能替另一个会话作答。
+func (h *PermissionHandler) ResolveForSession(sessionID, requestID string, allow bool, alwaysAllow bool, reason string) bool {
+	return h.resolve(requestID, sessionID, true, allow, alwaysAllow, reason)
+}
+
+func (h *PermissionHandler) resolve(requestID, sessionID string, checkSession, allow, alwaysAllow bool, reason string) bool {
+	val, ok := h.pending.Load(requestID)
 	if !ok {
 		return false
 	}
 	req := val.(*PermissionRequest)
+	if checkSession && req.SessionID != sessionID {
+		return false
+	}
+	if _, ok := h.pending.LoadAndDelete(requestID); !ok {
+		return false
+	}
 	if allow {
 		req.Approve(alwaysAllow)
 	} else {
 		req.Deny(reason)
 	}
 	return true
+}
+
+// PendingBySession 返回某会话当前未决的审批请求（按发起顺序）。前端重载/
+// 重连后据此恢复审批卡；为空表示没有在等审批的工具调用。
+func (h *PermissionHandler) PendingBySession(sessionID string) []*PermissionRequest {
+	if sessionID == "" {
+		return nil
+	}
+	var out []*PermissionRequest
+	h.pending.Range(func(_, v any) bool {
+		if req := v.(*PermissionRequest); req.SessionID == sessionID {
+			out = append(out, req)
+		}
+		return true
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].seq < out[j].seq })
+	return out
 }
 
 // Close 关闭请求 channel。在会话结束时调用。
@@ -142,16 +180,15 @@ func (h *PermissionHandler) Close() {
 	}
 }
 
-// Approve 实现 Approver 接口。
-// 当 permission.Gate 需要用户审批时调用此方法。
-// 它会创建一个 PermissionRequest 并通过 channel 发送给前端，
-// 然后阻塞等待前端的回复。
+// Approve 实现 Approver 接口（不带 ctx：无法取消、也拿不到会话）。
+// Gate 会优先调用 ApproveWithContext。
 func (h *PermissionHandler) Approve(toolName string, input string, perm Permission) (bool, bool) {
 	return h.ApproveWithContext(context.Background(), toolName, input, perm)
 }
 
-// ApproveWithContext 是带 context 的审批方法。
-// context 取消时自动拒绝。
+// ApproveWithContext 是带 context 的审批方法（实现 ContextApprover）。
+// 请求路由到 ctx 所属会话的活跃连接；没有绑定连接时走共享 channel
+// （SDK 直连消费模式）。context 取消时自动拒绝。
 func (h *PermissionHandler) ApproveWithContext(ctx context.Context, toolName string, input string, perm Permission) (bool, bool) {
 	h.mu.Lock()
 	if h.closed {
@@ -160,24 +197,23 @@ func (h *PermissionHandler) ApproveWithContext(ctx context.Context, toolName str
 	}
 	h.mu.Unlock()
 
-	id := h.nextID.Add(1)
-	requestID := fmt.Sprintf("perm-%d", id)
-
+	requestID := newRequestID("perm")
 	responseCh := make(chan permissionResponse, 1)
 	req := &PermissionRequest{
 		RequestID:  requestID,
 		ToolName:   toolName,
 		ToolInput:  json.RawMessage(input),
 		Permission: perm.String(),
+		SessionID:  SessionIDFromContext(ctx),
 		ch:         responseCh,
+		seq:        h.nextID.Add(1),
 	}
 
 	// 注册到 pending map。
 	h.pending.Store(requestID, req)
 
 	// 优先路由到该会话绑定的活跃连接；未命中再走共享 channel 兜底。
-	// 审批门在 agent 运行 ctx 内发起，ctx 里带会话标识。
-	if h.streams.Send(SessionIDFromContext(ctx), req) {
+	if h.streams.Send(req.SessionID, req) {
 		// 等待前端回复。
 		select {
 		case resp := <-responseCh:

@@ -90,10 +90,8 @@ func (c *YoloClassifier) Classify(ctx context.Context, messages []message.Messag
 func (c *YoloClassifier) runStage(ctx context.Context, transcript string, stage int) YoloResult {
 	systemPrompt := YoloSystemPrompt(c.config.PromptFile)
 	maxTokens := c.config.Stage1MaxTokens
-
 	if stage == 1 {
 		systemPrompt += stage1Suffix
-		maxTokens = c.config.Stage1MaxTokens
 	} else {
 		systemPrompt += stage2Suffix
 		maxTokens = c.config.Stage2MaxTokens

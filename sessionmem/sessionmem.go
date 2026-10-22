@@ -20,6 +20,7 @@ import (
 
 	"github.com/Dream355873200/GoAgent/message"
 	"github.com/Dream355873200/GoAgent/provider"
+	"github.com/Dream355873200/GoAgent/statedir"
 )
 
 // Config 配置 SessionMemory 的提取阈值。
@@ -261,7 +262,7 @@ func (sm *SessionMemory) memoryFilePath() string {
 	if sm.cfg.MemoryDir != "" {
 		return filepath.Join(sm.cfg.MemoryDir, "MEMORY.md")
 	}
-	return filepath.Join(".yume", ".session-memory", "MEMORY.md")
+	return statedir.Join("", ".session-memory", "MEMORY.md")
 }
 
 // LoadContent 返回当前会话记忆内容。

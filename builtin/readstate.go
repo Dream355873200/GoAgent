@@ -30,10 +30,6 @@ var reads = &readState{
 	order: make(map[string][]string),
 }
 
-// sessionKey 会话键（空 session 归入 "" 分区）。
-// 参数直接用 string 避免接口抽象。
-func sessionKey(sessionID string) string { return sessionID }
-
 // markRead 记录「本会话已读取该文件的当前内容指纹」。
 func markRead(sessionID, path, content string) {
 	reads.mu.Lock()

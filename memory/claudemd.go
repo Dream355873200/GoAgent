@@ -121,14 +121,15 @@ func layerDisplayName(level string) string {
 	}
 }
 
-// readFileIfExists 读取文件内容，如果文件不存在返回空字符串和 nil 错误。
+// readFileIfExists 读取文件内容（超过 64 KiB 时截断），如果文件不存在
+// 返回空字符串和 nil 错误。
 func readFileIfExists(path string) (string, error) {
-	content, err := os.ReadFile(path)
+	content, err := readForPrompt(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
 		}
 		return "", err
 	}
-	return strings.TrimSpace(string(content)), nil
+	return content, nil
 }

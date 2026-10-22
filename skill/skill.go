@@ -1,7 +1,7 @@
 // Package skill 实现 Skill 系统。
 //
-// 对齐 Claude Code 的 /skill 工具和 .yume/commands/ 发现机制。
-// 支持内置 skill、项目 skill（.yume/commands/）和用户 skill（~/.claude/commands/）。
+// 对齐 Claude Code 的 /skill 工具和 <状态目录>/commands/ 发现机制（状态目录默认 .yume，见 statedir）。
+// 支持内置 skill、项目 skill（<状态目录>/commands/）和用户 skill（~/.claude/commands/）。
 package skill
 
 import (
@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/Dream355873200/GoAgent/statedir"
 )
 
 // Source 是 skill 的来源。
@@ -18,7 +20,7 @@ type Source string
 const (
 	// SourceBuiltin 内置 skill。
 	SourceBuiltin Source = "builtin"
-	// SourceProject 项目目录的 skill (.yume/commands/)。
+	// SourceProject 项目目录的 skill（<状态目录>/commands/）。
 	SourceProject Source = "project"
 	// SourceUser 用户目录的 skill (~/.claude/commands/)。
 	SourceUser Source = "user"
@@ -100,7 +102,7 @@ func (r *Registry) Discover() error {
 
 	// 扫描项目 commands 目录。
 	if r.projectDir != "" {
-		commandsDir := filepath.Join(r.projectDir, ".yume", "commands")
+		commandsDir := statedir.Join(r.projectDir, "commands")
 		if err := r.scanDir(commandsDir, SourceProject); err != nil {
 			// 目录不存在不算错误。
 			if !os.IsNotExist(err) {

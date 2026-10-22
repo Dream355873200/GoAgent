@@ -21,14 +21,14 @@ func Restore(storage *Storage, sessionID string) (*Session, error) {
 	}
 
 	session := NewSessionWithID(sessionID)
-	session.StoragePath = storage.sessionPath(sessionID)
+	session.StoragePath, _ = storage.sessionPath(sessionID)
 
 	for _, record := range records {
 		switch record.Type {
 		case RecordMessage:
 			var msg message.Message
 			if err := json.Unmarshal(record.Data, &msg); err != nil {
-				return nil, fmt.Errorf("解析消息记录失败: %w", err)
+				continue // 跳过损坏的消息记录，不让一条坏记录拖垮整个会话
 			}
 			session.Messages = append(session.Messages, msg)
 

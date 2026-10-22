@@ -187,11 +187,7 @@ func TestWithRetrievalMaxCharsTruncates(t *testing.T) {
 	if !strings.Contains(seen, "已截断") {
 		t.Errorf("截断应注明:\n%.300s", seen)
 	}
-	// 保序：高分内容必须出现在原始输入之前（注入块在前）。
-	if strings.Index(seen, "高分内容") > strings.Index(seen, "内容\n") &&
-		strings.Contains(seen, "高分内容") {
-		// 宽松校验：注入块位于开头（<retrieved-context> 是第一个字符）。
-	}
+	// 保序：注入块位于用户输入之前（<retrieved-context> 是第一个字符）。
 	if !strings.HasPrefix(seen, "<retrieved-context>") {
 		t.Errorf("注入块应在用户输入之前:\n%.200s", seen)
 	}

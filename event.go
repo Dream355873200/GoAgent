@@ -129,9 +129,12 @@ type Event struct {
 	// Error is set for EventError.
 	Error error
 
-	// Messages 在 EventDone 时携带本轮完整消息列表。
-	// 业务层可用此数据自行持久化对话记录（包含 thinking 内容）。
-	// 仅在 EventDone 事件中设置，其他事件为 nil。
+	// Messages 在 EventDone 时携带完整对话记录：传入的历史、本轮进入对话的
+	// 全部消息（包含 thinking 内容），以及自动摘要时追加的摘要记录——压缩
+	// 不改写它。业务层持久化这份记录、下一轮作为 history 传回即可：摘要记录
+	// 让循环直接还原模型视图，不会再请求模型摘要一遍。摘要记录是元消息
+	// （IsMeta），展示时与其他元消息一样过滤。仅在 EventDone 事件中设置，
+	// 其他事件为 nil。
 	Messages []message.Message
 
 	// Approve/Deny are set for EventNeedApproval in SDK mode.

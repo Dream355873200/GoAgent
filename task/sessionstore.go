@@ -21,7 +21,7 @@ type SessionRouter interface {
 
 // SessionStoreConfig 配置 SessionStore。
 type SessionStoreConfig struct {
-	// DirFn 返回某会话的落盘目录（如 <project>/.yume/tasks/<sid>.json 所在目录）。
+	// DirFn 返回某会话的落盘目录（如 <project>/<状态目录>/tasks/<sid>.json 所在目录）。
 	// nil = 纯内存，不落盘。
 	DirFn func(sessionID string) string
 

@@ -61,21 +61,26 @@ func (a *App) CreateTeamTool() NamedTool {
 			Description: desc,
 			Input:       runTeamInput{},
 			Permission:  Normal,
+			// 此前没有 Execute：模型能看到并调用 run_team，但每次调用都失败。
+			Execute: func(ctx Context, in runTeamInput) (string, error) {
+				return a.runTeam(ctx, in.Spec, in.Task)
+			},
 		},
 	}
 }
 
 type runTeamInput struct {
-	Spec DynamicTeamSpec `json:"spec" desc:"团队编制（队长指令 + 成员列表）"`
-	Task string          `json:"task" desc:"团队的总任务"`
+	Spec DynamicTeamSpec `json:"spec" desc:"团队编制（队长指令 + 成员列表）" required:"true"`
+	Task string          `json:"task" desc:"团队的总任务" required:"true"`
 }
 
-// buildTeamRuntimes 校验 spec 并把成员工具从注册表解析为运行条目。
-// 与 pipeline 节点同规则：成员内工具不经过权限门（团队边界在 run_team 处审批）。
+// buildTeamRuntimes 校验 spec 并把成员工具从注册表解析为运行条目。成员工具
+// 按其声明的权限级别交给团队继承的检查链。
 func (a *App) buildTeamRuntimes(spec DynamicTeamSpec) ([]teams.MemberRuntime, error) {
 	if len(spec.Members) == 0 || len(spec.Members) > 8 {
 		return nil, fmt.Errorf("成员数量须在 1~8 之间")
 	}
+	prov := a.Provider()
 	runtimes := make([]teams.MemberRuntime, 0, len(spec.Members))
 	for _, m := range spec.Members {
 		if strings.HasPrefix(m.Name, "assign_") {
@@ -85,7 +90,7 @@ func (a *App) buildTeamRuntimes(spec DynamicTeamSpec) ([]teams.MemberRuntime, er
 			Name:     m.Name,
 			Role:     m.Role + "\n[团队规范] 你向队长汇报；产出用 Markdown；任务完成后即汇报，不要越权联系用户。",
 			MaxTurns: m.MaxTurns,
-			Provider: a.provider,
+			Provider: prov,
 		}
 		for _, tn := range m.Tools {
 			a.mu.RLock()
@@ -94,15 +99,15 @@ func (a *App) buildTeamRuntimes(spec DynamicTeamSpec) ([]teams.MemberRuntime, er
 			if !ok {
 				return nil, fmt.Errorf("成员 %s 的工具 %q 不存在（只能从可用工具里选）", m.Name, tn)
 			}
+			def := t.def
 			rt.Tools = append(rt.Tools, loop.ToolEntry{
 				Name:        tn,
-				Description: t.def.Description,
+				Description: def.Description,
 				InputSchema: t.inputSchema,
-				// 与 pipeline 节点同规则：成员内跳过权限门（团队边界已审批）。
-				Permission: permission.LevelReadOnly,
-				Concurrent: t.def.Concurrent,
+				Permission:  permission.Level(def.Permission),
+				Concurrent:  def.Concurrent,
 				ExecuteFn: func(ctx context.Context, input json.RawMessage) (string, error) {
-					return t.def.call(ctx, input)
+					return def.call(ctx, input)
 				},
 			})
 		}
@@ -112,9 +117,21 @@ func (a *App) buildTeamRuntimes(spec DynamicTeamSpec) ([]teams.MemberRuntime, er
 }
 
 // runTeam 执行动态团队（引擎内部入口，供 run_team 工具与测试使用）。
+// 团队成员由模型编排，工具调用一律过检查链：队长与成员的循环继承发起团队
+// 的那次运行的作用域（不在带权限门的运行之内时按 App 配置新建）。
 // OnEvent 团队事件经 EmitFromTool 以 subagent_progress 透出到主对话流，
 // 由 run_team 工具卡实时渲染（成员归属见事件 Member 字段）。
 func (a *App) runTeam(ctx Context, spec DynamicTeamSpec, task string) (string, error) {
+	if strings.TrimSpace(task) == "" {
+		return "", fmt.Errorf("task 不能为空")
+	}
+	sctx, err := enterSubRun(ctx, "团队（run_team）")
+	if err != nil {
+		return "", err
+	}
+	scope, release := a.subRunScope(sctx)
+	defer release()
+	sctx = loop.WithScope(sctx, scope)
 	runtimes, err := a.buildTeamRuntimes(spec)
 	if err != nil {
 		return "", err
@@ -122,9 +139,9 @@ func (a *App) runTeam(ctx Context, spec DynamicTeamSpec, task string) (string, e
 	leader := teams.MemberRuntime{
 		Name:     "leader",
 		Role:     spec.LeaderInstruction,
-		Provider: a.provider,
+		Provider: a.Provider(),
 	}
-	return teams.Run(ctx, teams.Config{
+	return teams.Run(sctx, teams.Config{
 		Leader:        leader,
 		Members:       runtimes,
 		SharedContext: spec.SharedContext,

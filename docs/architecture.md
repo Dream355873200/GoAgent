@@ -17,17 +17,17 @@
 → ⑧ 工具执行 + 后处理
 ```
 
-### 1.2 7 种 Continue 分支
+### 1.2 继续下一次迭代的原因
 
-| Transition | 触发条件 | 行为 |
-|---|---|---|
-| `NextTurn` | 正常工具调用完成 | 继续下一轮 |
-| `CollapseDrainRetry` | 上下文折叠释放空间 | 重试 API 调用 |
-| `ReactiveCompactRetry` | 413 后压缩成功 | 重试 API 调用 |
-| `MaxOutputEscalate` | 首次 max_tokens 截断 | 提升 4k→64k 重试 |
-| `MaxOutputRecovery` | 再次 max_tokens 截断 | 注入继续提示（最多 3 次） |
-| `StopHookBlocking` | stop hook 阻止退出 | 注入修正消息 |
-| `TokenBudgetContinuation` | token 预算未耗尽 | 继续执行 |
+| 触发条件 | 行为 |
+|---|---|
+| 正常工具调用完成 | 继续下一轮 |
+| 主模型过载且配置了后备 | 切换到后备模型重试 |
+| 上下文过长（413） | 折叠排空或响应式压缩后重试 |
+| 输出被 max_tokens 截断 | 注入续写提示（最多 3 次；不提升 max_tokens，部分 OpenAI 兼容后端对显式的大值直接 400） |
+| 推理模型只在思考通道输出 | 注入提示要求正文重述（最多 2 次） |
+| 流中断 | 已到达的内容固化为锚点，注入续跑提示后重开流（连续 3 次失败才报错） |
+| stop hook 阻止退出 | 注入修正消息 |
 
 ### 1.3 退出条件
 
@@ -50,19 +50,16 @@ user:      [tool_result id="abc" content="工具执行被用户中断" is_error=
 
 ---
 
-## 2. 消息预处理流水线
+## 2. 对话记录与模型视图
 
-位置：`internal/loop/preprocess.go`
+位置：`internal/loop/loop.go`、`compaction/boundary.go`
 
-6 层流水线，按顺序执行：
+循环同时维护两份消息：
 
-```
-消息 → ① Compact Boundary 过滤 → ② Tool Result Budget 截断
-→ ③ Snip Compact → ④ Micro Compact → ⑤ Context Collapse
-→ ⑥ Proactive Auto Compact → 处理后的消息
-```
+- **对话记录**（transcript）：只追加。进入对话的每条消息都分配 UID，并经 `Config.OnMessage` 同步交给持久化。自动摘要（L4）不改写它，而是追加一条**摘要记录**：`IsCompactSummary`，`CompactBoundary` 指向摘要之后保留的第一条消息，同时是元消息（`IsMeta`），展示层回放时过滤。
+- **模型视图**（view）：每次请求发给模型的消息。每次迭代开始时经压缩层（第 3 节）处理；L0–L3 是确定性的写时复制变换，只改视图。
 
-每层独立判断是否需要执行，并返回释放的 token 数。
+运行开始时，视图由 `compaction.Project(InitialMessages)` 得到：最后一条摘要记录，加上它边界之后的全部消息。所以重新加载会话、同一事件流的排队续跑、宿主用 `RunWithHistory` 传回历史时，都直接还原视图，不会再请求模型摘要一遍。`Loop.FinalMessages()`、`EventDone.Messages`、`WithTranscriptSink` 给出的都是对话记录。
 
 ---
 
@@ -106,26 +103,17 @@ compaction.NewManager(compaction.Config{
 
 连续 autocompact 失败 3 次后停止尝试（`MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3`）。
 
-### 3.4 Compact Boundary
+### 3.4 摘要记录与投影
 
-位置：`compaction/boundary.go`
+见第 2 节。L4 摘要成功后，摘要消息带上 `CompactBoundary`；循环把它作为摘要记录追加进对话记录。`compaction.Project` 从对话记录还原视图。边界在记录中找不到时（记录被截断或改写过），放弃投影，交给压缩层按需重新摘要。
 
-压缩后标记边界消息 (`IsCompactBoundary = true`)，后续只取边界之后的消息，
-保持 prompt cache 有效性。
+### 3.5 图片结果
 
-### 3.5 可压缩工具白名单
+含内联图片（`[IMAGE <mime> <base64>]`）的工具结果绝不做头尾截断，否则会产出损坏的 base64，请求必然 400。最近 40 条消息内的图片完整保留，更早的整体回收为占位符；占位符带上图片标记之后正文里出现的原图路径（Windows 或 POSIX 绝对路径）。
 
-位置：`compaction/whitelist.go`
+### 3.6 压缩后重注入
 
-只有白名单工具（Read, Bash, Grep, Glob, WebSearch, WebFetch, Agent, TaskOutput）
-的结果才会被 micro compact 清理。
-
-### 3.6 压缩后文件恢复
-
-位置：`compaction/restore.go`
-
-压缩后自动恢复最近读取的 5 个文件（`POST_COMPACT_MAX_FILES_TO_RESTORE = 5`），
-生成合成的 tool_use + tool_result 消息对。
+`WithPostCompactReminder` 注册的提醒源在每次实际压缩后被调用，返回的文本作为 user 消息追加在摘要之后，重新注入被摘要吞掉的关键上下文。这些提醒只属于本次运行的视图，不进入对话记录。
 
 ---
 
@@ -145,34 +133,32 @@ API 流式返回:  ──text──tool_use_A──text──tool_use_B──don
 
 分区策略：连续并发安全工具 → 并行批次，非并发工具 → 串行。
 
-### 4.2 TrackedExecutor
+工具 panic 被执行器恢复为错误结果；ctx 取消后不再启动排队中的工具；等待在跑的工具有上限（`CancelGrace`）。
 
-位置：`executor/tracked.go`
+### 4.2 并发分级
 
-5 种工具状态：
+`ToolDef.Effect`（`executor.Class`）决定编排策略：
 
-```
-Queued → Executing → Completed
-                   → Aborted (中断)
-                   → Yielded (已返回给调用者)
-```
+| 分级 | 含义 | 并行规则 |
+|---|---|---|
+| `ClassReadOnly` | 无副作用 | 任何时候都可并行，包括独占工具运行期间 |
+| `ClassParallel` | 有副作用但并发调用互不冲突 | 可与并行、只读工具并行，不与独占工具重叠 |
+| `ClassExclusive` | 有全局副作用（写文件、git、Bash） | 独占执行 |
 
-功能：
-- **AbortSiblings**: Bash 错误时取消兄弟工具
-- **SyntheticResults**: 中断时生成合成 tool_result
+未设置 `Effect` 时按 `Concurrent` 推导：true 为 Parallel，false 为 Exclusive。
 
-### 4.3 动态并发判定
+### 4.3 执行前检查链
 
-`ToolEntry.IsConcurrencySafe(ctx, input)` 优先于静态 `Concurrent` 字段。
-例如 Bash 工具：`git` 命令可并发，文件写入不行。
+每次工具调用执行前依次：
+1. 入参按工具的 JSON Schema 校验（`WithToolInputValidation(false)` 关闭）；
+2. plan 模式过滤；
+3. 中间件 `BeforeTool`；
+4. hooks `PreToolUse`；
+5. 权限门（见第 5 节）。
 
-### 4.4 输入验证 + 权限检查
+任一步拒绝时，工具不执行，拒绝原因作为工具结果交给模型。
 
-执行前的双层验证：
-1. `ValidateInput(ctx, input)` → 输入格式和安全性检查
-2. `CheckPermissions(ctx, input)` → 自定义权限逻辑（allow/deny/ask）
-
-### 4.5 结果截断
+### 4.4 结果截断
 
 `MaxResultSizeChars` 限制每个工具结果的最大字符数，超出自动截断。
 
@@ -191,29 +177,36 @@ PermissionBehavior:
   Ask   — 需要用户确认
 ```
 
-### 5.2 五种权限模式
+### 5.2 六种权限模式
 
 | 模式 | 行为 |
 |------|------|
 | Default | ReadOnly→allow, Normal→ask, Dangerous→ask |
-| BypassPermissions | 所有工具→allow |
-| AcceptEdits | ReadOnly+Normal→allow, Dangerous→ask |
+| AcceptEdits | ReadOnly + 编辑类工具（`FileEdit: true`）→allow（高风险的编辑除外），其余→ask |
+| Auto | ReadOnly / 白名单→allow，其余→YOLO 分类器判定（不可用时 ask） |
+| BypassPermissions | 普通操作→allow，高风险操作（`permission.HighRisk`、命中 ask 规则）→YOLO 分类器判定（不可用时 ask） |
 | Plan | 只允许 ReadOnly 工具 |
 | DontAsk | 不可确认→deny |
 
 ### 5.3 规则引擎
 
-位置：`permission/rules.go`, `permission/matcher.go`
+位置：`permission/rules.go`, `permission/subject.go`
 
 ```
 规则评估优先级: deny 规则 > ask 规则 > allow 规则
 ```
 
-ToolPattern 语法：
+模式语法：
 - `"Bash"` — 匹配工具名
-- `"Bash(git *)"` — 匹配工具名 + 输入前缀
+- `"Bash(git *)"` — 匹配工具名 + 从入参中提取的值（命令、路径、URL 等）
 - `"*"` — 匹配所有工具
-- `"Read*"` — 前缀匹配
+- `"Read*"` — 工具名前缀匹配
+
+shell 命令按控制操作符拆成子命令逐个匹配：deny / ask 任一子命令命中即生效，allow 要求每个子命令都被覆盖。
+
+### 5.4 "始终允许"授权
+
+用户勾选"始终允许"后，授权记在权限门的 `permission.Grants` 上：普通工具按工具名记，shell 命令按"工具名 + 命令的前一到两个词"记。同一会话的各次运行共享同一份授权（见第 9 节），不跨会话。
 
 ---
 
@@ -269,3 +262,53 @@ ToolPattern 语法：
 │   Event Channel │ → CLI 显示 / HTTP SSE / SDK 消费
 └─────────────────┘
 ```
+
+---
+
+## 8. 子运行与作用域
+
+位置：`internal/loop/scope.go`
+
+pipeline 节点与 supervisor、团队队长与成员、子 agent（`agent.Runner`）都使用同一个循环实现。
+
+- 每个循环把自己的**作用域**（`loop.Scope`）随 ctx 交给每一次工具执行。作用域包括：
+  - 检查链：权限门、plan 模式、hooks、中间件；
+  - 入参校验开关；
+  - 观测出口：observer、日志、debug、会话 ID；
+  - 主 provider 与后备。
+- 在工具里派生的子循环经 `loop.NewChild(ctx, cfg)` 创建：
+  - 检查链一律取自作用域，子运行只能和父运行一样严格；
+  - 观测出口和会话 ID 在未设置时沿用；
+  - 未指定 provider 时沿用父运行的 provider，与父运行相同时一并沿用后备；
+  - 子循环标记为 `Nested`，不发会话开始/结束事件。
+- 例外是两类 pipeline：宿主在任何运行之外直接启动的，以及设置了 `PipelineConfig.TrustedTools` 的，都不继承检查链（宿主信任）。由模型编排的 `create_pipeline` / `run_team` 不在任何带权限门的运行之内时，按 App 配置新建一套作用域。
+- 子运行嵌套深度上限 `MaxSubRunDepth = 3`。
+
+```
+App.run ── loop.New(主循环) ──┬── 工具 ctx 携带 Scope
+                              │
+            create_pipeline ──┼── pipeline 节点：loop.New + Scope.ApplyTo
+            run_team ─────────┼── 队长 / 成员：loop.NewChild
+            子 agent 工具 ─────┴── agent.Runner：loop.NewChild
+```
+
+---
+
+## 9. 会话运行时
+
+位置：`sessionruntime.go`
+
+每个会话有一个跨运行常驻的运行时：
+- 工具的键值存储（`Context.Store` / `Load`）；
+- 压缩管理器（自动摘要的熔断状态）；
+- "始终允许"授权；
+- 会话级的运行时权限模式。
+
+真实会话的运行时登记在 App 上，直到 `App.CloseSession`。没有会话身份的运行（`Run`、`RunWithHistory`）每次使用一个新的运行时，彼此隔离。
+
+App 登记所有进行中运行的权限门：
+- `SetPermissionMode` 作用于所有在跑运行（模式来自会话级设置的除外）；
+- `SetSessionPermissionMode` 只作用于该会话；
+- Guard 的增删作用于所有在跑运行。
+
+权限模式优先级：会话级运行时设置 > `WithSessionPermissionMode` 的解析结果 > 全局运行时覆写 > `WithPermissionMode`。

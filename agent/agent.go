@@ -7,11 +7,16 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
+	"github.com/Dream355873200/GoAgent/compaction"
+	"github.com/Dream355873200/GoAgent/internal/loop"
 	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/permission"
 	"github.com/Dream355873200/GoAgent/provider"
 )
 
@@ -49,6 +54,13 @@ type ToolDef struct {
 	Description string
 	InputSchema any
 	Execute     func(ctx context.Context, input json.RawMessage) (string, error)
+
+	// Permission 是工具的权限级别（零值为只读）。子 agent 在某次 agent 运行
+	// 之中被调用时，工具调用按这个级别过该运行的检查链。
+	Permission permission.Level
+	// Serial 为 true 时，该工具的调用不与同一轮的其他工具调用并行执行
+	// （默认并行）。
+	Serial bool
 }
 
 // RunResult 是子 agent 运行的结果。
@@ -59,7 +71,7 @@ type RunResult struct {
 	// Messages 是子 agent 的完整消息历史。
 	Messages []message.Message
 
-	// TurnCount 是子 agent 运行的轮次数。
+	// TurnCount 是子 agent 运行的轮次数（模型响应次数）。
 	TurnCount int
 
 	// Usage 是子 agent 消耗的 token 统计。
@@ -129,13 +141,36 @@ func (r *Runner) emit(ev AgentEvent) {
 	r.onEvent(ev)
 }
 
+func (r *Runner) report(p Progress) {
+	if r.onProgress == nil {
+		return
+	}
+	r.progMu.Lock()
+	defer r.progMu.Unlock()
+	r.onProgress(p)
+}
+
 // Run 执行子 agent 并返回结果。
-// 这是一个隔离的 agent 循环，不共享主循环的消息历史。模型响应走流式
-// （长生成不受响应头超时限制），同一轮的多个工具调用并行执行。
+//
+// 子 agent 与主循环使用同一个循环实现：独立的消息历史与系统提示，模型响应
+// 走流式，同一轮的工具调用按各自的并发声明并行执行（并发有上限），工具
+// panic 被恢复为错误结果，上下文接近窗口上限时自动压缩，输出被 max_tokens
+// 截断时自动续写。达到最大轮次不算失败，返回已有的结果。
+//
+// 在某次 agent 运行之中调用时（ctx 来自该运行的工具执行），子 agent 的工具
+// 调用继承该运行的检查链——plan 模式、中间件、hooks 与权限门，按
+// ToolDef.Permission 检查——以及它的观测出口；不在任何运行之内时不做检查。
+// Definition.Provider 与 NewRunner 的默认 provider 都为空时，沿用所在运行的
+// provider。
 func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunResult, error) {
 	prov := def.Provider
 	if prov == nil {
 		prov = r.defaultProvider
+	}
+	if prov == nil {
+		if s := loop.ScopeFrom(ctx); s != nil {
+			prov = s.Provider
+		}
 	}
 	if prov == nil {
 		return nil, fmt.Errorf("子 agent %q 没有可用的 provider", def.Name)
@@ -146,147 +181,148 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 		maxTurns = 10
 	}
 
-	// 构建工具定义。
-	toolDefs := make([]provider.ToolDefinition, len(def.Tools))
-	toolIndex := make(map[string]*ToolDef, len(def.Tools))
-	for i, t := range def.Tools {
-		toolDefs[i] = provider.ToolDefinition{
+	tools := make([]loop.ToolEntry, 0, len(def.Tools))
+	for _, t := range def.Tools {
+		tools = append(tools, loop.ToolEntry{
 			Name:        t.Name,
 			Description: t.Description,
 			InputSchema: t.InputSchema,
-		}
-		td := def.Tools[i]
-		toolIndex[t.Name] = &td
-	}
-
-	// 初始化消息。
-	messages := []message.Message{message.NewUserMessage(input)}
-	var totalUsage provider.Usage
-	turnCount := 0
-
-	toolUses := 0
-	report := func(activity string) {
-		if r.onProgress == nil {
-			return
-		}
-		r.progMu.Lock()
-		defer r.progMu.Unlock()
-		r.onProgress(Progress{
-			Turn:     turnCount + 1,
-			ToolUses: toolUses,
-			Tokens:   totalUsage.InputTokens + totalUsage.OutputTokens,
-			Activity: activity,
+			Permission:  t.Permission,
+			Concurrent:  !t.Serial,
+			ExecuteFn:   t.Execute,
 		})
 	}
 
-	// 子 agent 循环。
-	for turnCount < maxTurns {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
+	// 微压缩裁剪过期的工具结果，自动摘要在 0.8 水位触发——长任务的子 agent
+	// 不会因上下文撑满而失败。
+	comp := compaction.NewManager(compaction.Config{
+		AutoCompactThreshold: 0.8,
+		Layers:               []compaction.Layer{compaction.LayerMicro, compaction.LayerAuto},
+	})
+	comp.SetProvider(prov)
 
-		// 调用 API。
-		resp, err := streamTurn(ctx, prov, &provider.Request{
-			Messages:     messages,
-			SystemPrompt: def.SystemPrompt,
-			Tools:        toolDefs,
-			Model:        def.Model,
-			MaxTokens:    def.MaxTokens,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("子 agent %q API 调用失败: %w", def.Name, err)
-		}
+	l := loop.NewChild(ctx, loop.Config{
+		Provider:     prov,
+		Tools:        tools,
+		SystemPrompt: def.SystemPrompt,
+		MaxTurns:     maxTurns,
+		Model:        def.Model,
+		MaxTokens:    def.MaxTokens,
+		Compaction:   comp,
+	})
 
-		// 累计 token 使用。
-		r.progMu.Lock()
-		totalUsage.InputTokens += resp.Usage.InputTokens
-		totalUsage.OutputTokens += resp.Usage.OutputTokens
-		r.progMu.Unlock()
-
-		// 添加助手消息。
-		messages = append(messages, resp.Message)
-
-		// 提取工具调用。
-		toolCalls := message.ExtractToolCalls(resp.Message)
-		if len(toolCalls) == 0 {
-			// 无工具调用，子 agent 完成。
-			r.emit(AgentEvent{Type: "text", Text: message.ExtractText(resp.Message)})
-			return &RunResult{
-				FinalText: message.ExtractText(resp.Message),
-				Messages:  messages,
-				TurnCount: turnCount + 1,
-				Usage:     totalUsage,
-			}, nil
+	var (
+		usage          provider.Usage
+		turn           = 1
+		toolUses       int
+		anyOutput      bool
+		lastErr        error
+		text, thinking strings.Builder
+		turnText       strings.Builder // 本轮助手文本，首个工具启动时作为活动描述上报
+		turnReported   bool
+	)
+	progress := func(activity string) {
+		r.report(Progress{Turn: turn, ToolUses: toolUses, Tokens: usage.InputTokens + usage.OutputTokens, Activity: activity})
+	}
+	flush := func() {
+		if thinking.Len() > 0 {
+			r.emit(AgentEvent{Type: "thinking", Text: thinking.String()})
+			thinking.Reset()
 		}
-		if text := strings.TrimSpace(message.ExtractText(resp.Message)); text != "" {
-			report(firstLine(text))
+		if s := text.String(); strings.TrimSpace(s) != "" {
+			r.emit(AgentEvent{Type: "text", Text: s})
 		}
-		// 轨迹：本条的思考与文本（assistant 消息随流式到达后落定）
-		for _, c := range resp.Message.Content {
-			switch c.Type {
-			case "thinking":
-				if c.Thinking != "" {
-					r.emit(AgentEvent{Type: "thinking", Text: c.Thinking})
-				}
-			case "text":
-				if strings.TrimSpace(c.Text) != "" {
-					r.emit(AgentEvent{Type: "text", Text: c.Text})
+		text.Reset()
+	}
+
+	for ev := range l.Run(ctx, input) {
+		switch ev.Type {
+		case loop.EvtThinking:
+			anyOutput = true
+			thinking.WriteString(ev.Thinking)
+		case loop.EvtTextDelta:
+			anyOutput = true
+			text.WriteString(ev.Text)
+			turnText.WriteString(ev.Text)
+		case loop.EvtToolStart:
+			anyOutput = true
+			if !turnReported {
+				turnReported = true
+				if t := strings.TrimSpace(turnText.String()); t != "" {
+					progress(firstLine(t))
 				}
 			}
-		}
-		for _, tc := range toolCalls {
-			r.emit(AgentEvent{Type: "tool_start", Tool: tc.Name, Input: previewRunese(string(tc.Input), 800)})
-		}
-
-		// 并行执行本轮工具调用，结果按调用顺序回填。
-		results := make([]message.Message, len(toolCalls))
-		var wg sync.WaitGroup
-		for i, tc := range toolCalls {
-			tool := toolIndex[tc.Name]
-			if tool == nil {
-				results[i] = message.NewToolResultMessage(tc.ID, fmt.Sprintf("未知工具: %s", tc.Name), true)
-				continue
-			}
-			r.progMu.Lock()
+			flush()
 			toolUses++
-			r.progMu.Unlock()
-			report(ToolActivity(tc.Name, tc.Input))
-			wg.Add(1)
-			go func(i int, tc message.ToolCall) {
-				defer wg.Done()
-				result, toolErr := tool.Execute(ctx, tc.Input)
-				isError := toolErr != nil
-				if isError {
-					result = "错误: " + toolErr.Error()
-				}
-				r.emit(AgentEvent{Type: "tool_done", Tool: tc.Name, Result: previewRunese(result, 2000)})
-				results[i] = message.NewToolResultMessage(tc.ID, result, isError)
-			}(i, tc)
+			r.emit(AgentEvent{Type: "tool_start", Tool: ev.ToolName, Input: preview(string(ev.ToolInput), 800)})
+			progress(ToolActivity(ev.ToolName, ev.ToolInput))
+		case loop.EvtToolDone:
+			r.emit(AgentEvent{Type: "tool_done", Tool: ev.ToolName, Result: preview(ev.ToolResult, 2000)})
+		case loop.EvtUsageUpdate:
+			if ev.Usage != nil {
+				usage.InputTokens += ev.Usage.InputTokens
+				usage.OutputTokens += ev.Usage.OutputTokens
+				usage.CacheReadTokens += ev.Usage.CacheReadTokens
+				usage.CacheCreateTokens += ev.Usage.CacheCreateTokens
+			}
+		case loop.EvtTurnComplete:
+			flush()
+			turn++
+			turnText.Reset()
+			turnReported = false
+		case loop.EvtError:
+			flush()
+			lastErr = ev.Error
+			r.emit(AgentEvent{Type: "error", Text: ev.Error.Error()})
+		case loop.EvtSubAgentProgress:
+			// 子 agent 工具里再派生的子 agent：进度转发到所在运行的事件流。
+			loop.EmitFromTool(ctx, ev)
+		case loop.EvtProgress:
+			// 工具经 Context.Progress 上报的状态行同样转发；循环自身的状态
+			// 行（限流重试等）只属于子 agent，不转发。
+			if strings.HasPrefix(ev.StatusKey, "tool-progress") {
+				loop.EmitFromTool(ctx, ev)
+			}
 		}
-		wg.Wait()
-		messages = append(messages, results...)
+	}
+	flush()
 
-		turnCount++
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	msgs := l.FinalMessages()
+	if lastErr != nil && !errors.Is(lastErr, loop.ErrMaxTurns) {
+		return nil, fmt.Errorf("子 agent %q 运行失败: %w", def.Name, lastErr)
+	}
+	if lastErr == nil && !anyOutput {
+		return nil, fmt.Errorf("子 agent %q 的模型没有返回任何内容", def.Name)
 	}
 
-	// 达到最大轮次。
 	finalText := ""
-	if last := messages[len(messages)-1]; last.Role == message.RoleAssistant {
-		finalText = message.ExtractText(last)
+	turns := 0
+	for _, m := range msgs {
+		if m.Role == message.RoleAssistant {
+			turns++
+		}
 	}
-
+	if n := len(msgs); n > 0 && msgs[n-1].Role == message.RoleAssistant {
+		finalText = message.ExtractText(msgs[n-1])
+	}
 	return &RunResult{
 		FinalText: finalText,
-		Messages:  messages,
-		TurnCount: turnCount,
-		Usage:     totalUsage,
+		Messages:  msgs,
+		TurnCount: turns,
+		Usage:     usage,
 	}, nil
 }
 
-// previewRunese 截断长文本（轨迹与事件里的入参/结果预览）。
-func previewRunese(s string, n int) string {
-	if len(s) > n {
-		return s[:n] + "…"
+// preview 截断长文本（轨迹与事件里的入参/结果预览），不切坏多字节字符。
+func preview(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return s
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }

@@ -173,7 +173,11 @@ func (ms *MemoryStore) Get(ctx context.Context, sessionID string) (*Session, err
 	if !ok {
 		return nil, nil
 	}
-	return sess, nil
+	// 返回副本：调用方（agent 运行时）会改写返回会话的消息视图，不能
+	// 影响存储里的对话记录，也不能与 List 等方法并发读写同一对象。
+	cp := *sess
+	cp.Messages = append([]message.Message(nil), sess.Messages...)
+	return &cp, nil
 }
 
 func (ms *MemoryStore) List(ctx context.Context) ([]*SessionSummary, error) {

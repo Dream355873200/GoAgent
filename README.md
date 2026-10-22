@@ -87,6 +87,7 @@ package main
 
 import (
     "github.com/Dream355873200/GoAgent"
+    "github.com/Dream355873200/GoAgent/cli"
 )
 
 func main() {
@@ -100,7 +101,7 @@ func main() {
         goagent.WithBuiltinTools(),
     )
 
-    app.RunCLI()
+    cli.Run(app) // 终端界面在 cli 包，只有导入它的程序才链接终端界面库
 }
 ```
 
@@ -113,6 +114,7 @@ import (
 	"context"
 
 	"github.com/Dream355873200/GoAgent"
+	"github.com/Dream355873200/GoAgent/cli"
 	"github.com/Dream355873200/GoAgent/hooks"
 )
 
@@ -135,7 +137,8 @@ func main() {
 		},
 		goagent.WithSystemPrompt("你是一个 DevOps 助手，擅长自动化部署和运维任务"),
 		goagent.WithBuiltinTools(),
-		// 交互模式：ReadOnly 和 Normal 自动通过
+		// 自动接受编辑：只读工具与文件编辑类工具（Write/Edit 等）自动通过，
+		// Bash 等其他工具仍需确认
 		goagent.WithPermissionMode(goagent.PermissionAcceptEdits),
 		// 日志 Hook
 		goagent.WithHooks(hooks.Log()),
@@ -145,7 +148,7 @@ func main() {
 	// 部署是写操作，指定 Normal 权限（首次询问，之后可"始终允许"）
 	app.UseTools(goagent.InferTool("deploy", "部署服务到指定环境", deployService, goagent.Normal))
 
-	app.RunCLI()
+	cli.Run(app)
 }
 
 func deployService(ctx context.Context, in DeployInput) (DeployResult, error) {
@@ -161,10 +164,10 @@ func deployService(ctx context.Context, in DeployInput) (DeployResult, error) {
 ### 三种运行模式
 
 ```go
-// 模式 1：交互式 CLI REPL（TUI 界面）
-app.RunCLI()
+// 模式 1：交互式 CLI REPL（TUI 界面，需导入 github.com/Dream355873200/GoAgent/cli）
+cli.Run(app) // 导入 cli 包后 app.RunCLI() 同样可用
 
-// 模式 2：HTTP SSE API
+// 模式 2：HTTP SSE API（未配置 WithHTTPAuthToken 时只监听 127.0.0.1）
 app.RunHTTP(":8080")
 
 // 模式 3：嵌入式 SDK
@@ -243,10 +246,11 @@ goagent.WithAnthropic()
 | `WithMaxTurns(n)` | 最大循环次数 | `100` |
 | `WithMaxConcurrency(n)` | 最大并发工具数 | `10` |
 | `WithTokenBudget(n)` | Token 预算上限 | `0`（无限） |
-| `WithPermissionMode(mode)` | 权限模式（Default/Bypass/AcceptEdits/PlanOnly/DenyAll） | `Default`（ReadOnly 自动通过，其他询问） |
+| `WithPermissionMode(mode)` | 权限模式（Default/AcceptEdits/Auto/Bypass/PlanOnly/DenyAll）；Auto 由 YOLO 分类器判定每个非只读调用，Bypass 不询问但高风险操作仍经分类器 | `Default`（ReadOnly 自动通过，其他询问） |
 | `WithPermissionRules(rules)` | 自定义权限规则（Allow/Deny/Ask） | 无 |
 | `WithApprover(a)` | 自定义审批者 | CLI 交互式询问，SDK 自动拒绝 |
 | `WithMemoryDir(dir)` | 跨会话持久化内存目录 | 不启用 |
+| `WithStateDir(name)` | 项目目录下存放运行状态的目录名（会话存储、计划、后台任务输出、项目 skill、worktree 等；进程级） | `.yume` |
 | `WithProjectContext(path)` | 项目上下文文件（类似 CLAUDE.md） | 无 |
 | `WithSessionManager(mgr)` | 会话管理器，启用多轮持久化 | 不启用（单次会话） |
 | `WithAutoPersist(bool)` | 会话结束自动持久化 | `true` |
@@ -306,7 +310,7 @@ app := goagent.New(
 | 级别 | 说明 | 行为 |
 |------|------|------|
 | `ReadOnly` | 只读操作 | 自动通过，无需询问 |
-| `Normal` | 普通操作 | 首次询问，之后可"始终允许" |
+| `Normal` | 普通操作 | 首次询问，之后可"始终允许"（shell 命令按命令前缀记忆） |
 | `RequireApproval` | 需审批操作 | 每次都询问 |
 | `Dangerous` | 危险操作 | 醒目警告，每次询问，无"始终允许" |
 
@@ -445,14 +449,16 @@ _ = item.ID
 
 | 类别 | 端点 |
 |------|------|
-| 对话 | `POST /chat`（SSE；会话忙时自动转 guide 插话）· `POST /interrupt` · `POST /execute` |
-| 交互 | `POST /approve` · `POST /askuser` · `GET /pending-ask`（未决提问恢复）· `POST /plan/confirm` |
+| 对话 | `POST /chat`（SSE；会话忙时自动转 guide 插话）· `POST /interrupt`（需 `session_id`）· `POST /execute` |
+| 交互 | `POST /approve` · `GET /pending-approval`（未决审批恢复）· `POST /askuser` · `GET /pending-ask`（未决提问恢复）· `POST /plan/confirm` |
 | 排队 | `POST /queue` · `GET /queue` · `POST /queue/remove` |
-| 运行时调参 | `GET/POST /mode`（权限模式）· `GET/POST /thinking`（思考强度）· `GET/POST /model`（切模型） |
+| 运行时调参 | `GET/POST /mode`（权限模式；带 `session_id` 时只作用于该会话）· `GET/POST /thinking`（思考强度）· `GET/POST /model`（切模型） |
 | 资源 | `/tasks` · `/plan` · `/bgtasks` · `/sessions` · `/sessions/{id}/messages` · `/tools` · `/usage` · `/audit` |
 | 元信息 | `GET /health` · `GET /protocol`（协议自描述：版本 + 帧类型表 + 端点表） |
 
 宿主自有端点用 `WithHTTPRoutes` 挂到同一 mux。
+
+安全默认值：未配置 `WithHTTPAuthToken` 时只监听回环地址（对外服务需配置令牌，或在已受保护的网络中用 `WithHTTPInsecure()`）；跨站请求被拒绝，浏览器前端跨源访问用 `WithHTTPAllowedOrigins` 放行；不再自动批准工具调用，需显式配置 `WithApprover`。详见 [UPGRADE-v0.12.md](UPGRADE-v0.12.md)。
 
 ---
 ## 进阶指南
@@ -734,6 +740,8 @@ goagent/
 | v0.9 | 能力扩展：沙箱 Tier 0/1、动态 Pipeline L1、EventInterrupted、LLM observer 钩子、挂起/恢复、RAG 四件套、benchmark B0-B2、run_js、AgentTool、WithHTTPRoutes | ✅ 完成 |
 | v0.10 | 运行时交互：Steering 双车道 + 条目化队列、统一信封协议 + TS SDK、system-reminder 通道、压缩后重注入、三级副作用调度、流中断恢复、后台任务终态回注、Skill frontmatter、权限模式/思考强度/模型运行时切换、提问帧路由修复 + 未决提问查询 | ✅ 完成 |
 | v0.11 | 多模式：会话级工具过滤 / 提示词目录 / 项目上下文、会话级工具描述、会话感知 Skill 工具 | ✅ 完成 |
+| v0.12 | 稳定性与安全加固：新增 auto 权限模式、bypass 模式的高风险操作经 YOLO 分类器把关、子运行继承权限门、工具入参校验、Pipeline 调度与审核语义修正、HTTP 安全默认值、逐条同步落盘、压缩写时复制、用量口径统一、WebFetch SSRF 防护，以及循环 / 执行器 / Provider / 记忆等模块的修复。升级说明见 [UPGRADE-v0.12.md](UPGRADE-v0.12.md) | ✅ 完成 |
+| v0.13 | 架构收敛：子运行（pipeline / 团队 / 子 agent）统一使用主循环实现并结构性继承检查链与观测；对话记录与模型视图分开（自动摘要以摘要记录追加，重新加载不再重复摘要）；会话运行时（"始终允许"会话内跨运行有效、按会话切换权限模式、CloseSession）；终端界面移到 cli 包；清理死代码，`.yume` 改为 WithStateDir 配置。升级说明见 [UPGRADE-v0.13.md](UPGRADE-v0.13.md) | ✅ 完成 |
 
 详细架构说明见 [docs/architecture.md](docs/architecture.md) 和 [docs/mechanisms.md](docs/mechanisms.md)。
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/Dream355873200/GoAgent/message"
 )
@@ -64,20 +65,23 @@ func (b PermissionBehavior) String() string {
 }
 
 // PermissionMode 定义权限模式。
-// 对齐 Claude Code 的 5 种权限模式。
 type PermissionMode int
 
 const (
-	// ModeDefault 使用默认权限逻辑。
+	// ModeDefault 使用默认权限逻辑：只读工具放行，其余询问用户。
 	ModeDefault PermissionMode = iota
-	// ModeBypassPermissions 绕过所有权限检查（全部允许）。
+	// ModeBypassPermissions 不询问用户：普通操作直接放行，高风险操作
+	// （见 HighRisk，以及命中 ask 规则的调用）交给 YOLO 分类器判定。
 	ModeBypassPermissions
-	// ModeAcceptEdits 自动接受编辑操作。
+	// ModeAcceptEdits 自动接受编辑操作（高风险的编辑除外）。
 	ModeAcceptEdits
 	// ModePlan 规划模式，只允许只读操作。
 	ModePlan
 	// ModeDontAsk 不询问用户，对需要权限的操作直接拒绝。
 	ModeDontAsk
+	// ModeAuto 自动模式：每个非只读、非白名单的工具调用都交给 YOLO 分类器
+	// 判定（allow 规则命中的直接放行，ask 规则命中的仍询问用户）。
+	ModeAuto
 )
 
 // PermissionResult 是权限检查的完整结果。
@@ -96,17 +100,28 @@ type Approver interface {
 	Approve(toolName string, input string, permission Level) (allow bool, alwaysAllow bool)
 }
 
+// ContextApprover 是可选的扩展接口：实现它的审批者会收到本次工具调用的
+// ctx——其中带有会话 ID（用于把审批请求路由到正确的会话），ctx 取消时
+// 应尽快返回拒绝，使用户中断能打断审批等待。
+type ContextApprover interface {
+	ApproveContext(ctx context.Context, toolName string, input string, permission Level) (allow bool, alwaysAllow bool)
+}
+
+// classifyTimeout 是单次 YOLO 分类调用的超时。
+const classifyTimeout = 30 * time.Second
+
 // Gate 管理工具调用的权限决定。
 type Gate struct {
 	approver          Approver
 	mu                sync.RWMutex
-	alwaysAllow       map[string]bool // toolName -> 用户是否授权"始终允许"
+	grants            *Grants         // "始终允许"授权（可在多个权限门之间共享，见 SetGrants）
 	deniedCache       map[string]bool // toolName+input -> 用户是否最近拒绝
 	mode              PermissionMode
 	rules             *RuleSet
 	guards            []Guard           // 外部策略链（单调：可拒不可放，见 Guard 注释）
 	classifier        *YoloClassifier   // YOLO LLM 分类器（对齐 Claude Code）
 	currentTranscript []message.Message // 由 loop 每轮更新，供 YOLO 分类器使用
+	editTools         map[string]bool   // AcceptEdits 模式下自动放行的编辑类工具
 }
 
 // NewGate 使用给定的 Approver 创建一个新的权限 Gate。
@@ -114,9 +129,39 @@ type Gate struct {
 func NewGate(approver Approver) *Gate {
 	return &Gate{
 		approver:    approver,
-		alwaysAllow: make(map[string]bool),
+		grants:      NewGrants(),
 		deniedCache: make(map[string]bool),
 		mode:        ModeDefault,
+	}
+}
+
+// SetGrants 让权限门使用给定的"始终允许"授权集合（nil 表示换成一份新的）。
+// 同一份 Grants 交给多个权限门时，任一权限门上记下的授权对其他权限门同样
+// 生效。
+func (g *Gate) SetGrants(grants *Grants) {
+	if grants == nil {
+		grants = NewGrants()
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.grants = grants
+}
+
+// Grants 返回权限门当前使用的授权集合。
+func (g *Gate) Grants() *Grants {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.grants
+}
+
+// SetEditTools 设置编辑类工具（写文件、改文件）。AcceptEdits 模式只自动
+// 放行只读工具和这些工具；shell、代码执行等其他工具仍需确认。
+func (g *Gate) SetEditTools(names []string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.editTools = make(map[string]bool, len(names))
+	for _, n := range names {
+		g.editTools[n] = true
 	}
 }
 
@@ -171,9 +216,10 @@ func (g *Gate) RemoveGuard(name string) {
 	}
 }
 
-// SetClassifier 设置 YOLO LLM 分类器。
-// 对齐 Claude Code 的 YOLO classifier 集成。
-// 设置后，非 ReadOnly 工具在 allow 规则通过后会经过 YOLO 分类。
+// SetClassifier 设置 YOLO LLM 分类器。auto 模式下它判定每个非只读、非白名单
+// 的工具调用，bypass 模式下只判定高风险调用；判定为危险时拒绝。分类器未
+// 设置或调用失败时，这些调用改为询问用户（没有审批者则拒绝）。其他模式
+// 不调用分类器。
 func (g *Gate) SetClassifier(c *YoloClassifier) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -181,37 +227,54 @@ func (g *Gate) SetClassifier(c *YoloClassifier) {
 }
 
 // SetTranscript 更新当前对话记录，供 YOLO 分类器构建上下文。
-// 由 loop 每轮迭代时调用。
+// 由 loop 每轮迭代时调用。ctx 中带有 WithTranscript 设置的记录时优先使用后者。
 func (g *Gate) SetTranscript(msgs []message.Message) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.currentTranscript = msgs
 }
 
+type transcriptKey struct{}
+
+// WithTranscript 把本次工具调用所在对话的记录放进 ctx，供分类器构建上下文。
+// 同一个权限门被多个并发循环共用时（pipeline 的多个 worker、团队成员），
+// SetTranscript 设置的共享记录可能属于另一个循环；ctx 中的记录总是本次调用的。
+func WithTranscript(ctx context.Context, msgs []message.Message) context.Context {
+	return context.WithValue(ctx, transcriptKey{}, msgs)
+}
+
 // CheckResult 执行完整的权限检查流程并返回 PermissionResult。
-// 优先级：deny 规则 > ask 规则 > mode > allow 规则 > 默认。
+// 优先级：deny 规则 > Guard > ask 规则 > 模式 > allow 规则 > 默认级别。
 func (g *Gate) CheckResult(toolName string, input string, level Level) PermissionResult {
+	return g.checkResult(context.Background(), toolName, input, level)
+}
+
+func (g *Gate) checkResult(ctx context.Context, toolName string, input string, level Level) PermissionResult {
 	g.mu.RLock()
 	mode := g.mode
 	rules := g.rules
+	clf := g.classifier
+	transcript := g.currentTranscript
+	isEdit := g.editTools[toolName]
+	guards := append([]Guard(nil), g.guards...)
 	g.mu.RUnlock()
+	if t, ok := ctx.Value(transcriptKey{}).([]message.Message); ok {
+		transcript = t
+	}
 
-	// 第 1 步：检查 deny 规则（最高优先级）。
+	var ruleRes *PermissionResult
 	if rules != nil {
-		if result := rules.Evaluate(toolName, input); result != nil {
-			if result.Behavior == BehaviorDeny {
-				return *result
-			}
-			// 记录 allow/ask 规则结果，稍后可能用到。
-		}
+		ruleRes = rules.Evaluate(toolName, input)
+	}
+
+	// 第 1 步：deny 规则（最高优先级）。
+	if ruleRes != nil && ruleRes.Behavior == BehaviorDeny {
+		return *ruleRes
 	}
 
 	// 第 1.5 步：外部 Guard 链（单调：可拒不可放）。deny 规则之后、模式
 	// 判定之前——宿主策略可以拦下任何调用（包括 bypass 模式），但不能
 	// 强行放行（返回的 Allow/Ask 一律忽略）。
-	g.mu.RLock()
-	guards := append([]Guard(nil), g.guards...)
-	g.mu.RUnlock()
 	for _, gd := range guards {
 		if gd.Fn == nil {
 			continue
@@ -225,14 +288,59 @@ func (g *Gate) CheckResult(toolName string, input string, level Level) Permissio
 		}
 	}
 
-	// 第 2 步：检查权限模式。
+	// 第 2 步：显式 ask 规则。ask 规则对只读工具和 AcceptEdits、auto 模式
+	// 同样生效；bypass 模式不询问用户，命中 ask 规则的调用改由分类器判定。
+	askRule := ruleRes != nil && ruleRes.Behavior == BehaviorAsk
+	if askRule {
+		switch mode {
+		case ModeBypassPermissions:
+			// 交给下面的 bypass 分支。
+		case ModeDontAsk:
+			return PermissionResult{Behavior: BehaviorDeny, Reason: "不询问模式，拒绝需要确认的操作", Source: "mode"}
+		case ModePlan:
+			if level != LevelReadOnly {
+				return PermissionResult{Behavior: BehaviorDeny, Reason: "规划模式仅允许只读操作", Source: "mode"}
+			}
+			return *ruleRes
+		default:
+			return *ruleRes
+		}
+	}
+
+	// 第 3 步：检查权限模式。
 	switch mode {
 	case ModeBypassPermissions:
-		return PermissionResult{
-			Behavior: BehaviorAllow,
-			Reason:   "绕过权限模式",
-			Source:   "mode",
+		reason := ""
+		switch {
+		case askRule:
+			reason = "命中 ask 规则"
+		case level > LevelReadOnly:
+			reason = HighRisk(toolName, input, level)
 		}
+		if reason == "" {
+			return PermissionResult{
+				Behavior: BehaviorAllow,
+				Reason:   "绕过权限模式",
+				Source:   "mode",
+			}
+		}
+		// 高风险操作被显式 allow 规则覆盖时，用户已经明确授权，不再判定。
+		if !askRule && ruleRes != nil && ruleRes.Behavior == BehaviorAllow {
+			return *ruleRes
+		}
+		return judge(ctx, clf, transcript, toolName, input, "高风险操作（"+reason+"）")
+	case ModeAuto:
+		if level == LevelReadOnly || IsSafeYoloTool(toolName) {
+			return PermissionResult{
+				Behavior: BehaviorAllow,
+				Reason:   "只读或白名单工具",
+				Source:   "mode",
+			}
+		}
+		if ruleRes != nil && ruleRes.Behavior == BehaviorAllow {
+			return *ruleRes
+		}
+		return judge(ctx, clf, transcript, toolName, input, "auto 模式下的操作")
 	case ModePlan:
 		if level != LevelReadOnly {
 			return PermissionResult{
@@ -254,13 +362,17 @@ func (g *Gate) CheckResult(toolName string, input string, level Level) Permissio
 				Source:   "level",
 			}
 		}
+		if ruleRes != nil && ruleRes.Behavior == BehaviorAllow {
+			return *ruleRes
+		}
 		return PermissionResult{
 			Behavior: BehaviorDeny,
 			Reason:   "不询问模式，拒绝需要权限的操作",
 			Source:   "mode",
 		}
 	case ModeAcceptEdits:
-		if level == LevelReadOnly || level == LevelNormal {
+		// 高风险的编辑（写入系统目录、凭据、shell 启动文件等）不自动接受。
+		if level == LevelReadOnly || (isEdit && level <= LevelNormal && HighRisk(toolName, input, level) == "") {
 			return PermissionResult{
 				Behavior: BehaviorAllow,
 				Reason:   "自动接受编辑模式",
@@ -269,57 +381,12 @@ func (g *Gate) CheckResult(toolName string, input string, level Level) Permissio
 		}
 	}
 
-	// 第 3 步：检查 allow 规则。
-	if rules != nil {
-		if result := rules.Evaluate(toolName, input); result != nil && result.Behavior == BehaviorAllow {
-			return *result
-		}
+	// 第 4 步：allow 规则。
+	if ruleRes != nil && ruleRes.Behavior == BehaviorAllow {
+		return *ruleRes
 	}
 
-	// 第 3.5 步：YOLO LLM 分类器（对齐 Claude Code 的 classifyYoloAction 位置）。
-	// 在 allow 规则通过后、默认级别检查前，使用 LLM 子模型判断操作安全性。
-	// 仅在 bypass 模式生效：分类器的「安全自动放行」是绕过模式的智能决策；
-	// 在 default（手动审批）模式运行会替用户批准写操作，架空审批语义。
-	if g.classifier != nil && level > LevelReadOnly && g.mode == ModeBypassPermissions {
-		g.mu.RLock()
-		clf := g.classifier
-		transcript := g.currentTranscript
-		g.mu.RUnlock()
-
-		if IsSafeYoloTool(toolName) {
-			return PermissionResult{
-				Behavior: BehaviorAllow,
-				Reason:   "安全工具白名单",
-				Source:   "yolo_whitelist",
-			}
-		}
-
-		result := clf.Classify(context.Background(), transcript, toolName, input)
-
-		if result.Unavailable {
-			// API 不可用，fail-open → 退回到正常权限逻辑（step 4）。
-		} else if result.TranscriptTooLong {
-			// 上下文过长，退回到正常权限逻辑（step 4）。
-		} else if result.ShouldBlock {
-			reason := "YOLO 分类器阻止"
-			if result.Reason != "" {
-				reason += ": " + result.Reason
-			}
-			return PermissionResult{
-				Behavior: BehaviorDeny,
-				Reason:   reason,
-				Source:   "yolo_classifier",
-			}
-		} else {
-			return PermissionResult{
-				Behavior: BehaviorAllow,
-				Reason:   "YOLO 分类器允许",
-				Source:   "yolo_classifier",
-			}
-		}
-	}
-
-	// 第 4 步：回退到默认级别检查。
+	// 第 5 步：回退到默认级别检查。
 	switch level {
 	case LevelReadOnly:
 		return PermissionResult{
@@ -336,11 +403,49 @@ func (g *Gate) CheckResult(toolName string, input string, level Level) Permissio
 	}
 }
 
+// judge 把调用交给分类器判定；分类器未设置或不可用时退回询问用户。
+func judge(ctx context.Context, clf *YoloClassifier, transcript []message.Message, toolName, input, what string) PermissionResult {
+	if clf != nil {
+		if r, decided := classify(ctx, clf, transcript, toolName, input); decided {
+			return r
+		}
+	}
+	return PermissionResult{
+		Behavior: BehaviorAsk,
+		Reason:   what + "需要确认（分类器不可用）",
+		Source:   "classifier_unavailable",
+	}
+}
+
+// classify 调用 YOLO 分类器。decided 为 false 表示分类器不可用（API 失败、
+// 上下文过长），由调用方决定退路。
+func classify(ctx context.Context, clf *YoloClassifier, transcript []message.Message, toolName, input string) (PermissionResult, bool) {
+	cctx, cancel := context.WithTimeout(ctx, classifyTimeout)
+	defer cancel()
+	result := clf.Classify(cctx, transcript, toolName, input)
+	if result.Unavailable || result.TranscriptTooLong {
+		return PermissionResult{}, false
+	}
+	if result.ShouldBlock {
+		reason := "YOLO 分类器阻止"
+		if result.Reason != "" {
+			reason += ": " + result.Reason
+		}
+		return PermissionResult{Behavior: BehaviorDeny, Reason: reason, Source: "yolo_classifier"}, true
+	}
+	return PermissionResult{Behavior: BehaviorAllow, Reason: "YOLO 分类器允许", Source: "yolo_classifier"}, true
+}
+
 // Check 决定是否允许工具调用。
 // 返回 (allow bool, reason string)。
-// 保持向后兼容。
 func (g *Gate) Check(toolName string, input string, level Level) (bool, string) {
-	result := g.CheckResult(toolName, input, level)
+	return g.CheckContext(context.Background(), toolName, input, level)
+}
+
+// CheckContext 同 Check，但审批与分类都在 ctx 下进行：ctx 携带的会话 ID
+// 交给实现了 ContextApprover 的审批者路由，ctx 取消时立即拒绝。
+func (g *Gate) CheckContext(ctx context.Context, toolName string, input string, level Level) (bool, string) {
+	result := g.checkResult(ctx, toolName, input, level)
 
 	switch result.Behavior {
 	case BehaviorAllow:
@@ -348,25 +453,22 @@ func (g *Gate) Check(toolName string, input string, level Level) (bool, string) 
 	case BehaviorDeny:
 		return false, result.Reason
 	case BehaviorAsk:
-		// 检查"始终允许"缓存。
-		g.mu.RLock()
-		if g.alwaysAllow[toolName] && level == LevelNormal {
-			g.mu.RUnlock()
+		if level == LevelNormal && g.Grants().covers(toolName, input) {
 			return true, "始终允许"
 		}
-		g.mu.RUnlock()
-
-		// 询问用户。
-		return g.ask(toolName, input, level)
+		return g.ask(ctx, toolName, input, level)
 	default:
 		return false, "未知权限行为"
 	}
 }
 
 // ask 通过 Approver 提示用户。
-func (g *Gate) ask(toolName string, input string, level Level) (bool, string) {
+func (g *Gate) ask(ctx context.Context, toolName string, input string, level Level) (bool, string) {
 	if g.approver == nil {
 		return false, "未配置审批者，默认拒绝"
+	}
+	if ctx.Err() != nil {
+		return false, "已取消"
 	}
 
 	// 检查拒绝缓存，防止提示疲劳。
@@ -378,15 +480,23 @@ func (g *Gate) ask(toolName string, input string, level Level) (bool, string) {
 	}
 	g.mu.RUnlock()
 
-	allow, alwaysAllow := g.approver.Approve(toolName, input, level)
+	var allow, alwaysAllow bool
+	if ca, ok := g.approver.(ContextApprover); ok {
+		allow, alwaysAllow = ca.ApproveContext(ctx, toolName, input, level)
+	} else {
+		allow, alwaysAllow = g.approver.Approve(toolName, input, level)
+	}
 
 	if allow {
 		if alwaysAllow && level == LevelNormal {
-			g.mu.Lock()
-			g.alwaysAllow[toolName] = true
-			g.mu.Unlock()
+			if key, ok := alwaysAllowKey(toolName, input); ok {
+				g.Grants().add(key)
+			}
 		}
 		return true, "用户批准"
+	}
+	if ctx.Err() != nil {
+		return false, "已取消"
 	}
 
 	// 记录拒绝。
@@ -397,10 +507,18 @@ func (g *Gate) ask(toolName string, input string, level Level) (bool, string) {
 	return false, "用户拒绝"
 }
 
-// Reset 清除所有缓存的权限（例如新会话开始时）。
+// Reset 清除所有缓存的权限（例如新会话开始时）：撤销"始终允许"授权（与其他
+// 权限门共享时一并撤销），清空拒绝缓存。
 func (g *Gate) Reset() {
+	g.Grants().Clear()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.alwaysAllow = make(map[string]bool)
 	g.deniedCache = make(map[string]bool)
+}
+
+// Mode 返回当前权限模式。
+func (g *Gate) Mode() PermissionMode {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.mode
 }

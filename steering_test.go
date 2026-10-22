@@ -21,11 +21,10 @@ import (
 // steerTestProvider 按脚本返回预设响应的假 provider。
 // 脚本元素：带 [tool:名字] 前缀 = 发起一次工具调用；否则为纯文本回复。
 type steerTestProvider struct {
-	mu      sync.Mutex
-	script  []string
-	calls   int
-	reqs    []provider.Request
-	toolNow func(name string) string // 工具执行体（nil = 返回固定文本）
+	mu     sync.Mutex
+	script []string
+	calls  int
+	reqs   []provider.Request
 }
 
 func (p *steerTestProvider) Capabilities() provider.Capabilities {
@@ -62,13 +61,6 @@ func (p *steerTestProvider) Stream(ctx context.Context, req *provider.Request) (
 		out <- provider.StreamEvent{Type: provider.EventMessageComplete, StopReason: provider.StopEndTurn}
 	}()
 	return out, nil
-}
-
-// calls 模型请求次数快照（并发安全）。
-func (p *steerTestProvider) calls2() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.calls
 }
 
 func newSteerTestApp(t *testing.T, script []string) (*App, *SteeringHub, *steerTestProvider) {

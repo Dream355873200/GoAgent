@@ -130,9 +130,8 @@ func (f MiddlewareOptionFunc) apply(cfg *middlewareConfig) {
 //	bashGroup := app.Group("Bash")
 //	bashGroup.Use(&BashTimeoutMiddleware{})
 type ToolGroup struct {
-	app         *App
-	toolNames   []string
-	middlewares []Middleware
+	app       *App
+	toolNames []string
 }
 
 // Group creates a new tool group with the given tool names.
@@ -147,13 +146,16 @@ func (a *App) Group(toolNames ...string) *ToolGroup {
 	}
 }
 
-// Use adds middleware to this group.
+// Use adds middleware to this group: each middleware is registered on the
+// app restricted to the group's tools (same as app.Use(mw, WithTools(...))).
 // Middleware are executed in the order they are added.
 //
 //	g := app.Group("Bash")
 //	g.Use(&TimeoutMiddleware{}, &RateLimitMiddleware{})
 func (g *ToolGroup) Use(middlewares ...Middleware) {
-	g.middlewares = append(g.middlewares, middlewares...)
+	for _, mw := range middlewares {
+		g.app.Use(mw, WithTools(g.toolNames...))
+	}
 }
 
 // MiddlewareWithFilter wraps a middleware with a tool filter.
@@ -170,39 +172,6 @@ func (m MiddlewareWithFilter) BeforeTool(ctx Context, toolName string, input jso
 // AfterTool delegates to the inner Middleware's AfterTool.
 func (m MiddlewareWithFilter) AfterTool(ctx Context, toolName string, result *Result, err error) {
 	m.Middleware.AfterTool(ctx, toolName, result, err)
-}
-
-// buildMiddlewareList builds the final middleware list for the app.
-// Global middlewares (via Use()) apply to all tools.
-// Group middlewares apply only to their designated tools.
-func (a *App) buildMiddlewareList() []MiddlewareWithFilter {
-	var result []MiddlewareWithFilter
-
-	// Add global middlewares (no filter = match all)
-	for _, mw := range a.middlewares {
-		result = append(result, MiddlewareWithFilter{
-			Middleware: mw,
-			Filter:     nil, // nil matches all
-		})
-	}
-
-	// Add grouped middlewares
-	for _, g := range a.groups {
-		f := &toolFilter{
-			tools: make(map[string]bool, len(g.toolNames)),
-		}
-		for _, name := range g.toolNames {
-			f.tools[name] = true
-		}
-		for _, mw := range g.middlewares {
-			result = append(result, MiddlewareWithFilter{
-				Middleware: mw,
-				Filter:     f,
-			})
-		}
-	}
-
-	return result
 }
 
 // matches returns true if the toolName matches this middleware's filter.

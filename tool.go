@@ -133,6 +133,11 @@ type ToolDef struct {
 	// run 看到的 Description。用于描述内嵌会话相关清单的工具（如各会话
 	// 可用技能不同）——工具注册表仍是进程级一份，描述随会话变化。
 	SessionDescription func(sessionID string) string
+
+	// FileEdit 标记这是文件编辑类工具（写入/修改文件）。AcceptEdits 权限
+	// 模式只自动放行只读工具和编辑类工具；shell、代码执行、网络等工具在
+	// 该模式下仍需确认。内置的 Write/Edit/NotebookEdit 已标记。
+	FileEdit bool
 }
 
 // inputSchemaOf 工具入参 JSON Schema：显式 Schema 优先，其次反射 Input，
@@ -148,18 +153,49 @@ func inputSchemaOf(def ToolDef) any {
 	}
 }
 
+// validateExecute 检查 Execute 是否为 func(Context, T) (string, error)，
+// 且 T 与 Input 的类型一致（指针与非指针视为一致；T 为 json.RawMessage、
+// map 或 interface 时表示工具自行解析入参，不做比对）。
+func validateExecute(def ToolDef) error {
+	if def.Execute == nil {
+		return fmt.Errorf("Execute 未设置")
+	}
+	t := reflect.TypeOf(def.Execute)
+	if t.Kind() != reflect.Func {
+		return fmt.Errorf("Execute 必须是函数，得到 %T", def.Execute)
+	}
+	if t.NumIn() != 2 || t.NumOut() != 2 ||
+		t.In(0) != reflect.TypeOf(Context{}) ||
+		t.Out(0).Kind() != reflect.String ||
+		t.Out(1) != reflect.TypeOf((*error)(nil)).Elem() {
+		return fmt.Errorf("Execute 必须具有签名 func(goagent.Context, T) (string, error)，得到 %s", t)
+	}
+	param := t.In(1)
+	if def.Input == nil || def.Schema != nil || param == reflect.TypeOf(json.RawMessage(nil)) ||
+		param.Kind() == reflect.Map || param.Kind() == reflect.Interface {
+		return nil
+	}
+	if deref(reflect.TypeOf(def.Input)) != deref(param) {
+		return fmt.Errorf("Input 类型 %T 与 Execute 参数类型 %s 不一致", def.Input, param)
+	}
+	return nil
+}
+
+func deref(t reflect.Type) reflect.Type {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t
+}
+
 // call 使用给定的 JSON 输入调用 Execute 函数。
-// 由框架内部调用。
+// 由框架内部调用。签名已在注册时校验（registerToolLocked）。
 func (d *ToolDef) call(ctx context.Context, rawInput json.RawMessage) (string, error) {
+	if d.Execute == nil {
+		return "", fmt.Errorf("goagent: 工具没有实现（Execute 未设置）")
+	}
 	execVal := reflect.ValueOf(d.Execute)
 	execType := execVal.Type()
-
-	if execType.Kind() != reflect.Func {
-		return "", fmt.Errorf("goagent: Execute 必须是函数，得到 %T", d.Execute)
-	}
-	if execType.NumIn() != 2 || execType.NumOut() != 2 {
-		return "", fmt.Errorf("goagent: Execute 必须具有签名 func(Context, T) (string, error)")
-	}
 
 	// 通过将 JSON 反序列化到输入类型来创建输入值。
 	inputType := execType.In(1)

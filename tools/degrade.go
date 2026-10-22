@@ -1,4 +1,6 @@
 // Package tools 实现工具自动降级机制。
+//
+// Deprecated: 本包未接入任何执行路径，将在后续版本删除。
 package tools
 
 import (
@@ -132,8 +134,7 @@ type ToolModifier interface {
 
 // DegradationAwareModifier 降级感知的工具修改器。
 type DegradationAwareModifier struct {
-	tracker       *DegradationTracker
-	originalTools []ToolDefinition
+	tracker *DegradationTracker
 }
 
 // NewDegradationAwareModifier 创建修改器。

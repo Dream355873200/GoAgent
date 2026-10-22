@@ -12,8 +12,11 @@ import (
 	"github.com/Dream355873200/GoAgent/agent"
 	"github.com/Dream355873200/GoAgent/bgtask"
 	"github.com/Dream355873200/GoAgent/internal/loop"
+	"github.com/Dream355873200/GoAgent/internal/safename"
 	"github.com/Dream355873200/GoAgent/observer"
+	"github.com/Dream355873200/GoAgent/permission"
 	"github.com/Dream355873200/GoAgent/provider"
+	"github.com/Dream355873200/GoAgent/schema"
 )
 
 // ---------------------------------------------------------------------------
@@ -100,6 +103,11 @@ func agentToolDef(def agent.Definition, resolve func() provider.Provider, bgMgr 
 			if in.Task == "" {
 				return "", fmt.Errorf("task 不能为空")
 			}
+			sctx, err := enterSubRun(ctx, fmt.Sprintf("agent「%s」", def.Name))
+			if err != nil {
+				return "", err
+			}
+			ctx.Context = sctx
 			run := def
 			if ctx.WorkDir != "" {
 				// 子 agent 的工具随 ctx 扎根会话工作目录，提示词同步告知
@@ -220,10 +228,13 @@ func NamedAgentTool(name string, def agent.Definition, prov provider.Provider) N
 }
 
 // AgentTools 把 App 已注册的工具按名转成子 agent 工具（agent.ToolDef），
-// 描述与入参 schema 与主 agent 看到的一致。任一名字未注册即返回错误。
+// 描述、入参 schema、权限级别与并发声明与注册时一致。任一名字未注册即返回
+// 错误。
 //
-// 注意：子 agent 的工具调用直接执行，不经过主循环的中间件与权限审批。
-// 宿主应只交出只读工具（可用 ToolPermission 校验），或在工具内部自行把关。
+// 子 agent 在某次 agent 运行之中被调用时，这些工具的每次调用都先校验入参，
+// 再过该运行的检查链（plan 模式、中间件、hooks、权限门），按工具声明的
+// 权限级别检查——与主 agent 直接调用同一工具时一致（见 agent.Runner.Run）。
+// 不经 agent.Runner、直接调用 Execute 时只做入参校验。
 func (a *App) AgentTools(names ...string) ([]agent.ToolDef, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -233,12 +244,25 @@ func (a *App) AgentTools(names ...string) ([]agent.ToolDef, error) {
 		if !ok {
 			return nil, fmt.Errorf("goagent: 工具 %q 未注册", name)
 		}
+		def := rt.def
+		var inputSchema map[string]any
+		if !a.config.skipInputValidation {
+			inputSchema = schema.AsMap(rt.inputSchema)
+		}
+		toolName := name
 		out = append(out, agent.ToolDef{
 			Name:        name,
-			Description: rt.def.Description,
+			Description: def.Description,
 			InputSchema: rt.inputSchema,
+			Permission:  permission.Level(def.Permission),
+			Serial:      !def.Concurrent,
 			Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
-				return rt.def.call(ctx, input)
+				if inputSchema != nil {
+					if err := schema.Validate(inputSchema, input); err != nil {
+						return "", fmt.Errorf("工具 %q 的参数不符合其入参 schema，未执行：\n%v", toolName, err)
+					}
+				}
+				return def.call(ctx, input)
 			},
 		})
 	}
@@ -276,7 +300,7 @@ func subAgentTracer(traceFn func(Context) string, ctx Context, toolUseID string)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil
 	}
-	path := filepath.Join(dir, toolUseID+".jsonl")
+	path := filepath.Join(dir, safename.Sanitize(toolUseID)+".jsonl")
 	var mu sync.Mutex
 	return func(ev agent.AgentEvent) {
 		b, err := json.Marshal(map[string]any{

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Dream355873200/GoAgent"
+	"github.com/Dream355873200/GoAgent/cli"
 )
 
 func main() {
@@ -65,7 +66,7 @@ func main() {
 	// ─── Run ───
 	// One line to start the CLI REPL.
 	// Could also be: app.RunHTTP(":8080") for an API server.
-	app.RunCLI()
+	cli.Run(app)
 }
 
 // ─── Input types ───

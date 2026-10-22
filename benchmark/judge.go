@@ -122,8 +122,9 @@ func (j *LLMJudge) judge(ctx context.Context, in JudgeInput) (Verdict, error) {
 	b.WriteString("\n\n请判断待评输出是否满足判定准则。")
 
 	req := &provider.Request{
-		Messages:  []message.Message{message.NewUserMessage(b.String())},
-		MaxTokens: j.maxTokens(),
+		SystemPrompt: judgeSystem,
+		Messages:     []message.Message{message.NewUserMessage(b.String())},
+		MaxTokens:    j.maxTokens(),
 	}
 	if j.Model != "" {
 		req.Model = j.Model

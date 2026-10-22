@@ -13,16 +13,25 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Dream355873200/GoAgent/budget"
 	"github.com/Dream355873200/GoAgent/compaction"
+	"github.com/Dream355873200/GoAgent/cost"
 	"github.com/Dream355873200/GoAgent/executor"
 	"github.com/Dream355873200/GoAgent/memory"
 	"github.com/Dream355873200/GoAgent/message"
 	"github.com/Dream355873200/GoAgent/observer"
 	"github.com/Dream355873200/GoAgent/permission"
 	"github.com/Dream355873200/GoAgent/provider"
+	"github.com/Dream355873200/GoAgent/schema"
 )
+
+// DefaultMaxTurns 是 Config.MaxTurns 未设置（<=0）时的最大轮次。
+const DefaultMaxTurns = 100
+
+// ErrMaxTurns 表示循环因达到最大轮次而终止（随 EvtError 发出，用 errors.Is 判断）。
+var ErrMaxTurns = errors.New("已达最大轮次")
 
 // Config 包含循环运行所需的一切。
 type Config struct {
@@ -31,17 +40,17 @@ type Config struct {
 	Tools           []ToolEntry
 	Middlewares     []Middleware
 	SystemPrompt    string
-	MaxTurns        int
+	MaxTurns        int    // <=0 时取 DefaultMaxTurns
 	ReasoningEffort string // 思考强度档位（off/low/medium/high；空 = 不干预），随每次模型请求下发
 	Compaction      *compaction.Manager
 	Permission      *permission.Gate
 	Memory          *memory.Manager
-	Executor        *executor.Executor
-	Budget          *budget.Tracker   // token 预算追踪器
-	Hooks           HooksRunner       // hooks 管理器（含 stop 扩展点，可选）
-	PlanChecker     PlanChecker       // plan mode 工具过滤（可选）
-	PostSampling    PostSamplingHook  // 采样后钩子（SessionMemory 等）
-	InitialMessages []message.Message // 历史消息（多轮对话恢复用）
+	Executor        *executor.Executor // nil 时使用默认配置的执行器
+	Budget          *budget.Tracker    // token 预算追踪器
+	Hooks           HooksRunner        // hooks 管理器（含 stop 扩展点，可选）
+	PlanChecker     PlanChecker        // plan mode 工具过滤（可选）
+	PostSampling    PostSamplingHook   // 采样后钩子（SessionMemory 等）
+	InitialMessages []message.Message  // 历史消息（多轮对话恢复用）
 	// Steering 插话源（可选）。非 nil 时每个工具批结束边界调用
 	// DrainGuides 取走待注入消息，作为 user 消息追加进下一次模型
 	// 请求——运行中的模型流不受影响。见 steering.go。
@@ -67,6 +76,23 @@ type Config struct {
 	// gate.Wait 阻塞、gate.Resume 唤醒续跑（非取消语义）。
 	// 挂起期间消息序列与执行位置保持完整（内存态）。
 	SuspendGate *SuspendGate
+	// OnMessage 在每条消息进入对话时、于循环 goroutine 内同步调用（可选）：
+	// 用户输入、助手回复、工具结果、恢复提示、插话。它先于任何压缩改写
+	// 发生，拿到的是消息的完整原貌，适合做逐条持久化。InitialMessages
+	// 与压缩派生的消息不会触发。
+	OnMessage func(m message.Message)
+	// SkipInputValidation 关闭工具入参校验。默认（false）每次工具调用
+	// 执行前按工具的 InputSchema 校验参数（类型、必填、枚举等），不合规
+	// 的调用不执行，错误说明作为工具结果返回给模型以便修正。
+	SkipInputValidation bool
+	// Model 覆盖每次请求的模型 ID（空 = provider 当前的模型）。切换到后备
+	// provider 后不再使用。
+	Model string
+	// MaxTokens 单次响应的输出上限（0 = 由 provider 决定）。
+	MaxTokens int
+	// Nested 表示这是在某次运行之内派生的子循环（NewChild 自动设置）：它不是
+	// 一次会话，不向 Observer 发送 OnSessionStart / OnSessionEnd。
+	Nested bool
 }
 
 // PlanChecker 是 plan mode 的接口。
@@ -84,7 +110,7 @@ type PlanChecker interface {
 type HooksRunner interface {
 	// RunPreToolUse 在工具执行前调用。返回 block=true 时阻止执行。
 	RunPreToolUse(ctx context.Context, toolName string, input json.RawMessage) (block bool, message string, err error)
-	// RunPostToolUse 在工具执行后调用。
+	// RunPostToolUse 在工具执行后调用（含执行失败的情况，toolErr 非 nil）。
 	RunPostToolUse(ctx context.Context, toolName string, input json.RawMessage, result string, toolErr error)
 	// RunStop 在循环退出前调用。返回 block=true 时阻止退出。
 	// stopReason 是本轮 LLM 的停止原因（引擎自愈已处理 StopMaxTokens，
@@ -187,31 +213,29 @@ const (
 // 无限重试。
 const maxStreamRetries = 3
 
-// Transition 描述循环继续到下一次迭代的原因。
-type Transition int
+// maxOutputRecoveries 输出被 max_tokens 截断时注入续写提示的最大次数。
+const maxOutputRecoveries = 3
 
+// 合成 tool_result 的文案。
 const (
-	TransNextTurn                Transition = iota // 正常：工具调用已处理
-	TransCollapseDrainRetry                        // 上下文折叠释放了空间
-	TransReactiveCompactRetry                      // 413 后的响应式压缩
-	TransMaxOutputEscalate                         // 8k → 64k 重试
-	TransMaxOutputRecovery                         // 注入继续提示
-	TransThinkingOnlyRecovery                      // 推理模型整段回复只进思考通道，注入提示要求正文重述
-	TransStopHookBlocking                          // stop hook 需要修正
-	TransTokenBudgetContinuation                   // token 预算未耗尽
+	interruptedResultText = "工具执行被用户中断"
+	missingResultText     = "该工具调用没有返回结果"
 )
 
 // loopState 是跨迭代携带的可变状态。
 type loopState struct {
-	messages                    []message.Message
+	// messages 是发给模型的视图：压缩只改写它。
+	messages []message.Message
+	// transcript 是完整对话记录，只追加：进入对话的每条消息与自动摘要的
+	// 摘要记录（见 recordSummaries）。compaction.Project(transcript) 可还原
+	// 视图。
+	transcript                  []message.Message
 	turnCount                   int
-	transition                  *Transition
 	maxOutputRecoveryCount      int
 	thinkingOnlyRecoveryCount   int
-	maxOutputTokensOverride     int
 	hasAttemptedReactiveCompact bool
 	usingFallback               bool
-	// lastInputTokens 记录上一轮 API 返回的实际 input tokens，
+	// lastInputTokens 记录上一轮请求实际占用的上下文 token 数（含缓存读写），
 	// 用于替代客户端估算做 token 阻断判断。对齐 Claude Code 的
 	// finalContextTokensFromLastResponse()。
 	lastInputTokens int
@@ -227,22 +251,45 @@ type loopState struct {
 type Loop struct {
 	cfg       Config
 	toolIndex map[string]*ToolEntry
+	// toolSchemas 是各工具用于入参校验的 schema（nil 表示不校验）。
+	toolSchemas map[string]map[string]any
 	// mu 保护 finalMessages：写方是 run goroutine（每轮末尾 + 结束
 	// defer），读方是事件消费 goroutine（EventDone 时 / 逐条持久化
 	// 时调 FinalMessages）——两个 goroutine 天然并发，没有锁就是
 	// data race（-race 实测：EventDone 事件先于 defer 写到达消费者）。
 	mu            sync.RWMutex
-	finalMessages []message.Message // 循环结束后的完整消息列表
-	state         *loopState        // 当前运行状态（用于 Pause/Resume）
+	finalMessages []message.Message // 完整对话记录（见 FinalMessages）
 }
 
 // New 创建一个新的 Loop。
 func New(cfg Config) *Loop {
+	if cfg.Executor == nil {
+		logger := cfg.Logger
+		cfg.Executor = executor.New(executor.Config{
+			PanicHandler: func(tool string, r any, stack []byte) {
+				if logger != nil {
+					logger.Error("loop: 工具 panic 已恢复", "tool", tool, "panic", fmt.Sprint(r), "stack", string(stack))
+				}
+			},
+		})
+	}
+	if cfg.MaxTurns <= 0 {
+		cfg.MaxTurns = DefaultMaxTurns
+	}
 	idx := make(map[string]*ToolEntry, len(cfg.Tools))
 	for i := range cfg.Tools {
 		idx[cfg.Tools[i].Name] = &cfg.Tools[i]
 	}
-	return &Loop{cfg: cfg, toolIndex: idx}
+	var schemas map[string]map[string]any
+	if !cfg.SkipInputValidation {
+		schemas = make(map[string]map[string]any, len(cfg.Tools))
+		for _, t := range cfg.Tools {
+			if s := schema.AsMap(t.InputSchema); s != nil {
+				schemas[t.Name] = s
+			}
+		}
+	}
+	return &Loop{cfg: cfg, toolIndex: idx, toolSchemas: schemas}
 }
 
 // logInfo 输出关键事件日志（每轮摘要、限流重试、后备切换、错误现场）。
@@ -276,14 +323,16 @@ func (l *Loop) logDebug(format string, args ...any) {
 	}
 }
 
-// Run 启动 agent 循环并返回一个事件通道。
+// Run 启动 agent 循环并返回一个事件通道。传给工具执行的 ctx 携带本循环的
+// 作用域（见 Scope）：工具里派生的子循环经 NewChild 继承它。
 func (l *Loop) Run(ctx context.Context, input string) <-chan Event {
 	out := make(chan Event, 64)
 	sink := &toolSink{out: out, done: make(chan struct{})}
+	ctx = WithScope(context.WithValue(ctx, toolSinkKey{}, sink), l.scope())
 	go func() {
 		defer close(out)
 		defer sink.close() // 先于 close(out)：迟到的工具事件被丢弃而非向已关闭通道发送
-		l.run(context.WithValue(ctx, toolSinkKey{}, sink), input, out)
+		l.run(ctx, input, out)
 	}()
 	return out
 }
@@ -330,14 +379,11 @@ func EmitFromTool(ctx context.Context, ev Event) bool {
 	return true
 }
 
-// DetachToolSink 返回不再关联事件流的 ctx（后台任务脱离本次 run 后使用）。
-func DetachToolSink(ctx context.Context) context.Context {
-	return context.WithValue(ctx, toolSinkKey{}, (*toolSink)(nil))
-}
-
-// FinalMessages 返回循环结束后的完整消息列表。
-// 必须在 Run() 返回的 channel 消费完毕后调用。
-// 用于会话持久化。
+// FinalMessages 返回完整的对话记录：InitialMessages、本次运行中进入对话的
+// 每条消息，以及自动摘要追加的摘要记录——压缩不改写它。把它作为下一次运行
+// 的 InitialMessages 传回，循环用 compaction.Project 还原模型视图，不必再
+// 请求模型摘要一遍。运行期间每轮结束时同步更新；完整结果在 Run() 返回的
+// channel 消费完毕后可用。
 func (l *Loop) FinalMessages() []message.Message {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
@@ -345,11 +391,45 @@ func (l *Loop) FinalMessages() []message.Message {
 }
 
 // setFinalMessages 由 run goroutine 同步最新消息列表（锁内拷贝 slice
-// header；底层元素只追加不改写，读方拿到的旧 header 仍安全）。
+// header）。已发布的元素不会再被就地改写：循环只追加，压缩层按
+// copy-on-write 生成新切片，所以读方拿到的旧 header 仍然安全。
 func (l *Loop) setFinalMessages(msgs []message.Message) {
 	l.mu.Lock()
 	l.finalMessages = msgs
 	l.mu.Unlock()
+}
+
+// appendMessage 把一条消息加入对话（视图与对话记录）、分配 UID，并同步回调
+// OnMessage。只有经由这里（或 recordSummaries）进入的消息才是对话记录的
+// 一部分；压缩等派生出的其他消息没有 UID，也不会触发回调。
+func (l *Loop) appendMessage(state *loopState, m message.Message) {
+	if m.UID == "" {
+		m.UID = message.NewUID()
+	}
+	state.messages = append(state.messages, m)
+	state.transcript = append(state.transcript, m)
+	if l.cfg.OnMessage != nil {
+		l.cfg.OnMessage(m)
+	}
+}
+
+// setView 换上压缩后的视图，并把其中新产生的摘要（还没有 UID 的
+// IsCompactSummary 消息）作为摘要记录追加进对话记录——同样分配 UID、
+// 回调 OnMessage。重新加载时 compaction.Project 据此还原视图。
+func (l *Loop) setView(state *loopState, view []message.Message) {
+	for i := range view {
+		if !view[i].IsCompactSummary || view[i].UID != "" {
+			continue
+		}
+		rec := view[i]
+		rec.UID = message.NewUID()
+		view[i] = rec
+		state.transcript = append(state.transcript, rec)
+		if l.cfg.OnMessage != nil {
+			l.cfg.OnMessage(rec)
+		}
+	}
+	state.messages = view
 }
 
 func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
@@ -365,26 +445,16 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 		}
 	}()
 
-	// 初始化状态。
-	var initialMessages []message.Message
-	if len(l.cfg.InitialMessages) > 0 {
-		// 多轮对话：使用历史消息 + 新的用户输入。
-		initialMessages = make([]message.Message, len(l.cfg.InitialMessages))
-		copy(initialMessages, l.cfg.InitialMessages)
-		initialMessages = append(initialMessages, message.NewUserMessage(input))
-	} else {
-		// 新会话：只有用户输入。
-		initialMessages = []message.Message{message.NewUserMessage(input)}
-	}
-
 	state := &loopState{
-		messages:       initialMessages,
+		messages:       compaction.Project(l.cfg.InitialMessages),
+		transcript:     make([]message.Message, 0, len(l.cfg.InitialMessages)+1),
 		toolStartTimes: make(map[string]time.Time),
 	}
-	l.state = state
+	state.transcript = append(state.transcript, l.cfg.InitialMessages...)
+	l.appendMessage(state, message.NewUserMessage(input))
 
-	// 通知 Observer 会话开始。
-	if l.cfg.Observer != nil {
+	// 通知 Observer 会话开始（子循环不是一次会话，不通知）。
+	if l.cfg.Observer != nil && !l.cfg.Nested {
 		l.cfg.Observer.OnSessionStart(ctx, l.cfg.SessionID)
 	}
 
@@ -392,12 +462,12 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 	// 运行期间每轮迭代末尾也同步到 finalMessages（见 run 循环体），
 	// 供外部在事件流消费中途调用 FinalMessages() 做逐条即时持久化。
 	defer func() {
-		l.state = nil
-		l.setFinalMessages(state.messages)
-		if l.cfg.Observer != nil {
+		l.setFinalMessages(state.transcript)
+		if l.cfg.Observer != nil && !l.cfg.Nested {
 			l.cfg.Observer.OnSessionEnd(ctx, l.cfg.SessionID, state.turnCount)
 		}
 	}()
+	l.setFinalMessages(state.transcript)
 
 	activeProvider := l.cfg.Provider
 
@@ -413,30 +483,11 @@ func (l *Loop) run(ctx context.Context, input string, out chan<- Event) {
 		l.cfg.SessionID, activeProvider.Capabilities().ModelID, len(l.cfg.Tools),
 		len(state.messages), l.cfg.MaxTurns, l.cfg.Debug)
 
-	// P1a: 工具定义缓存 — 一次性构建，跨迭代复用。
+	// 工具定义缓存 — 一次性构建，跨迭代复用。
 	// 对齐 Claude Code 的 toolUseContext.options.tools（不在循环内重建）。
-	caps := activeProvider.Capabilities()
-	var toolDefs []provider.ToolDefinition
-	if caps.SupportsTools {
-		toolDefs = make([]provider.ToolDefinition, 0, len(l.cfg.Tools))
-		for _, t := range l.cfg.Tools {
-			toolDefs = append(toolDefs, provider.ToolDefinition{
-				Name:        t.Name,
-				Description: t.Description,
-				InputSchema: t.InputSchema,
-			})
-		}
-		// Prompt Caching: 给最后一个 tool 加 cache_control 标记。
-		// Anthropic 缓存从头到该标记为止的全部前缀（system + tools）。
-		if caps.SupportsCaching && len(toolDefs) > 0 {
-			toolDefs[len(toolDefs)-1].CacheControl = &provider.CacheControl{Type: "ephemeral"}
-		}
-	}
+	toolDefs := buildToolDefs(l.cfg.Tools, activeProvider.Capabilities())
 
-	// 创建 Withholder 和预处理器。
-	withholder := NewWithholder()
-
-	// P3: 等待 memory 加载完成，构建 system prompt。
+	// 等待 memory 加载完成，构建 system prompt。
 	<-memDone
 	systemPrompt := l.cfg.SystemPrompt
 	if memSuffix != "" {
@@ -449,17 +500,17 @@ mainLoop:
 		// 检查最大轮次。
 		if state.turnCount >= l.cfg.MaxTurns {
 			l.logError("已达最大轮次 (%d)，循环终止", l.cfg.MaxTurns)
+			err := fmt.Errorf("%w (%d)", ErrMaxTurns, l.cfg.MaxTurns)
 			if l.cfg.Observer != nil {
-				l.cfg.Observer.OnError(ctx, fmt.Errorf("已达最大轮次 (%d)", l.cfg.MaxTurns))
+				l.cfg.Observer.OnError(ctx, err)
 			}
-			out <- Event{Type: EvtError, Error: fmt.Errorf("已达最大轮次 (%d)", l.cfg.MaxTurns)}
+			out <- Event{Type: EvtError, Error: err}
 			return
 		}
 
 		// 挂起检查点：宿主经 SuspendGate 发起挂起（非取消）时，循环在此
-		// 阻塞等待唤醒。复用 429 等待的机制地基（select 等 channel），
-		// 区别：429 等定时器，挂起等外部信号。挂起期间内存态（消息序列/
-		// 执行位置）完整保留，唤醒后从本行继续——「挂起点恢复」而非重跑。
+		// 阻塞等待唤醒。挂起期间内存态（消息序列/执行位置）完整保留，
+		// 唤醒后从本行继续——「挂起点恢复」而非重跑。
 		if l.cfg.SuspendGate != nil && l.cfg.SuspendGate.IsWaiting() {
 			l.logInfo("循环挂起中，等待唤醒 · turn=%d msgs=%d", state.turnCount+1, len(state.messages))
 			out <- Event{Type: EvtProgress, StatusKey: "suspend", Text: "已挂起，等待外部信号"}
@@ -497,20 +548,19 @@ mainLoop:
 			return
 		}
 
+		caps := activeProvider.Capabilities()
+
 		// ① 预处理：四层压缩。
-		contextWindow := 200_000 // 默认值，应来自 provider 能力
-		if caps := activeProvider.Capabilities(); caps.ContextWindow > 0 {
+		contextWindow := 200_000 // provider 未声明时的默认值
+		if caps.ContextWindow > 0 {
 			contextWindow = caps.ContextWindow
 		}
-
-		// P2: 压缩只对 boundary 后消息运行，对齐 Claude Code 的
-		// getMessagesAfterCompactBoundary()。
 		if l.cfg.Compaction != nil {
 			compacted, freed := l.cfg.Compaction.Apply(ctx, state.messages, contextWindow)
 			if freed > 0 {
-				state.messages = compacted
+				l.setView(state, compacted)
+				l.setFinalMessages(state.transcript)
 				out <- Event{Type: EvtCompaction, Text: fmt.Sprintf("已压缩，释放 ~%d tokens", freed)}
-				// Observer: 通知压缩事件。
 				if l.cfg.Observer != nil {
 					l.cfg.Observer.OnCompaction(ctx, freed, "auto_compact")
 				}
@@ -518,14 +568,12 @@ mainLoop:
 		}
 
 		// ② Token 阻断检查。
-		// P1b: 优先使用 API 返回的实际 input tokens（非首轮时可用），
+		// 优先使用上一轮 API 返回的实际上下文占用（非首轮时可用），
 		// 对齐 Claude Code 的 tokenCountWithEstimation()。
 		var totalTokens int
 		if state.lastInputTokens > 0 {
-			// 非首轮：使用上一轮 API 返回的实际值（更准确）。
 			totalTokens = state.lastInputTokens
 		} else {
-			// 首轮：无 API 数据，用客户端估算。
 			totalTokens = message.EstimateMessagesTokens(state.messages)
 		}
 		hardLimit := contextWindow - 3000
@@ -539,43 +587,39 @@ mainLoop:
 			return
 		}
 
-		// ③ 工具定义已在循环外缓存（P1a），此处直接使用 toolDefs。
-
-		// ④ 调用 API（流式）。
-		// MaxTokens 为 0 表示不传 max_tokens，让模型 API 自动使用最大输出长度。
-		maxTokens := state.maxOutputTokensOverride
-
-		// 构建请求：优先使用 SystemBlocks（带 cache_control），否则回退到 SystemPrompt。
+		// ③ 构建请求。SystemPrompt 总是带上：切到后备模型时，不支持
+		// SystemBlocks 的实现（如 OpenAI 兼容）只读这个字段。
+		// 发送前统一修复 tool_use/tool_result 配对：压缩、中断、存储损坏
+		// 都可能留下缺口，缺口会让上游 API 整请求 400。
 		req := &provider.Request{
-			Messages:        state.messages,
-			Tools:           toolDefs,
-			MaxTokens:       maxTokens,
+			Messages:        message.SanitizeForRequest(state.messages),
+			SystemPrompt:    systemPrompt,
+			MaxTokens:       l.cfg.MaxTokens,
 			ReasoningEffort: l.cfg.ReasoningEffort,
 		}
+		if !state.usingFallback {
+			req.Model = l.cfg.Model
+		}
+		if caps.SupportsTools {
+			req.Tools = toolDefs
+		}
 		if caps.SupportsCaching {
-			// 将 system prompt 包装为 SystemBlocks，最后一个 block 标记缓存。
-			// 如果有 tools，tools 的最后一个已标记缓存，system prompt 不需要重复标记。
-			// 如果没有 tools，system prompt 最后一个 block 标记缓存。
-			req.SystemBlocks = []provider.SystemBlock{
-				{
-					Text:         systemPrompt,
-					CacheControl: cacheControlForSystemPrompt(caps.SupportsCaching, len(toolDefs)),
-				},
-			}
-		} else {
-			req.SystemPrompt = systemPrompt
+			req.SystemBlocks = []provider.SystemBlock{{
+				Text:         systemPrompt,
+				CacheControl: &provider.CacheControl{Type: "ephemeral"},
+			}}
 		}
 
-		l.logDebug("turn=%d 请求: msgs=%d tools=%d max_tokens=%d input_tokens_est=%d",
-			state.turnCount+1, len(state.messages), len(toolDefs), maxTokens, totalTokens)
+		l.logDebug("turn=%d 请求: msgs=%d tools=%d input_tokens_est=%d",
+			state.turnCount+1, len(req.Messages), len(req.Tools), totalTokens)
 
 		// LLM 调用级 observer（可选接口）：Stream 建立前触发 OnLLMStart。
 		llmInfo := &observer.LLMCallInfo{
-			Model:          activeProvider.Capabilities().ModelID,
+			Model:          caps.ModelID,
 			Turn:           state.turnCount + 1,
-			NumMessages:    len(state.messages),
-			NumTools:       len(toolDefs),
-			MaxTokens:      maxTokens,
+			NumMessages:    len(req.Messages),
+			NumTools:       len(req.Tools),
+			MaxTokens:      req.MaxTokens,
 			InputTokensEst: totalTokens,
 		}
 		if o, ok := l.cfg.Observer.(observer.LLMObserver); ok {
@@ -583,61 +627,13 @@ mainLoop:
 		}
 		llmStart := time.Now()
 
+		// ④ 调用 API（流式）。
 		stream, err := activeProvider.Stream(ctx, req)
-
-		// 速率限制重试：429（TPM/RPM 配额）等待后重试同一模型必然可行。
-		// 对齐 Claude Code 的体验：状态行原地更新（事件带 StatusKey），
-		// 等待期间每秒推送倒计时，attempt 递增，恢复后清除状态行。
 		if err != nil {
-			var rateLimitErr *provider.RateLimitError
-			if errors.As(err, &rateLimitErr) {
-				const statusKey = "rate-limit"
-				const maxRateRetries = 10
-				brief := truncateErr(rateLimitErr.Error(), 60)
-				for attempt := 1; attempt <= maxRateRetries; attempt++ {
-					// TPM 窗口 60s：等到下一个窗口边界。首次 15s 起步（部分配额
-					// 可能已释放），逐次递增至 60s，覆盖 RPM/TPM 两种窗口。
-					wait := time.Duration(15*attempt) * time.Second
-					if wait > 60*time.Second {
-						wait = 60 * time.Second
-					}
-					l.logWarn("429 限流: %s · 等待 %s 后重试 (attempt %d/%d) · turn=%d",
-						brief, wait, attempt, maxRateRetries, state.turnCount+1)
-					// 每秒推送倒计时状态行（前端原地更新 + 闪烁动画）
-					deadline := time.Now().Add(wait)
-					for time.Now().Before(deadline) {
-						remain := int(time.Until(deadline).Seconds()) + 1
-						out <- Event{Type: EvtProgress, StatusKey: statusKey, Text: fmt.Sprintf(
-							"✻ 429 %s · Retrying in %ds · attempt %d/%d",
-							brief, remain, attempt, maxRateRetries)}
-						select {
-						case <-ctx.Done():
-							// 用户在 429 等待期间中断：同样走一等事件。
-							if errors.Is(ctx.Err(), context.Canceled) {
-								l.logInfo("429 等待中用户中断")
-								out <- Event{Type: EvtInterrupted, Text: "用户中断"}
-							} else {
-								l.logError("429 等待中被取消: %v", ctx.Err())
-								out <- Event{Type: EvtError, Error: fmt.Errorf("API 错误: %w", err)}
-							}
-							return
-						case <-time.After(time.Until(deadline)):
-						}
-					}
-					stream, err = activeProvider.Stream(ctx, req)
-					if err == nil {
-						l.logInfo("429 限流恢复: attempt %d 后成功 · turn=%d", attempt, state.turnCount+1)
-						break
-					}
-					if !errors.As(err, &rateLimitErr) {
-						break // 变成别的错误了（过载/断网）：走下面的常规处理
-					}
-				}
-				if err != nil {
-					l.logError("429 重试 %d 次后仍失败: %v", maxRateRetries, err)
-				} else {
-					out <- Event{Type: EvtProgress, StatusKey: statusKey, Text: ""} // 清除状态行
-				}
+			var interrupted bool
+			stream, err, interrupted = l.retryRateLimit(ctx, activeProvider, req, err, state, out)
+			if interrupted {
+				return
 			}
 		}
 
@@ -653,16 +649,8 @@ mainLoop:
 				continue
 			}
 			// 处理 prompt 过长 → 响应式压缩。
-			var ptlErr *provider.PromptTooLongError
-			if errors.As(err, &ptlErr) && l.cfg.Compaction != nil && !state.hasAttemptedReactiveCompact {
-				recovered, ok := l.cfg.Compaction.HandleOverflow(ctx, state.messages, contextWindow)
-				if ok {
-					state.messages = recovered
-					state.hasAttemptedReactiveCompact = true
-					t := TransReactiveCompactRetry
-					state.transition = &t
-					continue
-				}
+			if l.tryReactiveCompact(ctx, state, err, contextWindow) {
+				continue
 			}
 
 			// 流请求本身被取消（用户中断在 Stream 建立阶段传导）。
@@ -687,26 +675,19 @@ mainLoop:
 		}
 
 		// ⑤ 消费流 + 流式工具执行。
-		// P0: 所有工具（包括需要权限的）都进入 StreamingExecutor，
-		// 对齐 Claude Code 的 StreamingToolExecutor.addTool()。
-		// 权限检查通过 PreCheck 闭包在执行前完成。
+		// 所有工具（包括需要权限的）都进入 StreamingExecutor，权限检查
+		// 通过 PreCheck 闭包在执行前完成。流式期间 Poll 到的结果与轮末
+		// Wait 的结果合并使用——每个结果只会从两者之一返回一次。
 		streamingExec := executor.NewStreamingExecutor(l.cfg.Executor)
 		var assistantText string
 		var thinkingText string
 		var toolCalls []message.ToolCall
 		var stopReason provider.StopReason
-		var turnUsage *provider.Usage // 本轮流中 EventUsage 携带的用量（OnLLMDone 用）
-
-		// 重置 withholder。
-		withholder.Clear()
+		var turnUsage *provider.Usage
+		var completeMsg *message.Message
+		var results []executor.ToolResult
 
 		for ev := range stream {
-			// 检查是否需要暂扣此事件。
-			if reason := withholder.ShouldWithhold(ev); reason != WithholdNone {
-				withholder.Withhold(ev, reason)
-				continue
-			}
-
 			switch ev.Type {
 			case provider.EventTextDelta:
 				assistantText += ev.Text
@@ -718,89 +699,35 @@ mainLoop:
 
 			case provider.EventToolUseStart:
 				if ev.ToolCall != nil {
+					l.startTool(ctx, state, streamingExec, *ev.ToolCall, out)
 					toolCalls = append(toolCalls, *ev.ToolCall)
-					l.logDebug("tool_start: %s id=%s input_len=%d", ev.ToolCall.Name, ev.ToolCall.ID, len(ev.ToolCall.Input))
-					out <- Event{Type: EvtToolStart, ToolName: ev.ToolCall.Name, ToolInput: ev.ToolCall.Input, ToolUseID: ev.ToolCall.ID}
-
-					// Observer: 通知工具开始执行（ctx 携带调用 ID，
-					// 宿主经 observer.ToolCallIDFromContext 做 span 关联）。
-					if l.cfg.Observer != nil {
-						l.cfg.Observer.OnToolStart(observer.WithToolCallID(ctx, ev.ToolCall.ID), ev.ToolCall.Name, ev.ToolCall.Input)
-					}
-					// 记录开始时间用于计算执行时长。
-					state.toolStartTimes[ev.ToolCall.ID] = time.Now()
-
-					// P0: 为所有工具构建 ToolCall（含 PreCheck 闭包），
-					// 统一交给 StreamingExecutor 管理。
-					tc := *ev.ToolCall
-					tool := l.toolIndex[tc.Name]
-					if tool == nil {
-						// 未知工具 — 直接生成错误结果。
-						streamingExec.Add(ctx, executor.ToolCall{
-							ID:         tc.ID,
-							Name:       tc.Name,
-							Input:      tc.Input,
-							Concurrent: true,
-							Execute: func(_ context.Context, _ json.RawMessage) (string, error) {
-								return fmt.Sprintf("错误: 未知工具 %q", tc.Name), fmt.Errorf("未知工具")
-							},
-						})
-					} else {
-						// 副作用分级：显式 Class 优先，兼容字段 Concurrent 兜底。
-
-						// 构建 PreCheck 闭包：包含完整的权限检查链。
-						// 对齐 Claude Code StreamingToolExecutor.executeTool() 的内置权限检查。
-						// 更新 transcript 供 YOLO 分类器使用。
-						if l.cfg.Permission != nil {
-							l.cfg.Permission.SetTranscript(state.messages)
-						}
-						preCheck := l.buildPreCheck(tool, tc.Name, tc.Input)
-
-						streamingExec.Add(ctx, executor.ToolCall{
-							ID:         tc.ID,
-							Name:       tc.Name,
-							Input:      tc.Input,
-							Class:      tool.Class,
-							Concurrent: tool.Concurrent,
-							Execute:    tool.ExecuteFn,
-							PreCheck:   preCheck,
-						})
-					}
 				}
 
 			case provider.EventUsage:
-				if ev.Usage != nil {
-					out <- Event{Type: EvtUsageUpdate, Usage: ev.Usage}
-					turnUsage = ev.Usage
-					// P1b: 记录 API 返回的实际 input tokens。
-					if ev.Usage.InputTokens > 0 {
-						state.lastInputTokens = ev.Usage.InputTokens
-					}
-					// 记录到 budget tracker。
-					if l.cfg.Budget != nil {
-						l.cfg.Budget.RecordUsage(state.turnCount, ev.Usage.InputTokens, ev.Usage.OutputTokens)
-					}
-					// Observer: 通知 Token 用量。
-					if l.cfg.Observer != nil {
-						costUSD := estimateCostUSD(activeProvider.Capabilities().ModelID, ev.Usage)
-						l.cfg.Observer.OnTokenUsage(ctx, activeProvider.Capabilities().ModelID, ev.Usage, costUSD)
-					}
-				}
+				turnUsage = provider.MergeUsage(turnUsage, ev.Usage)
 
 			case provider.EventMessageComplete:
 				if ev.StopReason != "" {
 					stopReason = ev.StopReason
 				}
+				if ev.Message != nil {
+					completeMsg = ev.Message
+				}
 
 			case provider.EventError:
 				// 流被取消（用户中断传导到 provider 层）同样走一等事件。
-				if errors.Is(ev.Error, context.Canceled) {
+				if errors.Is(ev.Error, context.Canceled) || ctx.Err() != nil {
 					l.logInfo("用户中断（流中），循环终止")
 					if o, ok := l.cfg.Observer.(observer.LLMObserver); ok {
 						o.OnLLMError(ctx, llmInfo, ev.Error)
 					}
-					out <- Event{Type: EvtInterrupted, Text: "用户中断"}
+					l.finishInterrupted(ctx, state, assistantText, toolCalls, results, streamingExec, false, out)
 					return
+				}
+
+				// 流刚建立就因上下文过长被拒（还没有任何内容）：响应式压缩后重试。
+				if assistantText == "" && len(toolCalls) == 0 && l.tryReactiveCompact(ctx, state, ev.Error, contextWindow) {
+					continue mainLoop
 				}
 
 				// 流中断锚点恢复（网络断/SSE 断）：不整轮报错。已到达的
@@ -824,56 +751,21 @@ mainLoop:
 				out <- Event{Type: EvtProgress, Text: fmt.Sprintf("流中断，正在恢复 (%d/%d)", state.streamRetryCount, maxStreamRetries)}
 
 				// 已派发工具的真实结果必须保留（副作用已发生）：等待跑完并上报。
-				// Wait 会把剩余 pending 全部启动并等齐，Poll 兜住流中断前
-				// 已完成但尚未上报的结果。
-				gotResults := append(streamingExec.Poll(), streamingExec.Wait(ctx)...)
-				l.reportToolResults(ctx, state, gotResults, out)
+				late := append(streamingExec.Poll(), streamingExec.Wait(ctx)...)
+				l.reportToolResults(ctx, state, late, out)
+				results = append(results, late...)
 
 				if assistantText != "" || len(toolCalls) > 0 {
 					// 部分思考块丢弃：不完整且无签名回传价值，锚点只需正文
 					// 与工具调用。正文按「已流出的原样」固化——模型续跑时
 					// 能看到自己停在哪。
-					anchorMsg := message.Message{Role: message.RoleAssistant}
-					if assistantText != "" {
-						anchorMsg.Content = append(anchorMsg.Content, message.ContentBlock{
-							Type: "text",
-							Text: assistantText,
-						})
-					}
-					for _, tc := range toolCalls {
-						anchorMsg.Content = append(anchorMsg.Content, message.ContentBlock{
-							Type:      "tool_use",
-							ToolUseID: tc.ID,
-							ToolName:  tc.Name,
-							Input:     tc.Input,
-						})
-					}
-					state.messages = append(state.messages, anchorMsg)
-
-					// 工具结果成对补齐：有真实结果用真实结果，没有的（极
-					// 少见——所有已上报 tool_use 都已派发执行）合成错误结果，
-					// 维持 tool_use/tool_result 消息对齐。
-					byID := make(map[string]executor.ToolResult, len(gotResults))
-					for _, r := range gotResults {
-						byID[r.ToolUseID] = r
-					}
-					for _, tc := range toolCalls {
-						if r, ok := byID[tc.ID]; ok {
-							state.messages = append(state.messages,
-								message.NewToolResultMessage(tc.ID, r.Content, r.IsError),
-							)
-						} else {
-							state.messages = append(state.messages,
-								message.NewToolResultMessage(tc.ID, "流中断，该工具调用未收到结果", true),
-							)
-						}
-					}
-
-					state.messages = append(state.messages, message.NewMetaMessage(
+					l.appendAnchor(state, assistantText, toolCalls, results, "流中断，该工具调用未收到结果")
+					l.appendMessage(state, message.NewMetaMessage(
 						"Your previous response was interrupted by a network error mid-stream. "+
 							"The partial content above is preserved as-is. Continue seamlessly from "+
 							"where it stopped — no apology, no recap, no repetition.",
 					))
+					l.setFinalMessages(state.transcript)
 				}
 				// 无任何部分内容（流刚建立就断）：状态无需修复，直接重开流。
 				// 注意 continue mainLoop：此处处于流消费的 range 循环内，
@@ -883,16 +775,44 @@ mainLoop:
 			}
 
 			// 轮询已完成的流式工具。
-			l.reportToolResults(ctx, state, streamingExec.Poll(), out)
+			if polled := streamingExec.Poll(); len(polled) > 0 {
+				l.reportToolResults(ctx, state, polled, out)
+				results = append(results, polled...)
+			}
+		}
+
+		// 非增量 provider：流里只有一条完整消息、没有任何增量事件（例如把
+		// 非流式接口包装成 Stream 的实现）时，从完整消息补出文本与思考，工具
+		// 调用照常派发。
+		if completeMsg != nil && assistantText == "" && thinkingText == "" && len(toolCalls) == 0 && ctx.Err() == nil {
+			for _, b := range completeMsg.Content {
+				switch b.Type {
+				case "text":
+					assistantText += b.Text
+					out <- Event{Type: EvtTextDelta, Text: b.Text}
+				case "thinking":
+					thinkingText += b.Thinking
+					out <- Event{Type: EvtThinking, Thinking: b.Thinking}
+				}
+			}
+			for _, tc := range message.ExtractToolCalls(*completeMsg) {
+				l.startTool(ctx, state, streamingExec, tc, out)
+				toolCalls = append(toolCalls, tc)
+			}
 		}
 
 		// 流正常结束：连续中断计数清零（熔断只针对连续失败）。
 		state.streamRetryCount = 0
 
+		// 用量：一次请求只上报一次合并后的终值。
+		if turnUsage != nil {
+			l.recordUsage(ctx, state, activeProvider, turnUsage, out)
+		}
+
 		// 流消费完毕：LLM 调用级 observer 触发 OnLLMDone（本轮响应完整落地）。
 		if o, ok := l.cfg.Observer.(observer.LLMObserver); ok {
 			o.OnLLMDone(ctx, llmInfo, &observer.LLMResult{
-				Model:         activeProvider.Capabilities().ModelID,
+				Model:         caps.ModelID,
 				Turn:          state.turnCount + 1,
 				Duration:      time.Since(llmStart),
 				StopReason:    string(stopReason),
@@ -903,106 +823,37 @@ mainLoop:
 			})
 		}
 
-		// ⑥ 中止检查 — 生成合成 tool_result 维持 API 消息对齐。
+		// ⑥ 中止检查 — 已执行的工具记入历史，未完成的合成结果，维持 API 消息对齐。
 		if ctx.Err() != nil {
 			if l.cfg.Observer != nil {
 				l.cfg.Observer.OnError(ctx, ctx.Err())
 			}
-			streamingExec.Discard()
-			// 为未完成的工具调用生成合成结果。
-			if len(toolCalls) > 0 {
-				syntheticMsg := message.Message{Role: message.RoleAssistant}
-				if assistantText != "" {
-					syntheticMsg.Content = append(syntheticMsg.Content, message.ContentBlock{
-						Type: "text",
-						Text: assistantText,
-					})
-				}
-				for _, tc := range toolCalls {
-					syntheticMsg.Content = append(syntheticMsg.Content, message.ContentBlock{
-						Type:      "tool_use",
-						ToolUseID: tc.ID,
-						ToolName:  tc.Name,
-						Input:     tc.Input,
-					})
-				}
-				state.messages = append(state.messages, syntheticMsg)
-				// 为每个 tool_use 添加合成 tool_result。
-				for _, tc := range toolCalls {
-					state.messages = append(state.messages,
-						message.NewToolResultMessage(tc.ID, "工具执行被用户中断", true),
-					)
-				}
-			}
-			// 用户主动终止走一等事件（合成 tool_result 逻辑见上，保持消息
-			// 序列完整以便同会话续聊）；DeadlineExceeded 等仍走错误通道。
-			if errors.Is(ctx.Err(), context.Canceled) {
-				out <- Event{Type: EvtInterrupted, Text: "用户中断"}
-			} else {
-				out <- Event{Type: EvtError, Error: ctx.Err()}
-			}
+			l.finishInterrupted(ctx, state, assistantText, toolCalls, results, streamingExec, false, out)
 			return
 		}
 
 		// 构建助手消息。
-		assistantMsg := message.Message{
-			Role: message.RoleAssistant,
-		}
-		// Thinking 内容放在最前面（对应 Claude API 的 thinking block 顺序）。
-		if thinkingText != "" {
-			assistantMsg.Content = append(assistantMsg.Content, message.ContentBlock{
-				Type:     "thinking",
-				Thinking: thinkingText,
-			})
-		}
-		if assistantText != "" {
-			assistantMsg.Content = append(assistantMsg.Content, message.ContentBlock{
-				Type: "text",
-				Text: assistantText,
-			})
-		}
-		for _, tc := range toolCalls {
-			assistantMsg.Content = append(assistantMsg.Content, message.ContentBlock{
-				Type:      "tool_use",
-				ToolUseID: tc.ID,
-				ToolName:  tc.Name,
-				Input:     tc.Input,
-			})
-		}
-		state.messages = append(state.messages, assistantMsg)
+		l.appendMessage(state, buildAssistantMessage(thinkingText, assistantText, toolCalls, completeMsg))
 
 		// 同步到 finalMessages：assistant 消息（思考+工具调用）一完成就落盘，
 		// 不等工具执行完——工具跑几十秒（analyze/build）期间前端重连/重开
 		// 项目就能看到本轮的思考和正在执行的工具调用。
-		l.setFinalMessages(state.messages)
+		l.setFinalMessages(state.transcript)
 
 		// ⑦ 无工具调用 → 退出判断。
 		if len(toolCalls) == 0 {
-			// 检查 max_output_tokens 恢复。
-			if stopReason == provider.StopMaxTokens {
-				// 第一次尝试：提升 4k → 64k。
-				if state.maxOutputTokensOverride == 0 {
-					state.maxOutputTokensOverride = 64_000
-					t := TransMaxOutputEscalate
-					state.transition = &t
-					l.logWarn("输出被截断(stop=max_tokens)，提升 max_tokens 至 64000 重试")
-					out <- Event{Type: EvtProgress, Text: "输出被截断，提升最大 tokens"}
-					continue
-				}
-				// 第二次尝试：注入继续提示（最多 3 次）。
-				if state.maxOutputRecoveryCount < 3 {
-					recoveryMsg := message.NewMetaMessage(
-						"Output token limit hit. Resume directly — no apology, " +
-							"no recap. Pick up mid-thought. Break remaining work into smaller pieces.",
-					)
-					state.messages = append(state.messages, recoveryMsg)
-					state.maxOutputRecoveryCount++
-					t := TransMaxOutputRecovery
-					state.transition = &t
-					l.logWarn("输出被截断(stop=max_tokens)，注入继续提示 %d/3", state.maxOutputRecoveryCount)
-					out <- Event{Type: EvtProgress, Text: fmt.Sprintf("输出被截断，恢复尝试 %d/3", state.maxOutputRecoveryCount)}
-					continue
-				}
+			// 输出被 max_tokens 截断：注入续写提示（最多 maxOutputRecoveries 次）。
+			// 不做"提升 max_tokens 重试"：多数 OpenAI 兼容后端在未显式传
+			// max_tokens 时使用服务端默认值，显式传一个更大的值可能直接 400。
+			if stopReason == provider.StopMaxTokens && state.maxOutputRecoveryCount < maxOutputRecoveries {
+				l.appendMessage(state, message.NewMetaMessage(
+					"Output token limit hit. Resume directly — no apology, "+
+						"no recap. Pick up mid-thought. Break remaining work into smaller pieces.",
+				))
+				state.maxOutputRecoveryCount++
+				l.logWarn("输出被截断(stop=max_tokens)，注入继续提示 %d/%d", state.maxOutputRecoveryCount, maxOutputRecoveries)
+				out <- Event{Type: EvtProgress, Text: fmt.Sprintf("输出被截断，恢复尝试 %d/%d", state.maxOutputRecoveryCount, maxOutputRecoveries)}
+				continue
 			}
 
 			// 推理型模型（DeepSeek-R1/V4 等）可能整段回复只进思考通道：
@@ -1012,14 +863,11 @@ mainLoop:
 			if assistantText == "" && thinkingText != "" {
 				if state.thinkingOnlyRecoveryCount < 2 {
 					state.thinkingOnlyRecoveryCount++
-					recoveryMsg := message.NewMetaMessage(
-						"Your previous reply contained only internal reasoning with no visible response. " +
-							"Re-state your answer in the main response channel as regular text " +
+					l.appendMessage(state, message.NewMetaMessage(
+						"Your previous reply contained only internal reasoning with no visible response. "+
+							"Re-state your answer in the main response channel as regular text "+
 							"(do not use the thinking channel alone).",
-					)
-					state.messages = append(state.messages, recoveryMsg)
-					t := TransThinkingOnlyRecovery
-					state.transition = &t
+					))
 					l.logWarn("回复只有思考无正文，注入正文重述提示 %d/2", state.thinkingOnlyRecoveryCount)
 					out <- Event{Type: EvtProgress, Text: "回复只有思考无正文，要求正文重述"}
 					continue
@@ -1027,9 +875,6 @@ mainLoop:
 			}
 
 			// Stop Hooks（统一扩展点：hooks 包 EventStop）。
-			// 双轨合并后 internal 的 StopHookRunner 已删除——用户注册
-			// stop hook 只经 WithHooks 一条路，现场信息（停止原因/最后
-			// 文本/消息历史）直接传给 hook。
 			if l.cfg.Hooks != nil {
 				block, msg, err := l.cfg.Hooks.RunStop(ctx, string(stopReason), assistantText, state.messages)
 				if err != nil {
@@ -1037,10 +882,7 @@ mainLoop:
 					return
 				}
 				if block {
-					correctionMsg := message.NewMetaMessage(msg)
-					state.messages = append(state.messages, correctionMsg)
-					t := TransStopHookBlocking
-					state.transition = &t
+					l.appendMessage(state, message.NewMetaMessage(msg))
 					l.logWarn("stop hook 阻止退出: %s", msg)
 					out <- Event{Type: EvtProgress, Text: fmt.Sprintf("stop hook 阻止退出: %s", msg)}
 					continue
@@ -1050,51 +892,51 @@ mainLoop:
 			// 正常完成。
 			l.logInfo("完成: turns=%d msgs=%d stop=%s text=%dB thinking=%dB",
 				state.turnCount, len(state.messages), stopReason, len(assistantText), len(thinkingText))
+			l.setFinalMessages(state.transcript)
 			out <- Event{Type: EvtDone}
 			return
 		}
 
 		// ⑧ 有工具调用 → 等待所有工具完成。
-		// P0: 所有工具（含权限检查）已在步骤⑤统一交给 StreamingExecutor，
-		// 此处只需等待剩余结果。对齐 Claude Code query.ts 的
-		// streamingToolExecutor.getRemainingResults() 路径。
 		remaining := streamingExec.Wait(ctx)
 		l.reportToolResults(ctx, state, remaining, out)
+		results = append(results, remaining...)
 
-		// 收集所有结果。
-		allResults := append(streamingExec.Poll(), remaining...)
+		if ctx.Err() != nil {
+			// 等待期间被中断：助手消息已在历史里，只需补齐结果。
+			l.finishInterrupted(ctx, state, assistantText, toolCalls, results, streamingExec, true, out)
+			return
+		}
 
-		// 执行后处理：中间件 AfterTool + Hooks PostToolUse。
-		for _, result := range allResults {
-			tool := l.toolIndex[result.Name]
-			if tool == nil || result.IsError {
+		ordered := orderResults(toolCalls, results, missingResultText)
+		inputs := make(map[string]json.RawMessage, len(toolCalls))
+		for _, tc := range toolCalls {
+			inputs[tc.ID] = tc.Input
+		}
+
+		// 执行后处理：结果截断 → 中间件 AfterTool → Hooks PostToolUse。
+		for i := range ordered {
+			r := &ordered[i]
+			tool := l.toolIndex[r.Name]
+			if tool == nil {
 				continue
 			}
-			// 结果截断（MaxResultSizeChars）。
-			if tool.MaxResultSizeChars > 0 && len(result.Content) > tool.MaxResultSizeChars {
-				result.Content = result.Content[:tool.MaxResultSizeChars] + "\n... (结果被截断)"
+			r.Content = truncateResult(r.Content, tool.MaxResultSizeChars)
+			var toolErr error
+			if r.IsError {
+				toolErr = errors.New(r.Content)
 			}
-			// 中间件 AfterTool。
 			for _, mw := range l.cfg.Middlewares {
-				mw.AfterTool(ctx, result.Name, result.Content, nil)
+				mw.AfterTool(ctx, r.Name, r.Content, toolErr)
 			}
-			// Hooks PostToolUse。
 			if l.cfg.Hooks != nil {
-				// 找到对应的 toolCall 以获取 input。
-				for _, tc := range toolCalls {
-					if tc.ID == result.ToolUseID {
-						l.cfg.Hooks.RunPostToolUse(ctx, tc.Name, tc.Input, result.Content, nil)
-						break
-					}
-				}
+				l.cfg.Hooks.RunPostToolUse(ctx, r.Name, inputs[r.ToolUseID], r.Content, toolErr)
 			}
 		}
 
-		// 将工具结果作为消息追加。
-		for _, result := range allResults {
-			state.messages = append(state.messages,
-				message.NewToolResultMessage(result.ToolUseID, result.Content, result.IsError),
-			)
+		// 将工具结果作为消息追加（按调用顺序）。
+		for _, r := range ordered {
+			l.appendMessage(state, message.NewToolResultMessage(r.ToolUseID, r.Content, r.IsError))
 		}
 
 		// 工具批结束边界：注入 guide 车道的插话消息。选此边界是因为
@@ -1104,7 +946,7 @@ mainLoop:
 		// SteeringHub.endRun 降级进 queue 车道，不会丢失。
 		if l.cfg.Steering != nil && l.cfg.SessionID != "" {
 			for _, g := range l.cfg.Steering.DrainGuides(l.cfg.SessionID) {
-				state.messages = append(state.messages, message.NewUserMessage(g))
+				l.appendMessage(state, message.NewUserMessage(g))
 				out <- Event{Type: EvtSteer, Text: g}
 			}
 		}
@@ -1112,14 +954,12 @@ mainLoop:
 		// ⑨ 后处理。
 		state.turnCount++
 		state.hasAttemptedReactiveCompact = false
-		t := TransNextTurn
-		state.transition = &t
-		l.logInfo("turn=%d 完成: tools=%d input_tokens=%d msgs=%d",
-			state.turnCount, len(allResults), state.lastInputTokens, len(state.messages))
+		l.logInfo("turn=%d 完成: tools=%d context_tokens=%d msgs=%d",
+			state.turnCount, len(ordered), state.lastInputTokens, len(state.messages))
 
 		// 同步到 finalMessages：外部（goagent.run）在事件流消费中途调用
 		// FinalMessages() 做逐条即时持久化，进程被杀时已完成的轮次全保留。
-		l.setFinalMessages(state.messages)
+		l.setFinalMessages(state.transcript)
 
 		// 增加压缩管理器的轮次计数。
 		if l.cfg.Compaction != nil {
@@ -1131,11 +971,12 @@ mainLoop:
 			l.cfg.PostSampling.AfterSampling(ctx, state.messages)
 		}
 
-		// Token 预算检查。
+		// Token 预算检查（仅在设置了总预算时生效）。
 		if l.cfg.Budget != nil {
 			result := l.cfg.Budget.Check()
 			if result.ShouldStop() {
-				out <- Event{Type: EvtProgress, Text: fmt.Sprintf("token 预算状态: %s", result.Status)}
+				l.logWarn("token 预算停止: %s %s", result.Status, result.Reason)
+				out <- Event{Type: EvtProgress, StatusKey: "budget", Text: fmt.Sprintf("token 预算已停止本次运行（%s）：%s", result.Status, result.Reason)}
 				out <- Event{Type: EvtDone}
 				return
 			}
@@ -1146,6 +987,295 @@ mainLoop:
 	}
 }
 
+// buildToolDefs 把注册的工具转成请求里的工具定义。支持缓存时给最后一个
+// 工具打 cache_control（Anthropic 缓存从头到该标记为止的前缀）。
+func buildToolDefs(tools []ToolEntry, caps provider.Capabilities) []provider.ToolDefinition {
+	if len(tools) == 0 {
+		return nil
+	}
+	defs := make([]provider.ToolDefinition, 0, len(tools))
+	for _, t := range tools {
+		defs = append(defs, provider.ToolDefinition{
+			Name:        t.Name,
+			Description: t.Description,
+			InputSchema: t.InputSchema,
+		})
+	}
+	if caps.SupportsCaching {
+		defs[len(defs)-1].CacheControl = &provider.CacheControl{Type: "ephemeral"}
+	}
+	return defs
+}
+
+// startTool 处理流中解析出的一个 tool_use：发事件、通知 Observer，并交给
+// StreamingExecutor（未知工具直接得到错误结果）。
+func (l *Loop) startTool(ctx context.Context, state *loopState, se *executor.StreamingExecutor, tc message.ToolCall, out chan<- Event) {
+	l.logDebug("tool_start: %s id=%s input_len=%d", tc.Name, tc.ID, len(tc.Input))
+	out <- Event{Type: EvtToolStart, ToolName: tc.Name, ToolInput: tc.Input, ToolUseID: tc.ID}
+
+	// Observer: 通知工具开始执行（ctx 携带调用 ID，
+	// 宿主经 observer.ToolCallIDFromContext 做 span 关联）。
+	if l.cfg.Observer != nil {
+		l.cfg.Observer.OnToolStart(observer.WithToolCallID(ctx, tc.ID), tc.Name, tc.Input)
+	}
+	state.toolStartTimes[tc.ID] = time.Now()
+
+	tool := l.toolIndex[tc.Name]
+	if tool == nil {
+		name := tc.Name
+		se.Add(ctx, executor.ToolCall{
+			ID:    tc.ID,
+			Name:  tc.Name,
+			Input: tc.Input,
+			Class: executor.ClassReadOnly,
+			Execute: func(_ context.Context, _ json.RawMessage) (string, error) {
+				return "", fmt.Errorf("未知工具 %q", name)
+			},
+		})
+		return
+	}
+
+	// 入参不符合 schema 的调用不执行（也不进入审批）：错误说明作为工具结果
+	// 交回模型修正。此前缺必填字段的调用会以零值静默执行。
+	if s := l.toolSchemas[tc.Name]; s != nil {
+		if err := schema.Validate(s, tc.Input); err != nil {
+			msg := fmt.Sprintf("工具 %q 的参数不符合其入参 schema，未执行：\n%v\n请修正参数后重试。", tc.Name, err)
+			se.Add(ctx, executor.ToolCall{
+				ID:    tc.ID,
+				Name:  tc.Name,
+				Input: tc.Input,
+				Class: executor.ClassReadOnly,
+				Execute: func(_ context.Context, _ json.RawMessage) (string, error) {
+					return "", errors.New(msg)
+				},
+			})
+			return
+		}
+	}
+
+	// 更新 transcript 供 YOLO 分类器使用。
+	if l.cfg.Permission != nil {
+		l.cfg.Permission.SetTranscript(state.messages)
+	}
+	se.Add(ctx, executor.ToolCall{
+		ID:         tc.ID,
+		Name:       tc.Name,
+		Input:      tc.Input,
+		Class:      tool.Class,
+		Concurrent: tool.Concurrent,
+		Execute:    tool.ExecuteFn,
+		PreCheck:   l.buildPreCheck(tool, tc.Name, tc.Input, state.messages),
+	})
+}
+
+// retryRateLimit 处理 429：等待后重试同一模型（换模型无济于事——同一账号
+// 同一限额）。等待时长优先采用服务端的 Retry-After。状态行原地更新倒计时。
+// interrupted 为 true 表示等待期间被用户中断且已发出终止事件。
+func (l *Loop) retryRateLimit(ctx context.Context, p provider.Provider, req *provider.Request, err error, state *loopState, out chan<- Event) (stream <-chan provider.StreamEvent, outErr error, interrupted bool) {
+	var rateLimitErr *provider.RateLimitError
+	if !errors.As(err, &rateLimitErr) {
+		return nil, err, false
+	}
+	const statusKey = "rate-limit"
+	const maxRateRetries = 10
+	for attempt := 1; attempt <= maxRateRetries; attempt++ {
+		brief := truncateErr(rateLimitErr.Error(), 60)
+		// TPM 窗口 60s：首次 15s 起步（部分配额可能已释放），逐次递增至 60s。
+		wait := time.Duration(15*attempt) * time.Second
+		if wait > 60*time.Second {
+			wait = 60 * time.Second
+		}
+		if rateLimitErr.RetryAfter > 0 {
+			wait = min(rateLimitErr.RetryAfter, 5*time.Minute)
+		}
+		l.logWarn("429 限流: %s · 等待 %s 后重试 (attempt %d/%d) · turn=%d",
+			brief, wait, attempt, maxRateRetries, state.turnCount+1)
+		deadline := time.Now().Add(wait)
+		for time.Now().Before(deadline) {
+			remain := int(time.Until(deadline).Seconds()) + 1
+			out <- Event{Type: EvtProgress, StatusKey: statusKey, Text: fmt.Sprintf(
+				"✻ 429 %s · Retrying in %ds · attempt %d/%d",
+				brief, remain, attempt, maxRateRetries)}
+			step := time.Until(deadline)
+			if step > time.Second {
+				step = time.Second
+			}
+			select {
+			case <-ctx.Done():
+				out <- Event{Type: EvtProgress, StatusKey: statusKey, Text: ""}
+				if errors.Is(ctx.Err(), context.Canceled) {
+					l.logInfo("429 等待中用户中断")
+					out <- Event{Type: EvtInterrupted, Text: "用户中断"}
+				} else {
+					l.logError("429 等待中被取消: %v", ctx.Err())
+					out <- Event{Type: EvtError, Error: fmt.Errorf("API 错误: %w", err)}
+				}
+				return nil, nil, true
+			case <-time.After(step):
+			}
+		}
+		stream, err = p.Stream(ctx, req)
+		if err == nil {
+			l.logInfo("429 限流恢复: attempt %d 后成功 · turn=%d", attempt, state.turnCount+1)
+			out <- Event{Type: EvtProgress, StatusKey: statusKey, Text: ""}
+			return stream, nil, false
+		}
+		if !errors.As(err, &rateLimitErr) {
+			out <- Event{Type: EvtProgress, StatusKey: statusKey, Text: ""}
+			return nil, err, false // 变成别的错误了（过载/断网）：走常规处理
+		}
+	}
+	l.logError("429 重试 %d 次后仍失败: %v", maxRateRetries, err)
+	out <- Event{Type: EvtProgress, StatusKey: statusKey, Text: ""}
+	return nil, err, false
+}
+
+// tryReactiveCompact 在上下文过长错误时尝试一次响应式压缩，成功返回 true。
+func (l *Loop) tryReactiveCompact(ctx context.Context, state *loopState, err error, contextWindow int) bool {
+	var ptlErr *provider.PromptTooLongError
+	if !errors.As(err, &ptlErr) || l.cfg.Compaction == nil || state.hasAttemptedReactiveCompact {
+		return false
+	}
+	recovered, ok := l.cfg.Compaction.HandleOverflow(ctx, state.messages, contextWindow)
+	if !ok {
+		return false
+	}
+	l.logWarn("上下文过长，响应式压缩后重试")
+	l.setView(state, recovered)
+	state.hasAttemptedReactiveCompact = true
+	l.setFinalMessages(state.transcript)
+	return true
+}
+
+// recordUsage 上报一次请求的用量：事件流、上下文占用、预算与 Observer。
+func (l *Loop) recordUsage(ctx context.Context, state *loopState, p provider.Provider, u *provider.Usage, out chan<- Event) {
+	out <- Event{Type: EvtUsageUpdate, Usage: u}
+	if n := u.ContextTokens(); n > 0 {
+		state.lastInputTokens = n
+	}
+	if l.cfg.Budget != nil {
+		l.cfg.Budget.RecordUsage(state.turnCount, u.InputTokens, u.OutputTokens)
+	}
+	if l.cfg.Observer != nil {
+		model := p.Capabilities().ModelID
+		l.cfg.Observer.OnTokenUsage(ctx, model, u, cost.Estimate(model, *u))
+	}
+}
+
+// finishInterrupted 处理用户中断（或 ctx 到期）：收集已完成的工具结果、
+// 不再启动排队中的工具，把本轮已发生的内容（正文、工具调用及其真实或
+// 合成的结果）记入历史，保证同会话可以继续对话。assistantAppended 为
+// true 表示助手消息已在历史中，只需补齐结果。
+func (l *Loop) finishInterrupted(ctx context.Context, state *loopState, text string, calls []message.ToolCall, results []executor.ToolResult, se *executor.StreamingExecutor, assistantAppended bool, out chan<- Event) {
+	late := append(se.Poll(), se.Wait(ctx)...)
+	l.reportToolResults(ctx, state, late, out)
+	results = append(results, late...)
+
+	if assistantAppended {
+		for _, r := range orderResults(calls, results, interruptedResultText) {
+			l.appendMessage(state, message.NewToolResultMessage(r.ToolUseID, r.Content, r.IsError))
+		}
+	} else if text != "" || len(calls) > 0 {
+		l.appendAnchor(state, text, calls, results, interruptedResultText)
+	}
+	l.setFinalMessages(state.transcript)
+
+	// 用户主动终止走一等事件；DeadlineExceeded 等仍走错误通道。ctx 本身
+	// 未结束时是 provider 上报了取消（用户中断传导到流），同样视为中断。
+	cause := ctx.Err()
+	if cause == nil || errors.Is(cause, context.Canceled) {
+		out <- Event{Type: EvtInterrupted, Text: "用户中断"}
+	} else {
+		out <- Event{Type: EvtError, Error: cause}
+	}
+}
+
+// appendAnchor 把未完整结束的一轮固化进历史：助手消息（已流出的正文 +
+// 工具调用）加每个调用的结果——有真实结果用真实结果，没有的用 missing
+// 合成错误结果，维持 tool_use/tool_result 对齐。
+func (l *Loop) appendAnchor(state *loopState, text string, calls []message.ToolCall, results []executor.ToolResult, missing string) {
+	anchor := message.Message{Role: message.RoleAssistant}
+	if text != "" {
+		anchor.Content = append(anchor.Content, message.ContentBlock{Type: "text", Text: text})
+	}
+	for _, tc := range calls {
+		anchor.Content = append(anchor.Content, message.ContentBlock{
+			Type:      "tool_use",
+			ToolUseID: tc.ID,
+			ToolName:  tc.Name,
+			Input:     tc.Input,
+		})
+	}
+	l.appendMessage(state, anchor)
+	for _, r := range orderResults(calls, results, missing) {
+		l.appendMessage(state, message.NewToolResultMessage(r.ToolUseID, r.Content, r.IsError))
+	}
+}
+
+// buildAssistantMessage 组装本轮的助手消息。provider 在完成事件里给出了
+// thinking/redacted_thinking 块（带签名）时原样采用——Anthropic 要求回传
+// 时附带签名；否则用流式累积的思考文本。
+func buildAssistantMessage(thinking, text string, calls []message.ToolCall, complete *message.Message) message.Message {
+	m := message.Message{Role: message.RoleAssistant}
+	var thinkingBlocks []message.ContentBlock
+	if complete != nil {
+		for _, b := range complete.Content {
+			if b.Type == "thinking" || b.Type == "redacted_thinking" {
+				thinkingBlocks = append(thinkingBlocks, b)
+			}
+		}
+	}
+	if len(thinkingBlocks) > 0 {
+		m.Content = append(m.Content, thinkingBlocks...)
+	} else if thinking != "" {
+		m.Content = append(m.Content, message.ContentBlock{Type: "thinking", Thinking: thinking})
+	}
+	if text != "" {
+		m.Content = append(m.Content, message.ContentBlock{Type: "text", Text: text})
+	}
+	for _, tc := range calls {
+		m.Content = append(m.Content, message.ContentBlock{
+			Type:      "tool_use",
+			ToolUseID: tc.ID,
+			ToolName:  tc.Name,
+			Input:     tc.Input,
+		})
+	}
+	return m
+}
+
+// orderResults 按工具调用顺序排列结果，每个调用恰好一个结果；缺失的
+// 合成为 missing 错误结果。
+func orderResults(calls []message.ToolCall, results []executor.ToolResult, missing string) []executor.ToolResult {
+	byID := make(map[string]executor.ToolResult, len(results))
+	for _, r := range results {
+		if _, dup := byID[r.ToolUseID]; !dup {
+			byID[r.ToolUseID] = r
+		}
+	}
+	ordered := make([]executor.ToolResult, 0, len(calls))
+	for _, tc := range calls {
+		if r, ok := byID[tc.ID]; ok {
+			ordered = append(ordered, r)
+			continue
+		}
+		ordered = append(ordered, executor.ToolResult{ToolUseID: tc.ID, Name: tc.Name, Content: missing, IsError: true})
+	}
+	return ordered
+}
+
+// truncateResult 把超过 limit 字节的结果截断到 UTF-8 字符边界并注明。
+func truncateResult(s string, limit int) string {
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + fmt.Sprintf("\n... (结果被截断：原始 %d 字节，保留前 %d 字节)", len(s), cut)
+}
+
 // reportToolResults 上报工具结果：事件流 + Observer + 开始时间清理。
 // 流式消费中 Poll 的增量上报、轮末 Wait 的收尾上报与流中断恢复的
 // 收集上报共用此路径。
@@ -1153,13 +1283,13 @@ func (l *Loop) reportToolResults(ctx context.Context, state *loopState, results 
 	for _, result := range results {
 		l.logDebug("tool_done: %s id=%s err=%v content_len=%d", result.Name, result.ToolUseID, result.IsError, len(result.Content))
 		out <- Event{Type: EvtToolDone, ToolName: result.Name, ToolResult: result.Content, ToolUseID: result.ToolUseID, ToolIsError: result.IsError}
-		if l.cfg.Observer == nil {
-			continue
-		}
 		var duration time.Duration
 		if startTime, ok := state.toolStartTimes[result.ToolUseID]; ok {
 			duration = time.Since(startTime)
 			delete(state.toolStartTimes, result.ToolUseID)
+		}
+		if l.cfg.Observer == nil {
+			continue
 		}
 		if result.IsError {
 			l.cfg.Observer.OnToolError(observer.WithToolCallID(ctx, result.ToolUseID), result.Name, nil, fmt.Errorf("%s", result.Content), duration)
@@ -1171,14 +1301,13 @@ func (l *Loop) reportToolResults(ctx context.Context, state *loopState, results 
 
 // buildPreCheck 构建工具的 PreCheck 闭包，包含完整的权限检查链。
 // 对齐 Claude Code 的 StreamingToolExecutor.executeTool() 内置权限逻辑。
-// 检查链：ValidateInput → CheckPermissions → PlanChecker → Permission.Gate → Middlewares → Hooks。
-// 返回 nil 表示工具不需要预检查（如 ReadOnly 级别且无额外约束）。
-func (l *Loop) buildPreCheck(tool *ToolEntry, toolName string, toolInput json.RawMessage) executor.PreCheckFn {
-	// ReadOnly 工具且无额外检查 → 跳过预检查，最大化并发。
-	if tool.Permission == permission.LevelReadOnly &&
-		l.cfg.PlanChecker == nil &&
-		l.cfg.Hooks == nil &&
-		len(l.cfg.Middlewares) == 0 {
+// 检查链：PlanChecker → Permission.Gate → Middlewares → Hooks。
+// 返回 nil 表示没有任何检查需要做。
+//
+// transcript 是发起本次调用时的对话记录，随 ctx 交给权限门的分类器：同一个
+// 权限门可能被多个并发循环共用，共享的 SetTranscript 记录不一定属于本循环。
+func (l *Loop) buildPreCheck(tool *ToolEntry, toolName string, toolInput json.RawMessage, transcript []message.Message) executor.PreCheckFn {
+	if l.cfg.PlanChecker == nil && l.cfg.Permission == nil && l.cfg.Hooks == nil && len(l.cfg.Middlewares) == 0 {
 		return nil
 	}
 
@@ -1190,10 +1319,27 @@ func (l *Loop) buildPreCheck(tool *ToolEntry, toolName string, toolInput json.Ra
 			}
 		}
 
-		// 2. Permission Gate 检查（可能阻塞等待用户审批）。
+		// 2. 中间件 BeforeTool（先于用户审批：能被策略拒绝的调用不该打扰用户）。
+		for _, mw := range l.cfg.Middlewares {
+			if d := mw.BeforeTool(ctx, toolName, toolInput); d != nil && !d.Allow {
+				return fmt.Sprintf("被中间件阻止: %s", d.Reason), true
+			}
+		}
+
+		// 3. Hooks PreToolUse。
+		if l.cfg.Hooks != nil {
+			block, msg, err := l.cfg.Hooks.RunPreToolUse(ctx, toolName, toolInput)
+			if err != nil {
+				return fmt.Sprintf("hook 错误: %s", err.Error()), true
+			}
+			if block {
+				return fmt.Sprintf("被 hook 阻止: %s", msg), true
+			}
+		}
+
+		// 4. Permission Gate 检查（可能阻塞等待用户审批；ctx 取消即拒绝）。
 		if l.cfg.Permission != nil {
-			allowed, reason := l.cfg.Permission.Check(toolName, string(toolInput), tool.Permission)
-			// Observer: 通知权限决策。
+			allowed, reason := l.cfg.Permission.CheckContext(permission.WithTranscript(ctx, transcript), toolName, string(toolInput), tool.Permission)
 			if l.cfg.Observer != nil {
 				if allowed {
 					l.cfg.Observer.OnPermissionGranted(ctx, toolName, tool.Permission.String())
@@ -1206,72 +1352,8 @@ func (l *Loop) buildPreCheck(tool *ToolEntry, toolName string, toolInput json.Ra
 			}
 		}
 
-		// 3. 中间件 BeforeTool。
-		for _, mw := range l.cfg.Middlewares {
-			if d := mw.BeforeTool(ctx, toolName, toolInput); d != nil && !d.Allow {
-				return fmt.Sprintf("被中间件阻止: %s", d.Reason), true
-			}
-		}
-
-		// 4. Hooks PreToolUse。
-		if l.cfg.Hooks != nil {
-			block, msg, err := l.cfg.Hooks.RunPreToolUse(ctx, toolName, toolInput)
-			if err != nil {
-				return fmt.Sprintf("hook 错误: %s", err.Error()), true
-			}
-			if block {
-				return fmt.Sprintf("被 hook 阻止: %s", msg), true
-			}
-		}
-
 		return "", false
 	}
-}
-
-// 内置模型定价表（与 cost/cost.go 保持同步）。
-// 用于在 Observer.OnTokenUsage 事件中提供 costUSD 参数。
-var defaultPricingUSD = map[string]struct {
-	inputPerMillion  float64
-	outputPerMillion float64
-}{
-	"claude-opus-4-6":   {15.0, 75.0},
-	"claude-sonnet-4-6": {3.0, 15.0},
-	"claude-haiku-4-5":  {0.8, 4.0},
-}
-
-// estimateCostUSD 根据 Token 使用量估算 USD 成本。
-// 这是一个近似计算，与 cost.Tracker.calculateCost 逻辑一致。
-// 用于 Observer.OnTokenUsage 事件的 costUSD 参数。
-func estimateCostUSD(modelID string, usage *provider.Usage) float64 {
-	if usage == nil {
-		return 0
-	}
-	pricing, ok := defaultPricingUSD[modelID]
-	if !ok {
-		// 未知模型使用 sonnet 定价。
-		pricing = defaultPricingUSD["claude-sonnet-4-6"]
-	}
-	cost := float64(usage.InputTokens)*pricing.inputPerMillion/1_000_000 +
-		float64(usage.OutputTokens)*pricing.outputPerMillion/1_000_000
-	return cost
-}
-
-// cacheControlForSystemPrompt 决定 system prompt block 是否需要 cache_control。
-// 策略：如果有 tools，tools 的最后一个已经标记了缓存断点，
-// system prompt 无需额外标记（Anthropic 缓存按前缀匹配，tools 的标记已覆盖 system prompt）。
-// 如果没有 tools，system prompt 需要自己标记。
-func cacheControlForSystemPrompt(supportsCaching bool, toolCount int) *provider.CacheControl {
-	if !supportsCaching {
-		return nil
-	}
-	if toolCount > 0 {
-		// tools 最后一个已标记，system prompt 不需要。
-		// 但为了最大化缓存命中（system prompt 和 tools 分别缓存），也标记上。
-		// Anthropic 最多支持 4 个 cache breakpoint，这里用掉 2 个（system + tools）是合理的。
-		return &provider.CacheControl{Type: "ephemeral"}
-	}
-	// 无 tools 场景，system prompt 是唯一可缓存前缀。
-	return &provider.CacheControl{Type: "ephemeral"}
 }
 
 // truncateErr 截断错误信息用于进度展示（429 的 message 带 request id 很长）。
@@ -1284,14 +1366,4 @@ func truncateErr(s string, n int) string {
 		n--
 	}
 	return s[:n] + "…"
-}
-
-// CurrentState 返回当前运行状态（用于 Pause/Resume）。
-func (l *Loop) CurrentState() *loopState {
-	return l.state
-}
-
-// RestoreState 恢复循环状态（用于 Pause/Resume 的 Resume）。
-func (l *Loop) RestoreState(state *loopState) {
-	l.state = state
 }

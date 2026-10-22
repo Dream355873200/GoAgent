@@ -214,7 +214,7 @@ func Describe() Description {
 			{"GET", "/queue?session_id=", "查看排队消息（含条目 ID）"},
 			{"POST", "/queue/remove", "按 ID 取走排队消息（撤回编辑 / 立即发送，返回原文）"},
 			{"POST", "/approve", "权限审批响应"},
-			{"GET", "/mode", "当前权限模式（default/accept_edits/plan/bypass/deny_all）"},
+			{"GET", "/mode", "当前权限模式（default/accept_edits/auto/plan/bypass/deny_all）"},
 			{"POST", "/mode", "运行时切换权限模式（立即生效，含进行中的 run）"},
 			{"GET", "/thinking", "当前思考强度档位（off/low/medium/high；空 = 不干预）"},
 			{"POST", "/thinking", "运行时切换思考强度（自下一次 run 起生效）"},

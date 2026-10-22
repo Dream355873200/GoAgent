@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
+	"unicode/utf8"
 
 	"github.com/Dream355873200/GoAgent/message"
 	"github.com/Dream355873200/GoAgent/provider"
@@ -94,9 +96,33 @@ type Manager struct {
 	tracking      AutoCompactTracking
 }
 
-// SetProvider 设置用于 LLM 摘要的提供者。
+// summarizeTimeout 是一次自动摘要模型调用的超时。
+const summarizeTimeout = 2 * time.Minute
+
+// SetProvider 设置用于 LLM 摘要的提供者。未通过 Config.Summarizer 自定义
+// 摘要函数时，Layer 4 自动摘要改用该提供者（此前 Layer 4 从未接上摘要器，
+// 实际不会生效）。
 func (m *Manager) SetProvider(p provider.Provider) {
 	m.provider = p
+	if m.config.Summarizer != nil || p == nil {
+		return
+	}
+	m.auto.summarizer = func(ctx context.Context, prompt string) (string, error) {
+		cctx, cancel := context.WithTimeout(ctx, summarizeTimeout)
+		defer cancel()
+		resp, err := p.Complete(cctx, &provider.Request{
+			Messages:  []message.Message{message.NewUserMessage(prompt)},
+			MaxTokens: 8192,
+		})
+		if err != nil {
+			return "", err
+		}
+		text := strings.TrimSpace(message.ExtractText(resp.Message))
+		if text == "" {
+			return "", fmt.Errorf("摘要为空")
+		}
+		return text, nil
+	}
 }
 
 // injectPostCompactReminders 调用全部重注入源，把提醒追加为 user 消息。
@@ -264,11 +290,14 @@ func (m *Manager) Apply(ctx context.Context, messages []message.Message, context
 	if currentTokens > threshold {
 		compacted, err := m.auto.apply(ctx, messages, contextWindow)
 		if err == nil {
-			freed = currentTokens - estimateMessagesTokens(compacted)
+			after := estimateMessagesTokens(compacted)
+			freed = currentTokens - after
 			totalFreed += freed
 			compacted = m.injectPostCompactReminders(ctx, compacted)
 			messages = compacted
-			m.RecordAutocompactResult(true, 0)
+			// 摘要后仍超过阈值（例如保留的尾部本身就很大）视为失败：继续
+			// 每轮重新摘要只会烧钱，连续失败交给熔断器止损。
+			m.RecordAutocompactResult(after <= threshold, 0)
 		} else {
 			m.RecordAutocompactResult(false, 0)
 		}
@@ -300,10 +329,22 @@ func (m *Manager) HandleOverflow(ctx context.Context, messages []message.Message
 // 图片回收共享策略（与 micro_compact.go 的图片处理保持一致）：
 // 含内联图片的结果绝不允许 head+tail 截断——截断会产出损坏 base64，发给
 // 端点必 400 且会话永久卡死。最近 imgTailMessages 条消息内的图片完整保留
-//（一轮可含多张参考图），更早的整体回收为占位符——占位符携带原图文件
-// 路径，模型之后可用 vision_ask/Read 重新查看。
+// （一轮可含多张参考图），更早的整体回收为占位符——占位符带上正文里给出
+// 的原图路径，模型之后可以重新读取。
 const imgTailMessages = 40
-var imagePathRe = regexp.MustCompile(`[A-Za-z]:\\[^\s"']+`)
+
+// imagePathRe 匹配图片结果正文中的绝对路径（Windows 盘符路径或 POSIX 路径），
+// 路径前须是行首、空白或常见分隔符。
+var imagePathRe = regexp.MustCompile(`(?:^|[\s(（:：=「"'])((?:[A-Za-z]:[\\/]|/)[^\s"'，。；、)）\]」]+)`)
+
+// imagePlaceholder 生成图片结果被回收后的占位文本。路径只在剥掉图片标记后的
+// 正文里查找：base64 数据本身含有 "/"。
+func imagePlaceholder(text string) string {
+	if m := imagePathRe.FindStringSubmatch(stripImageMarkers(text)); m != nil {
+		return "[图片已省略：历史图片已回收以节省上下文，原图位于 " + m[1] + "；需要时可重新读取该文件]"
+	}
+	return "[图片已省略：历史图片已回收以节省上下文；需要时请重新读取原图]"
+}
 
 // recycleImageResult 判定并生成图片结果回收文本（调用方须先确认含图片标记）。
 // 返回 (替换文本, true) = 应回收；(空, false) = 保留完整原样——不是"可以截断"。
@@ -314,41 +355,68 @@ func recycleImageResult(messages []message.Message, i int, text string) (string,
 	if i >= len(messages)-imgTailMessages {
 		return "", false
 	}
-	path := imagePathRe.FindString(text)
-	return "[截图已省略：历史图片已回收，原图保存在 " + path +
-		"；如需再次查看，用 vision_ask 读取该文件路径]", true
+	return imagePlaceholder(text), true
 }
 
 type budgetCompressor struct {
 	maxSize int
-	// TODO: 实现真正的磁盘持久化 + 引用替换。
-	// 当前仅截断保留头尾，注释说"持久化到磁盘"但实际未实现。
+}
+
+// cowText 以写时复制的方式改写 result[i].Content[j].Text：每条消息首次被
+// 改写前先克隆其内容块。消息是值类型但 Content 切片共享底层数组，就地改写
+// 会篡改调用方手里的历史、已持久化的对话记录，并与并发读取者构成数据竞争。
+type cowText map[int]bool
+
+func (c cowText) set(result []message.Message, i, j int, text string) {
+	if !c[i] {
+		result[i] = result[i].CloneContent()
+		c[i] = true
+	}
+	result[i].Content[j].Text = text
 }
 
 func (b *budgetCompressor) apply(messages []message.Message) ([]message.Message, int) {
 	freed := 0
+	cow := cowText{}
 	result := make([]message.Message, len(messages))
+	copy(result, messages)
 	for i, msg := range messages {
-		result[i] = msg
 		for j, block := range msg.Content {
 			if block.Type == "tool_result" && len(block.Text) > b.maxSize {
 				original := len(block.Text)
 				// 图片豁免：内联图片结果走统一回收策略（禁 head+tail 截断）
 				if strings.Contains(block.Text, imageMarker) {
 					if repl, ok := recycleImageResult(messages, i, block.Text); ok {
-						result[i].Content[j].Text = repl
+						cow.set(result, i, j, repl)
 						freed += (original - len(repl)) / 4
 					}
 					continue
 				}
-				result[i].Content[j].Text = block.Text[:b.maxSize/2] +
-					fmt.Sprintf("\n\n[... %d 字符被截断 (TODO: 实现磁盘持久化 + 引用替换) ...]\n\n", original-b.maxSize) +
-					block.Text[original-b.maxSize/2:]
-				freed += (original - len(result[i].Content[j].Text)) / 4
+				text := headTail(block.Text, b.maxSize/2, b.maxSize/2,
+					fmt.Sprintf("\n\n[... %d 字符被截断 ...]\n\n", original-b.maxSize))
+				cow.set(result, i, j, text)
+				freed += (original - len(text)) / 4
 			}
 		}
 	}
 	return result, freed
+}
+
+// headTail 保留 s 的前 head 字节与后 tail 字节（截断点落在 UTF-8 字符
+// 边界），中间以 mark 替代。
+func headTail(s string, head, tail int, mark string) string {
+	if head+tail >= len(s) {
+		return s
+	}
+	h := head
+	for h > 0 && !utf8.RuneStart(s[h]) {
+		h--
+	}
+	t := len(s) - tail
+	for t < len(s) && !utf8.RuneStart(s[t]) {
+		t++
+	}
+	return s[:h] + mark + s[t:]
 }
 
 // --- Layer 1: Snip ---
@@ -368,21 +436,22 @@ func (s *snipCompressor) apply(messages []message.Message, contextWindow int) ([
 	}
 
 	freed := 0
-	// 保护最后 4 条消息（近期上下文）。
+	// 保护最后 4 条消息（近期上下文）与第一条用户消息（原始任务）。
 	protectedTail := 4
 	cutoff := len(messages) - protectedTail
 
+	cow := cowText{}
 	result := make([]message.Message, len(messages))
 	copy(result, messages)
 
 	for i := 0; i < cutoff; i++ {
-		if result[i].Compacted {
-			continue // 已经截断过
+		if result[i].Compacted || (i == 0 && result[i].Role == message.RoleUser) {
+			continue
 		}
-		for j, block := range result[i].Content {
+		for j, block := range messages[i].Content {
 			if block.Type == "text" && len(block.Text) > 200 {
 				original := message.EstimateTokens(message.Message{Content: []message.ContentBlock{block}})
-				result[i].Content[j].Text = block.Text[:100] + "\n[... 已截断 ...]\n" + block.Text[len(block.Text)-100:]
+				cow.set(result, i, j, headTail(block.Text, 100, 100, "\n[... 已截断 ...]\n"))
 				newEstimate := message.EstimateTokens(message.Message{Content: []message.ContentBlock{result[i].Content[j]}})
 				freed += original - newEstimate
 			}
@@ -405,6 +474,7 @@ type microCompressor struct{}
 
 func (mc *microCompressor) apply(messages []message.Message, contextWindow int, stripThreshold float64) ([]message.Message, int) {
 	freed := 0
+	cow := cowText{}
 
 	result := make([]message.Message, len(messages))
 	copy(result, messages)
@@ -413,24 +483,22 @@ func (mc *microCompressor) apply(messages []message.Message, contextWindow int, 
 	// 对齐 Claude Code 的 applyToolResultBudget()。
 	// 图片豁免：内联图片结果（[IMAGE ...]）绝不能 head+tail 截断——截断会
 	// 产出损坏 base64，发给端点必 400 且会话永久卡死。走统一回收策略。
-	for i, msg := range result {
+	for i, msg := range messages {
 		for j, block := range msg.Content {
 			if block.Type == "tool_result" && len(block.Text) > MaxToolResultChars {
 				original := len(block.Text)
 				if strings.Contains(block.Text, imageMarker) {
 					if repl, ok := recycleImageResult(result, i, block.Text); ok {
-						result[i].Content[j].Text = repl
+						cow.set(result, i, j, repl)
 						freed += (original - len(repl)) / 4
 					}
 					continue
 				}
 				// 保留头尾各 10KB，中间用截断标记替换。
-				head := block.Text[:10_000]
-				tail := block.Text[original-10_000:]
-				result[i].Content[j].Text = head +
-					fmt.Sprintf("\n\n[... 中间 %d 字符已截断 ...]\n\n", original-20_000) +
-					tail
-				freed += (original - len(result[i].Content[j].Text)) / 4
+				text := headTail(block.Text, 10_000, 10_000,
+					fmt.Sprintf("\n\n[... 中间 %d 字符已截断 ...]\n\n", original-20_000))
+				cow.set(result, i, j, text)
+				freed += (original - len(text)) / 4
 			}
 		}
 	}
@@ -464,14 +532,14 @@ func (mc *microCompressor) apply(messages []message.Message, contextWindow int, 
 
 	// 将已消费的工具结果替换为标记。
 	// 图片结果跳过：由 Pass 1 的统一回收策略管理（最近 40 条内完整保留）。
-	for i, msg := range result {
-		for j, block := range msg.Content {
+	for i := range result {
+		for j, block := range result[i].Content {
 			if block.Type == "tool_result" && consumed[block.ForToolUseID] && len(block.Text) > 100 {
 				if strings.Contains(block.Text, imageMarker) {
 					continue
 				}
 				original := len(block.Text)
-				result[i].Content[j].Text = fmt.Sprintf("[内容已处理，移除 %d 字符]", original)
+				cow.set(result, i, j, fmt.Sprintf("[内容已处理，移除 %d 字符]", original))
 				freed += original / 4
 			}
 		}
@@ -495,53 +563,86 @@ func (c *collapseCompressor) apply(messages []message.Message, contextWindow int
 		return messages, 0
 	}
 
-	// 将旧的轮次对折叠为摘要消息。
-	// 保护最后 6 条消息。
-	protectedTail := 6
-	cutoff := len(messages) - protectedTail
+	// 将旧的轮次折叠为摘要消息，保护最后 6 条消息。切点按 API 轮次对齐：
+	// 尾部不能以 tool_result 开头（否则与它的 tool_use 被拆开，请求 400）。
+	cutoff := roundStart(messages, len(messages)-6)
 	if cutoff <= 0 {
 		return messages, 0
 	}
 
-	// 构建折叠轮次的摘要。
-	var summaryParts []string
+	// 已有的折叠摘要原样保留并在其后追加，不再把摘要本身再摘要一遍
+	// （反复折叠会让原始任务描述逐渐消失）。
+	start := 0
+	var summary strings.Builder
+	if messages[0].Compacted && messages[0].Role == message.RoleUser {
+		summary.WriteString(message.ExtractText(messages[0]))
+		summary.WriteString("\n")
+		start = 1
+	} else {
+		summary.WriteString("之前的对话摘要：\n")
+	}
+
 	freed := 0
-
-	for i := 0; i < cutoff; i += 2 {
-		if i+1 < cutoff {
-			userText := message.ExtractText(messages[i])
-			assistantText := message.ExtractText(messages[i+1])
-			if len(userText) > 80 {
-				userText = userText[:80] + "..."
-			}
-			if len(assistantText) > 80 {
-				assistantText = assistantText[:80] + "..."
-			}
-			summaryParts = append(summaryParts, fmt.Sprintf("- 用户: %s → 助手: %s", userText, assistantText))
-			freed += message.EstimateTokens(messages[i]) + message.EstimateTokens(messages[i+1])
+	added := 0
+	for i := start; i < cutoff; i++ {
+		m := messages[i]
+		freed += message.EstimateTokens(m)
+		if message.IsToolResultMessage(m) {
+			continue
 		}
+		text := strings.TrimSpace(message.ExtractText(m))
+		if text == "" {
+			continue
+		}
+		role := "助手"
+		if m.Role == message.RoleUser {
+			role = "用户"
+			// 第一条用户消息通常是原始任务，多保留一些。
+			if i == 0 {
+				text = truncateRunes(text, 2000)
+			}
+		}
+		summary.WriteString(fmt.Sprintf("- %s: %s\n", role, truncateRunes(text, 160)))
+		added++
 	}
-
-	if len(summaryParts) == 0 {
+	if added == 0 && start == 0 {
 		return messages, 0
-	}
-
-	summary := "之前的对话摘要：\n"
-	for _, part := range summaryParts {
-		summary += part + "\n"
 	}
 
 	summaryMsg := message.Message{
 		Role:      message.RoleUser,
-		Content:   []message.ContentBlock{{Type: "text", Text: summary}},
+		Content:   []message.ContentBlock{{Type: "text", Text: summary.String()}},
 		Compacted: true,
 	}
-
+	if start == 1 {
+		freed += message.EstimateTokens(messages[0])
+	}
 	freed -= message.EstimateTokens(summaryMsg)
 
 	result := []message.Message{summaryMsg}
 	result = append(result, messages[cutoff:]...)
 	return result, freed
+}
+
+// roundStart 把切点 idx 向前移到 API 轮次边界：只要 messages[idx] 是工具
+// 结果消息，就继续前移，直到包含发起这些调用的 assistant 消息。
+func roundStart(messages []message.Message, idx int) int {
+	if idx >= len(messages) {
+		idx = len(messages) - 1
+	}
+	for idx > 0 && message.IsToolResultMessage(messages[idx]) {
+		idx--
+	}
+	return idx
+}
+
+// truncateRunes 按字符截断（不切坏多字节字符）。
+func truncateRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	r := []rune(s)
+	return string(r[:n]) + "..."
 }
 
 func (c *collapseCompressor) drain(messages []message.Message) ([]message.Message, int) {
@@ -564,22 +665,24 @@ func (a *autoCompressor) apply(ctx context.Context, messages []message.Message, 
 	// 构建请求模型摘要的提示。
 	// 图片标记剥离：内联 base64（150KB+/张）会撑爆摘要输入、截断尾部还会
 	// 产出损坏数据。
-	var conversationText string
+	var conv strings.Builder
 	for _, msg := range messages {
 		text := stripImageMarkers(message.ExtractText(msg))
 		if text != "" {
-			conversationText += fmt.Sprintf("[%s]: %s\n", msg.Role, text)
+			conv.WriteString(fmt.Sprintf("[%s]: %s\n", msg.Role, text))
 		}
 	}
+	conversationText := conv.String()
 
-	// 如果对话本身对摘要调用来说太长，则截断。
+	// 对话本身对摘要调用来说太长时，保留开头（原始任务）与结尾（最近进展），
+	// 截断中间。
 	maxChars := contextWindow * 3 // 粗略估算：1 token ≈ 4 字符，使用窗口的 3/4
-	if len(conversationText) > maxChars {
-		conversationText = conversationText[len(conversationText)-maxChars:]
+	if maxChars > 0 && len(conversationText) > maxChars {
+		conversationText = headTail(conversationText, maxChars/5, maxChars-maxChars/5, "\n[... 中间的对话已省略 ...]\n")
 	}
 
-	prompt := "Summarize the following conversation. Preserve key decisions, " +
-		"file paths, code changes, and important context. Be concise.\n\n" +
+	prompt := "Summarize the following conversation. Preserve the user's original task and requirements, " +
+		"key decisions, file paths, code changes, open problems and next steps. Be concise.\n\n" +
 		conversationText
 
 	summaryText, err := a.summarizer(ctx, prompt)
@@ -587,6 +690,14 @@ func (a *autoCompressor) apply(ctx context.Context, messages []message.Message, 
 		return messages, fmt.Errorf("自动压缩失败: %w", err)
 	}
 
+	// 保留最后 2 条消息以维持上下文连续性；切点按 API 轮次对齐。
+	start := roundStart(messages, len(messages)-2)
+	if start < 0 {
+		start = 0
+	}
+
+	// 摘要同时是一条摘要记录：CompactBoundary 指向保留下来的第一条对话记录
+	// 消息，循环把它追加进对话记录后，Project 能从记录还原出这个视图。
 	summaryMsg := message.Message{
 		Role: message.RoleUser,
 		Content: []message.ContentBlock{{
@@ -594,17 +705,18 @@ func (a *autoCompressor) apply(ctx context.Context, messages []message.Message, 
 			Text: "[对话已压缩]\n\n" + summaryText,
 		}},
 		Compacted:        true,
+		IsMeta:           true,
 		IsCompactSummary: true,
 	}
-
-	// 保留最后 2 条消息以维持上下文连续性。
-	tail := 2
-	if len(messages) < tail {
-		tail = len(messages)
+	for _, m := range messages[start:] {
+		if m.UID != "" && !m.IsCompactSummary {
+			summaryMsg.CompactBoundary = m.UID
+			break
+		}
 	}
 
 	result := []message.Message{summaryMsg}
-	result = append(result, messages[len(messages)-tail:]...)
+	result = append(result, messages[start:]...)
 	return result, nil
 }
 

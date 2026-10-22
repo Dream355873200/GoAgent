@@ -141,21 +141,22 @@ func (t *Tracker) Check() CheckResult {
 
 	totalConsumed := t.totalInput + t.totalOutput
 
+	// 未设置总预算时预算机制整体关闭，包括收益递减检测：纯工具调用的
+	// 轮次输出本来就只有几十个 token，不能据此判定"没有进展"而停机。
+	if t.config.TotalBudget <= 0 {
+		return CheckResult{
+			Status:        StatusOK,
+			Remaining:     -1,
+			TotalConsumed: totalConsumed,
+		}
+	}
+
 	// 检查 diminishing returns。
 	if t.consecutiveLowOutput >= t.config.MaxDiminishingTurns {
 		return CheckResult{
 			Status:        StatusDiminishing,
 			Reason:        fmt.Sprintf("连续 %d 轮输出低于 %d tokens", t.consecutiveLowOutput, t.config.MinOutputPerTurn),
 			Remaining:     t.remaining(totalConsumed),
-			TotalConsumed: totalConsumed,
-		}
-	}
-
-	// 无总预算限制时始终 OK。
-	if t.config.TotalBudget <= 0 {
-		return CheckResult{
-			Status:        StatusOK,
-			Remaining:     -1,
 			TotalConsumed: totalConsumed,
 		}
 	}

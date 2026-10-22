@@ -1,6 +1,7 @@
 package goagent
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/Dream355873200/GoAgent/provider"
 	"github.com/Dream355873200/GoAgent/session"
 	"github.com/Dream355873200/GoAgent/sessionmem"
+	"github.com/Dream355873200/GoAgent/statedir"
 	"github.com/Dream355873200/GoAgent/task"
 )
 
@@ -54,6 +56,7 @@ type appConfig struct {
 	sandbox             Sandbox                       // 沙箱工厂（nil = 无沙箱，默认）
 	sandboxPolicy       Policy                        // 沙箱默认策略（WithSandbox 时生效）
 	autoPersist         *bool                         // nil 表示使用默认（true）
+	skipInputValidation bool                          // true = 关闭工具入参 schema 校验
 	permissionMode      *permission.PermissionMode    // nil 表示使用默认
 	permissionRules     *permission.RuleSet
 	permissionGuards    []permission.Guard // 外部策略链（单调：可拒不可放）
@@ -87,6 +90,8 @@ type appConfig struct {
 	// 外部 prompt 目录（优先从此目录加载，找不到则 fallback 到嵌入默认值）
 	promptDir      string
 	yoloPromptFile string // YOLO 分类 prompt 外部文件路径
+	yoloDisabled   bool   // WithYoloClassifier(false)：不装配分类器
+	yoloModel      string // 分类器使用的模型（空 = 主 provider 当前模型）
 
 	// 库内日志（WithLogger 注入；nil = slog.Default()）
 	logger *slog.Logger
@@ -107,6 +112,11 @@ type appConfig struct {
 	// 注册的额外端点（如领域通知端点）。路由表已含 /chat /tasks 等，
 	// 宿主路由与之冲突时后注册者生效（ServeMux 语义）。nil = 无扩展。
 	httpRoutes map[string]func(http.ResponseWriter, *http.Request)
+
+	// RunHTTP 安全配置（见 WithHTTPAuthToken / WithHTTPAllowedOrigins / WithHTTPInsecure）。
+	httpAuthToken      string
+	httpAllowedOrigins []string
+	httpInsecure       bool
 
 	// 插话通道（WithSteering）：非 nil 时 RunSession 在 run 结束后自动
 	// 消费 queue 车道续跑，loop 在工具批结束边界注入 guide 车道，
@@ -212,6 +222,14 @@ type Approver interface {
 	Approve(toolName string, input string, permission Permission) (allow bool, alwaysAllow bool)
 }
 
+// ContextApprover 是 Approver 的可选扩展。实现它的审批者在工具调用的 ctx
+// 下审批：用 SessionIDFromContext(ctx) 取得发起审批的会话（把请求路由给
+// 该会话的用户），ctx 取消（用户中断）时应立即返回拒绝。PermissionHandler
+// 已实现此接口。
+type ContextApprover interface {
+	ApproveWithContext(ctx context.Context, toolName string, input string, permission Permission) (allow bool, alwaysAllow bool)
+}
+
 // --- Options ---
 
 // WithProvider sets the LLM provider.
@@ -239,6 +257,16 @@ func WithSystemPrompt(prompt string) Option {
 func WithMaxTurns(n int) Option {
 	return optionFunc(func(c *appConfig) {
 		c.maxTurns = n
+	})
+}
+
+// WithToolInputValidation 开关工具入参校验（默认开启）。开启时每次工具调用
+// 执行前按工具的入参 schema 检查类型、必填字段与枚举值；不合规的调用不执行，
+// 错误说明作为工具结果返回给模型修正。只在宿主的工具有意接受 schema 之外的
+// 入参时关闭。
+func WithToolInputValidation(enabled bool) Option {
+	return optionFunc(func(c *appConfig) {
+		c.skipInputValidation = !enabled
 	})
 }
 
@@ -471,14 +499,21 @@ func WithToolKits(kits ...ToolKit) Option {
 // WithPermissionMode 设置权限模式。
 // 控制框架如何处理工具权限：
 //   - PermissionDefault — 默认（ReadOnly 自动通过，其他询问用户）
-//   - PermissionBypass — 绕过所有权限（CI/CD 环境，等同 AutoApprover）
-//   - PermissionAcceptEdits — 自动接受 ReadOnly 和 Normal 工具
+//   - PermissionAcceptEdits — 自动接受只读工具与编辑类工具（FileEdit），
+//     高风险的编辑与其他工具仍询问
+//   - PermissionAuto — 自动模式：非只读工具调用逐个交给 YOLO 分类器判定
+//   - PermissionBypass — 不询问：普通操作直接放行，高风险操作交给 YOLO
+//     分类器判定（见 permission.HighRisk）
 //   - PermissionPlanOnly — 只允许只读工具（规划模式）
 //   - PermissionDenyAll — 不询问，直接拒绝所有非只读操作
 //
+// deny 规则与 Guard 在所有模式下最先生效。auto / bypass 模式需要分类器
+// 判定而分类器不可用时（未配置 provider、WithYoloClassifier(false)、调用
+// 失败），该调用改为询问审批者，没有审批者则拒绝。
+//
 // 示例：
 //
-//	// CI/CD 环境，跳过所有权限
+//	// CI/CD 环境：不询问，高风险操作由分类器把关
 //	app := goagent.New(goagent.WithPermissionMode(goagent.PermissionBypass))
 //
 //	// 规划模式，只允许读取
@@ -511,14 +546,20 @@ type PermissionModeOption int
 const (
 	// PermissionDefault 默认权限模式。
 	PermissionDefault PermissionModeOption = PermissionModeOption(permission.ModeDefault)
-	// PermissionBypass 绕过所有权限检查。适用于 CI/CD 或完全受信环境。
+	// PermissionBypass 不询问用户：普通操作直接放行，高风险操作交给 YOLO
+	// 分类器判定。适用于 CI/CD 或受信环境。
 	PermissionBypass PermissionModeOption = PermissionModeOption(permission.ModeBypassPermissions)
-	// PermissionAcceptEdits 自动接受 ReadOnly 和 Normal 级别的工具调用。
+	// PermissionAcceptEdits 自动接受只读工具与编辑类工具（ToolDef.FileEdit）
+	// 的调用，高风险的编辑除外。
 	PermissionAcceptEdits PermissionModeOption = PermissionModeOption(permission.ModeAcceptEdits)
 	// PermissionPlanOnly 只允许只读操作，拒绝所有写操作。
 	PermissionPlanOnly PermissionModeOption = PermissionModeOption(permission.ModePlan)
 	// PermissionDenyAll 不询问用户，直接拒绝所有非只读操作。
 	PermissionDenyAll PermissionModeOption = PermissionModeOption(permission.ModeDontAsk)
+	// PermissionAuto 自动模式：每个非只读、非白名单的工具调用都交给 YOLO
+	// 分类器判定，判定为危险的拒绝；allow 规则命中的直接放行，ask 规则
+	// 命中的仍询问用户。
+	PermissionAuto PermissionModeOption = PermissionModeOption(permission.ModeAuto)
 )
 
 // WithPermissionRules 设置自定义权限规则。
@@ -761,6 +802,33 @@ func WithHTTPRoutes(routes map[string]func(http.ResponseWriter, *http.Request)) 
 	})
 }
 
+// WithHTTPAuthToken 为 RunHTTP 的所有端点启用令牌鉴权：请求须携带
+// "Authorization: Bearer <token>"（或 X-GoAgent-Token 头、?token= 查询参数，
+// 供无法设置请求头的 EventSource 使用）。配置令牌后才允许监听非回环地址。
+func WithHTTPAuthToken(token string) Option {
+	return optionFunc(func(c *appConfig) {
+		c.httpAuthToken = token
+	})
+}
+
+// WithHTTPAllowedOrigins 允许来自这些源（如 "http://localhost:5173"）的浏览器
+// 跨源请求，并为它们返回 CORS 响应头。未列出的跨站请求一律拒绝（防止任意
+// 网页借用户的浏览器向本机服务下指令）。
+func WithHTTPAllowedOrigins(origins ...string) Option {
+	return optionFunc(func(c *appConfig) {
+		c.httpAllowedOrigins = append(c.httpAllowedOrigins, origins...)
+	})
+}
+
+// WithHTTPInsecure 允许在未配置 WithHTTPAuthToken 时监听非回环地址。只在
+// 由其他机制（网关鉴权、私有网络）保护的环境中使用：服务端点可以驱动
+// agent 执行工具。
+func WithHTTPInsecure() Option {
+	return optionFunc(func(c *appConfig) {
+		c.httpInsecure = true
+	})
+}
+
 // WithCostTracking 启用成本追踪。
 // 内部自动创建 cost.Observer + cost.Tracker，并注册为 Observer。
 // 可通过 App.Usage() 获取追踪结果。
@@ -818,7 +886,7 @@ func WithTaskStore(store task.StoreInterface) Option {
 }
 
 // WithPlanStore 注入自定义 Plan 存储后端。
-// 如果不注入，默认使用文件存储（plan.NewManager(".yume/plans")）。
+// 如果不注入，默认使用文件存储（状态目录下的 plans/，默认 .yume/plans，见 WithStateDir）。
 //
 // 示例：
 //
@@ -1044,12 +1112,14 @@ func WithSteering() Option {
 }
 
 // WithTranscriptSink 注册对话记录落地回调：每完成一个循环轮次（工具结果
-// 已写回上下文）以及每次 run 结束时，以该会话当前完整消息列表（含
-// tool_use / tool_result / thinking，压缩发生后为压缩后的列表）调用 fn。
+// 已写回上下文）以及每次 run 结束时，以该会话当前的完整对话记录（含
+// tool_use / tool_result / thinking；压缩不改写它，自动摘要以摘要记录的形式
+// 追加在其中）调用 fn。
 //
 // 面向自管存储的宿主（RunWithHistory / RunWithSessionHistory）：下一轮
 // 直接把最后一次收到的列表作为 history 传回，模型就能看到此前的工具调用
-// 与结果，而不必从事件流重建、也不会丢失 run 中途被中断时已完成的轮次。
+// 与结果，而不必从事件流重建、也不会丢失 run 中途被中断时已完成的轮次；
+// 发生过自动摘要时，循环按摘要记录还原模型视图，不会再请求模型摘要一遍。
 // fn 在 run 的 goroutine 内同步调用，应尽快返回；msgs 不得被修改。
 func WithTranscriptSink(fn func(sessionID string, msgs []message.Message)) Option {
 	return optionFunc(func(c *appConfig) {
@@ -1105,10 +1175,44 @@ func WithPromptDir(dir string) Option {
 	})
 }
 
-// WithYoloPromptFile 指定 YOLO 分类 prompt 的外部文件路径。
-// 空字符串表示使用嵌入的默认值。
+// WithStateDir 设置框架在项目（工作）目录下存放运行状态的目录名，默认 ".yume"。
+// 会话存储（RunCLI / RunHTTP 自动创建时）、计划文件、后台任务输出、项目
+// skill（<目录>/commands）、worktree、会话记忆与动态 pipeline 快照都位于这个
+// 目录下。
+//
+// 这是进程级设置（等同 statedir.Set）：内置工具、skill 发现等不经过 App 配置
+// 的子系统同样按它寻址，同一进程中的多个 App 应使用相同的值。name 必须是
+// 单个路径段，不合法时 New 会 panic。
+func WithStateDir(name string) Option {
+	return optionFunc(func(c *appConfig) {
+		if err := statedir.Set(name); err != nil {
+			panic("goagent: WithStateDir: " + err.Error())
+		}
+	})
+}
+
+// WithYoloPromptFile 指定 YOLO 分类器的 prompt 文件路径。未指定时依次使用
+// 提示词目录（WithPromptDir）中的同名文件、嵌入的默认值。
 func WithYoloPromptFile(path string) Option {
 	return optionFunc(func(c *appConfig) {
 		c.yoloPromptFile = path
+	})
+}
+
+// WithYoloClassifier 开关 YOLO 分类器（默认开启，需要 provider）。分类器只在
+// auto 模式（判定每个非只读调用）与 bypass 模式（只判定高风险调用）下被
+// 调用，其他模式没有额外开销。关闭后，这两种模式中需要判定的调用改为询问
+// 审批者，没有审批者则拒绝。
+func WithYoloClassifier(enabled bool) Option {
+	return optionFunc(func(c *appConfig) {
+		c.yoloDisabled = !enabled
+	})
+}
+
+// WithYoloClassifierModel 指定 YOLO 分类器使用的模型（同一个 provider 上的
+// 模型 ID，如更快更便宜的小模型）。未指定时使用主 provider 当前的模型。
+func WithYoloClassifierModel(model string) Option {
+	return optionFunc(func(c *appConfig) {
+		c.yoloModel = model
 	})
 }

@@ -3,7 +3,7 @@
 // 对齐 Claude Code 的 src/utils/fileHistory.ts：
 // - 在 Write/Edit 工具执行前保存文件原始内容到快照目录
 // - 支持按文件路径和时间戳恢复
-// - 快照存储在 .yume/file_history/ 目录下
+// - 快照存储在调用方指定的目录下（通常是 <状态目录>/file_history/）
 //
 // 使用方式：作为 Middleware 注册到 App。
 package filehistory
@@ -33,7 +33,7 @@ type Snapshot struct {
 // Store 管理文件快照的存储。
 type Store struct {
 	mu        sync.Mutex
-	dir       string                // 快照目录（如 .yume/file_history/）
+	dir       string                // 快照目录（如 <状态目录>/file_history/）
 	snapshots map[string][]Snapshot // 按原始文件路径索引
 }
 

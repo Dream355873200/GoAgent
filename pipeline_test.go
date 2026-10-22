@@ -380,10 +380,10 @@ func TestReviewTools_Approve(t *testing.T) {
 
 	tools := p.newReviewTools()
 
-	// 模拟 worker 完成。
-	p.nodesMu.Lock()
-	p.nodesDone["worker"] = true
-	p.nodesMu.Unlock()
+	// 模拟 supervisor 正在审核一个批次。
+	p.beginRound(ReviewEvent{NodeName: "worker", Results: []ReviewResultItem{
+		{Index: 0, Data: `"r0"`, rawResult: "r0"},
+	}})
 
 	// 调用 approve_result（tools[0]）。
 	ctx := newContextFromStd(context.Background())
@@ -399,12 +399,20 @@ func TestReviewTools_Approve(t *testing.T) {
 		t.Fatal("expected non-empty result from approve_result")
 	}
 
-	// approve_result 调用 OnTaskResult(nil) 来触发回调。
+	// approve_result 把真实结果交给 OnTaskResult（此前传 nil）。
 	mu.Lock()
-	if approvedResult != nil {
-		t.Fatalf("expected OnTaskResult called with nil, got %v", approvedResult)
+	if approvedResult != "r0" {
+		t.Fatalf("expected OnTaskResult called with r0, got %v", approvedResult)
 	}
 	mu.Unlock()
+
+	// 同一条结果不能被处置两次。
+	if _, err := approveTool.Execute.(func(Context, approveResultInput) (string, error))(ctx, approveResultInput{
+		NodeName: "worker",
+		Index:    0,
+	}); err == nil {
+		t.Fatal("重复处置同一条结果应返回错误")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -435,19 +443,12 @@ func TestReviewTools_Reject(t *testing.T) {
 
 	tools := p.newReviewTools()
 
-	// 模拟 worker 完成。
-	p.nodesMu.Lock()
-	p.nodesDone["worker"] = true
-	p.nodesMu.Unlock()
-
 	ctx := newContextFromStd(context.Background())
 
-	// 模拟 currentReviewItems（reject 需要从中读取 item）。
-	p.pendingMu.Lock()
-	p.currentReviewItems["worker"] = []ReviewResultItem{
+	// 模拟 supervisor 正在审核的批次（reject 需要从中读取 item）。
+	p.beginRound(ReviewEvent{NodeName: "worker", Results: []ReviewResultItem{
 		{Index: 0, Data: "test-data", OriginalMessage: "original-msg", RetryCount: 0, rawResult: "test-data"},
-	}
-	p.pendingMu.Unlock()
+	}})
 
 	// reject_result（tools[1]）— retryCount=0 < MaxRetries=3，应重试。
 	rejectTool := tools[1].Def
@@ -502,19 +503,12 @@ func TestReviewTools_RejectMaxRetries(t *testing.T) {
 
 	tools := p.newReviewTools()
 
-	// 模拟 worker 完成。
-	p.nodesMu.Lock()
-	p.nodesDone["worker"] = true
-	p.nodesMu.Unlock()
-
 	ctx := newContextFromStd(context.Background())
 
-	// 模拟 currentReviewItems，RetryCount=2 == MaxRetries=2，应自动放行。
-	p.pendingMu.Lock()
-	p.currentReviewItems["worker"] = []ReviewResultItem{
+	// 模拟审核批次：RetryCount=2 == MaxRetries=2，应自动放行。
+	p.beginRound(ReviewEvent{NodeName: "worker", Results: []ReviewResultItem{
 		{Index: 0, Data: "test-data", OriginalMessage: "original-msg", RetryCount: 2, rawResult: "final-result"},
-	}
-	p.pendingMu.Unlock()
+	}})
 
 	// reject_result（tools[1]）— 当前版本直接自动放行。
 	rejectTool := tools[1].Def

@@ -2,10 +2,59 @@
 package memory
 
 import (
+	"bytes"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
+
+// maxInjectBytes 单个注入系统提示词的文件的字节上限，超出部分截断。
+const maxInjectBytes = 64 << 10
+
+// readForPrompt 读取要注入系统提示词的文件并去掉首尾空白；超过
+// maxInjectBytes 时只保留开头部分，并在末尾追加一行截断说明。
+func readForPrompt(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	// 多读 1 字节用于判断是否超限，不把超大文件整个读进内存。
+	data, err := io.ReadAll(io.LimitReader(f, maxInjectBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) <= maxInjectBytes {
+		return strings.TrimSpace(string(data)), nil
+	}
+
+	size := int64(len(data))
+	if fi, err := f.Stat(); err == nil && fi.Size() > size {
+		size = fi.Size()
+	}
+	kept := strings.TrimSpace(string(data[:cutPoint(data, maxInjectBytes)]))
+	note := fmt.Sprintf("…（文件过大已截断：原始 %d 字节，仅保留前 %d KiB）", size, maxInjectBytes>>10)
+	return strings.TrimSpace(kept + "\n" + note), nil
+}
+
+// cutPoint 返回 data 不超过 limit 字节的截断位置（要求 len(data) > limit）。
+// 优先截在后半段的最后一个换行处，不留下半行（例如被截断的 @import 路径）；
+// 否则退到 UTF-8 字符边界。
+func cutPoint(data []byte, limit int) int {
+	if i := bytes.LastIndexByte(data[:limit+1], '\n'); i >= limit/2 {
+		return i
+	}
+	cut := limit
+	// 合法 UTF-8 中字符起始字节之前最多 3 个续字节；非法编码不再继续回退。
+	for k := 0; k < utf8.UTFMax-1 && cut > 0 && !utf8.RuneStart(data[cut]); k++ {
+		cut--
+	}
+	return cut
+}
 
 // Config 控制内存行为。
 type Config struct {
@@ -47,34 +96,33 @@ func (m *Manager) GetAutoMemory() *AutoMemory {
 }
 
 // LoadProjectContext 读取所有项目上下文文件并返回拼接后的内容，
-// 用于注入到系统提示中。
+// 用于注入到系统提示中。单个文件超过 64 KiB 时截断。
 func (m *Manager) LoadProjectContext() string {
 	var parts []string
 
 	for _, path := range m.config.ProjectContext {
-		content, err := os.ReadFile(path)
+		content, err := readForPrompt(path)
 		if err != nil {
 			continue
 		}
-		parts = append(parts, strings.TrimSpace(string(content)))
+		parts = append(parts, content)
 	}
 
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
-// LoadPersistentMemory 从内存目录读取 MEMORY.md 文件。
+// LoadPersistentMemory 从内存目录读取 MEMORY.md 文件，超过 64 KiB 时截断。
 // 如果内存被禁用或文件不存在，返回空字符串。
 func (m *Manager) LoadPersistentMemory() string {
 	if m.config.MemoryDir == "" {
 		return ""
 	}
 
-	memFile := filepath.Join(m.config.MemoryDir, "MEMORY.md")
-	content, err := os.ReadFile(memFile)
+	content, err := readForPrompt(filepath.Join(m.config.MemoryDir, "MEMORY.md"))
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(content))
+	return content
 }
 
 // SavePersistentMemory 将内容写入 MEMORY.md 文件。

@@ -7,15 +7,21 @@ import (
 )
 
 // QueryID 是查询的唯一标识符。
+//
+// Deprecated: 未被框架使用。运行观测改用 observer 包（goagent.WithObserver）。将在后续版本删除。
 type QueryID string
 
 // QueryEvent 是查询事件的接口。
+//
+// Deprecated: 未被框架使用。运行观测改用 observer 包（goagent.WithObserver）。将在后续版本删除。
 type QueryEvent interface {
 	GetQueryID() QueryID
 	GetTimestamp() time.Time
 }
 
 // BaseQueryEvent 提供基础实现。
+//
+// Deprecated: 未被框架使用。运行观测改用 observer 包（goagent.WithObserver）。将在后续版本删除。
 type BaseQueryEvent struct {
 	queryID   QueryID
 	timestamp time.Time
@@ -25,12 +31,16 @@ func (e *BaseQueryEvent) GetQueryID() QueryID     { return e.queryID }
 func (e *BaseQueryEvent) GetTimestamp() time.Time { return e.timestamp }
 
 // TextDeltaEvent 文本增量事件。
+//
+// Deprecated: 未被框架使用。运行观测改用 observer 包（goagent.WithObserver）。将在后续版本删除。
 type TextDeltaEvent struct {
 	*BaseQueryEvent
 	Text string
 }
 
 // ToolUseEvent 工具调用事件。
+//
+// Deprecated: 未被框架使用。运行观测改用 observer 包（goagent.WithObserver）。将在后续版本删除。
 type ToolUseEvent struct {
 	*BaseQueryEvent
 	ToolName  string
@@ -38,6 +48,8 @@ type ToolUseEvent struct {
 }
 
 // ToolResultEvent 工具结果事件。
+//
+// Deprecated: 未被框架使用。运行观测改用 observer 包（goagent.WithObserver）。将在后续版本删除。
 type ToolResultEvent struct {
 	*BaseQueryEvent
 	ToolName string
@@ -46,6 +58,8 @@ type ToolResultEvent struct {
 }
 
 // UsageEvent token 使用量事件。
+//
+// Deprecated: 未被框架使用。运行观测改用 observer 包（goagent.WithObserver）。将在后续版本删除。
 type UsageEvent struct {
 	*BaseQueryEvent
 	InputTokens  int
@@ -54,6 +68,8 @@ type UsageEvent struct {
 
 // QueryTracker 查询追踪器。
 // 对齐 Claude Code 的 query tracking / chain ID 机制。
+//
+// Deprecated: 未被框架使用。运行观测改用 observer 包（goagent.WithObserver）。将在后续版本删除。
 type QueryTracker struct {
 	queries   map[QueryID]*Query
 	mu        sync.RWMutex
@@ -61,6 +77,8 @@ type QueryTracker struct {
 }
 
 // NewQueryTracker 创建查询追踪器。
+//
+// Deprecated: 未被框架使用。运行观测改用 observer 包（goagent.WithObserver）。将在后续版本删除。
 func NewQueryTracker() *QueryTracker {
 	return &QueryTracker{
 		queries: make(map[QueryID]*Query),
@@ -68,6 +86,8 @@ func NewQueryTracker() *QueryTracker {
 }
 
 // Query 单个查询的追踪信息。
+//
+// Deprecated: 未被框架使用。运行观测改用 observer 包（goagent.WithObserver）。将在后续版本删除。
 type Query struct {
 	ID          QueryID
 	ParentID    QueryID      // 父查询 ID（用于嵌套追踪）
@@ -185,6 +205,8 @@ func generateQueryID() QueryID {
 }
 
 // QueryContext 查询上下文（传递给工具）。
+//
+// Deprecated: 未被框架使用。运行观测改用 observer 包（goagent.WithObserver）。将在后续版本删除。
 type QueryContext struct {
 	// QueryID 当前查询 ID。
 	QueryID QueryID
@@ -195,6 +217,8 @@ type QueryContext struct {
 }
 
 // NewQueryContext 创建查询上下文。
+//
+// Deprecated: 未被框架使用。运行观测改用 observer 包（goagent.WithObserver）。将在后续版本删除。
 func NewQueryContext(tracker *QueryTracker, queryID QueryID) *QueryContext {
 	return &QueryContext{
 		QueryID: queryID,

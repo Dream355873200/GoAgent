@@ -86,10 +86,7 @@ func TestIntoContext_ChainedInjection(t *testing.T) {
 	ctx := IntoContext(context.Background(), nil, a)
 	ctx = IntoContext(ctx, nil, b)
 	resolved := ResolveObserver(ctx, nil)
-	resolved.OnSessionStart(ctx, "s1")
-	if len(a.starts) != 0 && len(a.toolIDs) != 0 {
-		// OnSessionStart 不产生 LLM 事件，只验证不 panic
-	}
+	resolved.OnSessionStart(ctx, "s1") // 不产生 LLM 事件，只验证不 panic
 	resolved.(LLMObserver).OnLLMStart(ctx, &LLMCallInfo{Model: "m"})
 	if len(a.starts) != 1 || len(b.starts) != 1 {
 		t.Fatalf("链上两个 observer 都应收到: a=%d b=%d", len(a.starts), len(b.starts))

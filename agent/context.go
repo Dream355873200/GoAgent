@@ -12,6 +12,8 @@ import (
 )
 
 // AgentContext 是子 agent 的运行时上下文。
+//
+// Deprecated: 未被框架使用，子 agent 的上下文由 Runner 内部管理。将在后续版本删除。
 type AgentContext struct {
 	// ctx 是 Go 标准上下文。
 	ctx context.Context
@@ -28,6 +30,8 @@ type AgentContext struct {
 }
 
 // NewAgentContext 创建一个新的子 agent 上下文。
+//
+// Deprecated: 未被框架使用，子 agent 的上下文由 Runner 内部管理。将在后续版本删除。
 func NewAgentContext(ctx context.Context, def Definition, parentSessionID string) *AgentContext {
 	return &AgentContext{
 		ctx:             ctx,

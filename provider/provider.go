@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"time"
 
 	"github.com/Dream355873200/GoAgent/message"
 )
@@ -125,11 +126,40 @@ const (
 )
 
 // Usage tracks token consumption for a single request.
+//
+// 语义约定（所有 Provider 实现必须归一到这一口径）：
+//   - InputTokens 不含缓存部分（Anthropic 原生口径）；OpenAI 的 prompt_tokens
+//     含缓存命中，实现需减去 cached_tokens 后再填入。
+//   - 每条模型响应只上报一次终值（EventUsage 可以多次发送，但后发的值必须
+//     是累计终值）；消费方按字段取最大值合并，不做累加。
 type Usage struct {
 	InputTokens       int `json:"input_tokens"`
 	OutputTokens      int `json:"output_tokens"`
 	CacheReadTokens   int `json:"cache_read_input_tokens,omitempty"`
 	CacheCreateTokens int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+// ContextTokens 返回本次请求占用的上下文大小（含缓存读写部分）。
+func (u Usage) ContextTokens() int {
+	return u.InputTokens + u.CacheReadTokens + u.CacheCreateTokens
+}
+
+// MergeUsage 合并同一条响应的多次用量上报：逐字段取最大值。a 为 nil 时
+// 返回 b 的副本。用于兼容先发初值、再发终值的流式实现。
+func MergeUsage(a, b *Usage) *Usage {
+	if b == nil {
+		return a
+	}
+	if a == nil {
+		c := *b
+		return &c
+	}
+	m := *a
+	m.InputTokens = max(m.InputTokens, b.InputTokens)
+	m.OutputTokens = max(m.OutputTokens, b.OutputTokens)
+	m.CacheReadTokens = max(m.CacheReadTokens, b.CacheReadTokens)
+	m.CacheCreateTokens = max(m.CacheCreateTokens, b.CacheCreateTokens)
+	return &m
 }
 
 // Capabilities describes what the model can do.
@@ -184,6 +214,8 @@ func (e *OverloadError) Error() string {
 // retry the same provider.
 type RateLimitError struct {
 	Message string
+	// RetryAfter 服务端建议的等待时长（来自 Retry-After 响应头；0 = 未提供）。
+	RetryAfter time.Duration
 }
 
 func (e *RateLimitError) Error() string {

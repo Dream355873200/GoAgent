@@ -269,23 +269,18 @@ result, err := retry.Retry(ctx, retry.DefaultConfig(), func(ctx context.Context)
 
 ---
 
-## 11. Withholding 机制
+## 11. 可恢复错误
 
-位置：`internal/loop/withholding.go`
+位置：`internal/loop/loop.go`
 
-### 暂扣原因
+循环在原地处理以下错误，不向调用方报错：
 
 | 原因 | 触发条件 | 恢复方式 |
 |------|---------|---------|
-| PromptTooLong | 413 错误 | reactive compact |
-| MaxOutputTokens | max_tokens 截断 | escalate / recovery |
-
-### 工作流
-1. 流消费中检测可恢复错误
-2. 暂扣该事件（不立即 yield）
-3. 尝试恢复（压缩/升级）
-4. 成功 → 释放并重试
-5. 失败 → 释放并报错
+| 上下文过长 | 413 / 超长错误 | 折叠排空或响应式压缩后重试（每轮一次） |
+| 输出截断 | `max_tokens` 截断 | 注入续写提示，最多 3 次 |
+| 流中断 | 网络或 SSE 断开 | 已到达的内容固化为锚点（已执行工具的真实结果保留），注入续跑提示后重开流，连续 3 次失败才报错 |
+| 过载 / 限流 | 529 / 429 | 按 `Retry-After` 重试；过载且配置了后备时切换后备模型 |
 
 ---
 
@@ -478,33 +473,32 @@ type PipelineConfig struct {
 
 #### Lightweight Loop
 
-Pipeline worker 使用精简的 `loop.Loop`，包含：
+Pipeline worker 使用精简的 `loop.Loop`（与主循环同一实现），包含：
 - **Provider** + **Tools** + **SystemPrompt** + **MaxTurns** + **Executor**
-- **Compaction**: 可组合压缩，只启用 L0(Budget) + L2(Micro) + L4(Auto)
-- **Hooks**: 继承父 App 的 `hooksMgr`（如果有）
-- **Observer**: 继承父 App 的 `obsRegistry`（如果有）
+- **Compaction**: 可组合压缩，只启用 L2(Micro) + L4(Auto)
+- **检查链与观测**: 在 agent 运行之中启动时继承该运行的作用域（`loop.Scope`）：权限门、plan 模式、hooks、中间件、入参校验开关，以及 observer、会话 ID、后备模型；节点工具按其声明的权限级别检查（`PipelineConfig.TrustedTools` 可关闭）。宿主代码直接启动的 pipeline 不检查，只继承父 App 的 `hooksMgr`
+- **Observer**: 继承父 App 的 `obsRegistry`（如果有）；节点循环不发会话开始/结束事件
 
-跳过的重型子系统：Permission、Memory、Budget、SessionMemory、PlanChecker。
+跳过的重型子系统：Memory、Budget、SessionMemory。
 
 ### 17.4 Supervisor 审核
 
-当存在 `Review=true` 节点且配置了 `Supervisor` 时，框架自动注入三个审核工具：
+当存在 `Review=true` 节点且配置了 `Supervisor` 时，每个待审批次开一轮独立对话，框架自动注入两个审核工具（只读级，不触发用户审批）：
 
 | 工具 | 说明 |
 |------|------|
-| `wait_for_review` | 阻塞等待审核事件，返回待审 result 批次 |
-| `approve_result` | 批准 result，触发 OnResult 回调 |
-| `reject_result` | 拒绝 result + 修改指导，重新入队重试 |
+| `approve_result` | 批准本批次中第 index 条 result，以真实结果触发 OnTaskResult；本轮未处置的结果在轮末自动批准 |
+| `reject_result` | 拒绝第 index 条 result + 修改指导，重新入队重试（超过 MaxRetries 自动批准） |
 
 #### 审核流程
 
 ```
 Worker 完成 → handleResult → 进入待审队列
-     → 攒够 ReviewBatch 或 message 队列为空 → 触发 reviewSignal
-     → Supervisor wait_for_review 收到事件
-     → approve/reject 每个 result
+     → 攒够 ReviewBatch 或 message 队列为空 → 送审一个批次
+     → Supervisor 为该批次开一轮对话，逐条 approve/reject（未处置的轮末自动批准）
      → reject: 原始消息 + guidance 重新入队（不超过 MaxRetries）
-     → 全部 Review 节点审核完成 → Done 信号 → Pipeline 退出
+     → 上游都已关闭队列、所有任务处理完且结果全部处置 → 审核节点关闭自己的队列并完成
+     → 下游 DependsOn 它的节点此时才启动；全部节点完成 → （可选 FinalizePrompt 收尾轮）→ Pipeline 退出
 ```
 
 ### 17.5 队列通信（Injects）

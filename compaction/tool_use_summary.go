@@ -8,6 +8,8 @@ import (
 )
 
 // ToolUseSummaryConfig 配置工具使用摘要。
+//
+// Deprecated: 压缩管理器与 Compact 均不使用它。将在后续版本删除。
 type ToolUseSummaryConfig struct {
 	// MaxTools 摘要中最大工具数。
 	MaxTools int
@@ -18,6 +20,8 @@ type ToolUseSummaryConfig struct {
 }
 
 // DefaultToolUseSummaryConfig 返回默认配置。
+//
+// Deprecated: 压缩管理器与 Compact 均不使用它。将在后续版本删除。
 func DefaultToolUseSummaryConfig() ToolUseSummaryConfig {
 	return ToolUseSummaryConfig{
 		MaxTools:       50,
@@ -27,6 +31,8 @@ func DefaultToolUseSummaryConfig() ToolUseSummaryConfig {
 }
 
 // ToolUseSummary 工具使用摘要结果。
+//
+// Deprecated: 压缩管理器与 Compact 均不使用它。将在后续版本删除。
 type ToolUseSummary struct {
 	// ToolCalls 工具调用摘要。
 	ToolCalls []ToolCallSummary
@@ -37,6 +43,8 @@ type ToolUseSummary struct {
 }
 
 // ToolCallSummary 单个工具调用摘要。
+//
+// Deprecated: 压缩管理器与 Compact 均不使用它。将在后续版本删除。
 type ToolCallSummary struct {
 	ToolName  string
 	CallCount int
@@ -45,6 +53,8 @@ type ToolCallSummary struct {
 
 // GenerateToolUseSummary 生成工具使用的摘要。
 // 用于压缩时将多个工具调用折叠为摘要。
+//
+// Deprecated: 压缩管理器与 Compact 均不使用它。将在后续版本删除。
 func GenerateToolUseSummary(messages []message.Message, cfg ToolUseSummaryConfig) *ToolUseSummary {
 	if cfg.MaxTools == 0 {
 		cfg = DefaultToolUseSummaryConfig()
@@ -105,6 +115,8 @@ func GenerateToolUseSummary(messages []message.Message, cfg ToolUseSummaryConfig
 }
 
 // FormatToolUseSummary 将工具摘要格式化为文本。
+//
+// Deprecated: 压缩管理器与 Compact 均不使用它。将在后续版本删除。
 func FormatToolUseSummary(summary *ToolUseSummary) string {
 	if summary == nil || summary.TotalTools == 0 {
 		return "(无工具调用)"
@@ -154,6 +166,8 @@ func intToString(n int) string {
 
 // CompactToolCalls 将一系列工具调用折叠为单个摘要消息。
 // 用于 microcompact 阶段。
+//
+// Deprecated: 压缩管理器与 Compact 均不使用它。将在后续版本删除。
 func CompactToolCalls(messages []message.Message, cfg ToolUseSummaryConfig) []message.Message {
 	if len(messages) == 0 {
 		return messages

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/Dream355873200/GoAgent/internal/loop"
+	"github.com/Dream355873200/GoAgent/internal/safename"
+	"github.com/Dream355873200/GoAgent/statedir"
 )
 
 // ---------------------------------------------------------------------------
@@ -88,11 +90,14 @@ func (a *App) BuildDynPipeline(spec *DynPipelineSpec) (PipelineConfig, error) {
 			len(spec.Nodes), maxDynPipelineNodes)
 	}
 
-	// 节点名唯一性
+	// 节点名唯一性。节点名会成为轨迹文件名与运行快照的键，先做文件名安全校验。
 	seen := make(map[string]bool, len(spec.Nodes))
 	for _, n := range spec.Nodes {
 		if n.Name == "" {
 			return PipelineConfig{}, fmt.Errorf("存在 name 为空的节点")
+		}
+		if err := safename.Check("节点名", n.Name); err != nil {
+			return PipelineConfig{}, fmt.Errorf("%w（节点名请只用字母、数字、下划线或中文）", err)
 		}
 		if seen[n.Name] {
 			return PipelineConfig{}, fmt.Errorf("节点名 %q 重复", n.Name)
@@ -322,8 +327,14 @@ func (a *App) RunDynPipelineTrace(ctx context.Context, spec *DynPipelineSpec, on
 	}
 	cfg.OnEvent = onEvent
 	cfg.TraceDir = traceDir
-	a.UsePipeline(cfg)
-	return a.RunPipeline(ctx)
+	// 独立的运行实例：不经 UsePipeline，不会覆盖宿主配置的 pipeline，并发的
+	// 多次调用之间也互不干扰。模型写出的编排一律过检查链——在 agent 运行中
+	// 启动时继承该运行的策略，否则按 App 配置新建。
+	pl := newPipeline(cfg, a)
+	scope, release := a.subRunScope(ctx)
+	defer release()
+	pl.scope = scope
+	return a.runPipeline(ctx, pl)
 }
 
 // CreatePipelineInput 是 create_pipeline 工具的输入。
@@ -368,7 +379,7 @@ func (a *App) CreatePipelineTool() NamedTool {
 					}
 				}
 
-				// 运行快照落盘 <workdir>/.yume/pipelines/<ts>.json：节点状态与
+				// 运行快照落盘 <workdir>/<状态目录>/pipelines/<runID>/run.json：节点状态与
 				// 产出随事件增量重写——宿主面板可回看历史运行（运行结束定格）。
 				runID := strconv.FormatInt(time.Now().UnixMilli(), 10)
 				type runNode struct {
@@ -400,9 +411,9 @@ func (a *App) CreatePipelineTool() NamedTool {
 					}
 				}
 				if workDir != "" {
-					// 运行目录：<workdir>/.yume/pipelines/<runID>/，内含
+					// 运行目录：<workdir>/<状态目录>/pipelines/<runID>/（状态目录默认 .yume），内含
 					// run.json（快照）与各节点轨迹 <node>.jsonl。
-					runDir = filepath.Join(workDir, ".yume", "pipelines", runID)
+					runDir = statedir.Join(workDir, "pipelines", runID)
 					if err := os.MkdirAll(runDir, 0o755); err == nil {
 						defer func() { // 兜底定格：异常路径也留下快照
 							b, _ := json.MarshalIndent(snap, "", "  ")
@@ -447,7 +458,7 @@ func (a *App) CreatePipelineTool() NamedTool {
 						const maxOut = 4000
 						out := ev.Text
 						if len(out) > maxOut {
-							out = out[:maxOut] + "…（截断）"
+							out = tracePreview(out, maxOut) + "（截断）"
 						}
 						outputs[ev.Node] = append(outputs[ev.Node], ev.Text)
 						if rn := nodeByID[ev.Node]; rn != nil {
@@ -489,7 +500,7 @@ func (a *App) CreatePipelineTool() NamedTool {
 						for _, out := range outputs[n.Name] {
 							tail := out
 							if len(tail) > 800 {
-								tail = tail[:800] + "…（截断，全文见节点产出的文件/队列交付）"
+								tail = tracePreview(tail, 800) + "（截断，全文见节点产出的文件/队列交付）"
 							}
 							summary += "\n\n### " + n.Name + "\n" + tail
 						}

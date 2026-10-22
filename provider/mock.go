@@ -4,6 +4,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"sync"
 
 	"github.com/Dream355873200/GoAgent/message"
 )
@@ -12,11 +13,12 @@ import (
 //
 // 通过 Responses 字段预设每次 Stream 调用的行为。
 // 每个 Response 描述一轮 LLM 响应（纯文本或 tool_use）。
-// 按 Responses 顺序消费，用完循环使用最后一个。
+// 按 Responses 顺序消费，用完循环使用最后一个。并发安全。
 type MockProvider struct {
 	// Responses 预设的响应列表（按消费顺序）。
 	Responses []MockResponse
 
+	mu sync.Mutex
 	// responseIdx 当前消费到的索引。
 	responseIdx int
 }
@@ -29,6 +31,9 @@ type MockResponse struct {
 	// ToolCalls 要模拟的工具调用列表。
 	// 每个元素包含 Name 和 Input（会被 JSON 序列化）。
 	ToolCalls []MockToolCall
+
+	// Usage 本轮上报的用量（可选）。
+	Usage *Usage
 }
 
 // MockToolCall 描述一次 mock 工具调用。
@@ -54,6 +59,8 @@ func NewMockToolCall(id, name string, input any) MockToolCall {
 
 // nextResponse 返回下一个预设响应。
 func (m *MockProvider) nextResponse() MockResponse {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.responseIdx < len(m.Responses) {
 		resp := m.Responses[m.responseIdx]
 		m.responseIdx++
@@ -67,19 +74,17 @@ func (m *MockProvider) nextResponse() MockResponse {
 	return m.Responses[len(m.Responses)-1]
 }
 
-// Stream 返回一个 channel，按预设发送事件后关闭。
+// Stream 返回一个 channel，事件由独立 goroutine 依次发送（与真实流一样
+// 异步到达，任意数量的工具调用都不会因缓冲区满而阻塞调用方）。
 func (m *MockProvider) Stream(ctx context.Context, req *Request) (<-chan StreamEvent, error) {
-	ch := make(chan StreamEvent, 8)
 	resp := m.nextResponse()
+	ch := make(chan StreamEvent, 8)
 
-	// 构建 assistant message。
+	var events []StreamEvent
 	var contentBlocks []message.ContentBlock
-
 	if resp.Text != "" {
-		contentBlocks = append(contentBlocks, message.ContentBlock{
-			Type: "text", Text: resp.Text,
-		})
-		ch <- StreamEvent{Type: EventTextDelta, Text: resp.Text}
+		contentBlocks = append(contentBlocks, message.ContentBlock{Type: "text", Text: resp.Text})
+		events = append(events, StreamEvent{Type: EventTextDelta, Text: resp.Text})
 	}
 
 	stopReason := StopEndTurn
@@ -91,32 +96,29 @@ func (m *MockProvider) Stream(ctx context.Context, req *Request) (<-chan StreamE
 			ToolName:  tc.Name,
 			Input:     inputBytes,
 		})
-		ch <- StreamEvent{
-			Type: EventToolUseStart,
-			ToolCall: &message.ToolCall{
-				ID:    tc.ID,
-				Name:  tc.Name,
-				Input: inputBytes,
-			},
-		}
+		events = append(events, StreamEvent{
+			Type:     EventToolUseStart,
+			ToolCall: &message.ToolCall{ID: tc.ID, Name: tc.Name, Input: inputBytes},
+		})
 		stopReason = StopToolUse
 	}
-
-	msg := message.Message{
-		Role:    message.RoleAssistant,
-		Content: contentBlocks,
+	if resp.Usage != nil {
+		u := *resp.Usage
+		events = append(events, StreamEvent{Type: EventUsage, Usage: &u})
 	}
-
-	ch <- StreamEvent{
-		Type:       EventMessageComplete,
-		Message:    &msg,
-		StopReason: stopReason,
-	}
+	msg := message.Message{Role: message.RoleAssistant, Content: contentBlocks}
+	events = append(events, StreamEvent{Type: EventMessageComplete, Message: &msg, StopReason: stopReason})
 
 	go func() {
-		close(ch)
+		defer close(ch)
+		for _, ev := range events {
+			select {
+			case ch <- ev:
+			case <-ctx.Done():
+				return
+			}
+		}
 	}()
-
 	return ch, nil
 }
 

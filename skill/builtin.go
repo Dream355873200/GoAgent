@@ -1,7 +1,7 @@
 // Package skill 实现 Skill 系统。
 //
-// 对齐 Claude Code 的 /skill 工具和 .yume/commands/ 发现机制。
-// 支持内置 skill、项目 skill（.yume/commands/）和用户 skill（~/.claude/commands/）。
+// 对齐 Claude Code 的 /skill 工具和 <状态目录>/commands/ 发现机制（状态目录默认 .yume，见 statedir）。
+// 支持内置 skill、项目 skill（<状态目录>/commands/）和用户 skill（~/.claude/commands/）。
 package skill
 
 import (

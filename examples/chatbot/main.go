@@ -13,8 +13,8 @@
 //
 // 用法：
 //
-//	# 使用默认配置（启用全部工具）
-//	go run main.go
+//	# 使用默认配置（DeepSeek 接口，启用全部工具）
+//	OPENAI_API_KEY=sk-... go run main.go
 //
 //	# 使用其他模型
 //	OPENAI_MODEL=qwen2.5:7b go run main.go
@@ -33,6 +33,7 @@ import (
 
 	"github.com/Dream355873200/GoAgent"
 	"github.com/Dream355873200/GoAgent/builtin"
+	"github.com/Dream355873200/GoAgent/cli"
 	"github.com/Dream355873200/GoAgent/sessionmem"
 )
 
@@ -40,7 +41,11 @@ func main() {
 	// 从环境变量读取配置。
 	baseURL := envOr("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
 	model := envOr("OPENAI_MODEL", "deepseek-chat")
-	apiKey := envOr("OPENAI_API_KEY", "sk-d073bcc1e2524f64af853f4640a8b531")
+	apiKey := os.Getenv("OPENAI_API_KEY")
+	if apiKey == "" {
+		fmt.Fprintln(os.Stderr, "请先设置环境变量 OPENAI_API_KEY（默认接口为 DeepSeek，可用 OPENAI_BASE_URL / OPENAI_MODEL 切换）")
+		os.Exit(1)
+	}
 	disableTools := os.Getenv("DISABLE_TOOLS") == "1"
 
 	// 工作目录。
@@ -117,7 +122,7 @@ func main() {
 	app.UseTools(builtin.CoreTools()...)
 
 	// 启动 CLI（TUI 模式）。
-	app.RunCLI()
+	cli.Run(app)
 }
 
 // envOr 从环境变量读取，如果为空返回默认值。

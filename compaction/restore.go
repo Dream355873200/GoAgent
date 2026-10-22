@@ -16,6 +16,8 @@ import (
 const PostCompactMaxFilesToRestore = 5
 
 // FileTracker 追踪最近读取的文件，用于压缩后恢复。
+//
+// Deprecated: 压缩管理器不使用它。压缩后重新注入上下文改用 goagent.WithPostCompactReminder（compaction.ReminderSource）。将在后续版本删除。
 type FileTracker struct {
 	mu    sync.Mutex
 	files []trackedFile
@@ -23,11 +25,12 @@ type FileTracker struct {
 
 // trackedFile 记录一个被追踪的文件。
 type trackedFile struct {
-	path   string
-	toolID string // 关联的 tool_use ID
+	path string
 }
 
 // NewFileTracker 创建一个新的文件追踪器。
+//
+// Deprecated: 压缩管理器不使用它。压缩后重新注入上下文改用 goagent.WithPostCompactReminder（compaction.ReminderSource）。将在后续版本删除。
 func NewFileTracker() *FileTracker {
 	return &FileTracker{}
 }

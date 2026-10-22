@@ -33,10 +33,10 @@ func TestWithLoggerPipelineTrace(t *testing.T) {
 			},
 		},
 	})
-	if app.pipeline == nil {
-		t.Fatal("pipeline 未初始化")
+	if app.pipelineCfg == nil {
+		t.Fatal("pipeline 未配置")
 	}
-	if app.pipeline.logger != logger {
+	if pl := newPipeline(*app.pipelineCfg, app); pl.logger != logger {
 		t.Fatal("pipeline 未继承 WithLogger 注入的 logger")
 	}
 

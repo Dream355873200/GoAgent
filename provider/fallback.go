@@ -8,6 +8,8 @@ import (
 
 // StreamingFallbackProvider 流式降级包装器。
 // 对齐 Claude Code 的 mid-stream fallback 机制。
+//
+// Deprecated: 未被框架使用。后备模型改用 goagent.WithFallback：agent 循环按错误分类在过载、限流等情况下切换。将在后续版本删除。
 type StreamingFallbackProvider struct {
 	provider   Provider
 	fallback   Provider
@@ -15,9 +17,13 @@ type StreamingFallbackProvider struct {
 }
 
 // FallbackCondition 降级条件函数。
+//
+// Deprecated: 未被框架使用。后备模型改用 goagent.WithFallback：agent 循环按错误分类在过载、限流等情况下切换。将在后续版本删除。
 type FallbackCondition func(*Request, error) bool
 
 // DefaultFallbackConditions 默认降级条件。
+//
+// Deprecated: 未被框架使用。后备模型改用 goagent.WithFallback：agent 循环按错误分类在过载、限流等情况下切换。将在后续版本删除。
 func DefaultFallbackConditions() []FallbackCondition {
 	return []FallbackCondition{
 		// 超时降级
@@ -45,6 +51,8 @@ func DefaultFallbackConditions() []FallbackCondition {
 }
 
 // NewStreamingFallbackProvider 创建流式降级包装器。
+//
+// Deprecated: 未被框架使用。后备模型改用 goagent.WithFallback：agent 循环按错误分类在过载、限流等情况下切换。将在后续版本删除。
 func NewStreamingFallbackProvider(primary Provider, fallback Provider, conditions []FallbackCondition) *StreamingFallbackProvider {
 	if conditions == nil {
 		conditions = DefaultFallbackConditions()
@@ -111,6 +119,8 @@ func (f *StreamingFallbackProvider) AddCondition(cond FallbackCondition) {
 }
 
 // RetryStreamProvider 带重试的流式包装器。
+//
+// Deprecated: 未被框架使用。限流与过载重试由 agent 循环按 provider 返回的错误分类处理（含 Retry-After）。将在后续版本删除。
 type RetryStreamProvider struct {
 	provider   Provider
 	maxRetries int
@@ -118,6 +128,8 @@ type RetryStreamProvider struct {
 }
 
 // NewRetryStreamProvider 创建带重试的包装器。
+//
+// Deprecated: 未被框架使用。限流与过载重试由 agent 循环按 provider 返回的错误分类处理（含 Retry-After）。将在后续版本删除。
 func NewRetryStreamProvider(provider Provider, maxRetries int) *RetryStreamProvider {
 	return &RetryStreamProvider{
 		provider:   provider,

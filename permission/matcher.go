@@ -14,6 +14,8 @@ package permission
 import "strings"
 
 // ToolPattern 解析后的工具模式。
+//
+// Deprecated: 按入参原文做前缀匹配，入参是 JSON 时无法正确匹配，也不拆分复合命令。改用 RuleSet（AddAllowRule / AddAskRule / AddDenyRule 与 Evaluate），它匹配从入参中提取的命令、路径等值。将在后续版本删除。
 type ToolPattern struct {
 	// Name 是工具名称模式。
 	Name string
@@ -31,6 +33,8 @@ type ToolPattern struct {
 //	"Bash(git *)"  → ToolPattern{Name: "Bash", InputPrefix: "git "}
 //	"*"            → ToolPattern{Name: "*", IsWildcard: true}
 //	"Read*"        → ToolPattern{Name: "Read", IsWildcard: true}  // 前缀通配
+//
+// Deprecated: 按入参原文做前缀匹配，入参是 JSON 时无法正确匹配，也不拆分复合命令。改用 RuleSet（AddAllowRule / AddAskRule / AddDenyRule 与 Evaluate），它匹配从入参中提取的命令、路径等值。将在后续版本删除。
 func ParseToolPattern(pattern string) ToolPattern {
 	tp := ToolPattern{}
 
@@ -65,6 +69,8 @@ func ParseToolPattern(pattern string) ToolPattern {
 }
 
 // MatchToolCall 检查工具调用是否匹配模式。
+//
+// Deprecated: 按入参原文做前缀匹配，入参是 JSON 时无法正确匹配，也不拆分复合命令。改用 RuleSet（AddAllowRule / AddAskRule / AddDenyRule 与 Evaluate），它匹配从入参中提取的命令、路径等值。将在后续版本删除。
 func MatchToolCall(pattern ToolPattern, toolName, input string) bool {
 	// 匹配工具名称。
 	if pattern.IsWildcard {
@@ -84,24 +90,6 @@ func MatchToolCall(pattern ToolPattern, toolName, input string) bool {
 	// 匹配输入前缀。
 	if pattern.InputPrefix != "" {
 		if !strings.HasPrefix(input, pattern.InputPrefix) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// matchToolCall 是内部便捷函数，解析模式并匹配。
-func matchToolCall(toolPattern, inputPattern, toolName, input string) bool {
-	// 匹配工具名称。
-	tp := ParseToolPattern(toolPattern)
-	if !MatchToolCall(tp, toolName, input) {
-		return false
-	}
-
-	// 额外的输入模式匹配（独立于工具模式中的括号）。
-	if inputPattern != "" {
-		if !strings.Contains(input, inputPattern) {
 			return false
 		}
 	}

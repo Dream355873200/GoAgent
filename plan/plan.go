@@ -2,12 +2,11 @@
 //
 // 对齐 Claude Code 的 EnterPlanMode/ExitPlanMode 工具。
 // Plan mode 下 agent 只能使用读取类工具，不能执行写操作。
-// Plan 文件存储在 .yume/plans/ 目录下。
+// Plan 文件默认存储在状态目录的 plans/ 下（默认 .yume/plans/，见 statedir）。
 package plan
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,7 +57,7 @@ type Manager struct {
 }
 
 // NewManager 创建一个新的 plan 管理器。
-// plansDir 是 plan 文件存储目录（通常是 .yume/plans/）。
+// plansDir 是 plan 文件存储目录（通常是 <状态目录>/plans/）。
 func NewManager(plansDir string) *Manager {
 	return &Manager{
 		plansDir: plansDir,
@@ -287,11 +286,4 @@ func (m *Manager) FormatForSystemPrompt() string {
 	}
 
 	return hint
-}
-
-// HexString 生成指定长度的十六进制随机字符串。
-func hexString(n int) string {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
 }

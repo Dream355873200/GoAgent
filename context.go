@@ -3,6 +3,9 @@ package goagent
 import (
 	"context"
 	"log/slog"
+
+	"github.com/Dream355873200/GoAgent/internal/loop"
+	"github.com/Dream355873200/GoAgent/observer"
 )
 
 // Context is passed to tool Execute functions.
@@ -45,7 +48,28 @@ const (
 	ctxKeySessionID sessCtxKey = iota
 	ctxKeyWorkDir
 	ctxKeySandbox
+	ctxKeyAskUser
+	ctxKeySessionRuntime
+	ctxKeyDepth
 )
+
+// withAskUserHandler 把 App 的提问处理器放进运行 ctx，内置 AskUser 工具
+// 据此按会话路由提问。
+func withAskUserHandler(ctx context.Context, h *AskUserHandler) context.Context {
+	if h == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, ctxKeyAskUser, h)
+}
+
+// AskUserHandlerFromContext 返回本次运行所属 App 的提问处理器（未配置时为 nil）。
+func AskUserHandlerFromContext(ctx context.Context) *AskUserHandler {
+	if ctx == nil {
+		return nil
+	}
+	h, _ := ctx.Value(ctxKeyAskUser).(*AskUserHandler)
+	return h
+}
 
 // WithSessionContext 把会话标识与工作目录注入 context。
 // App.run 在启动 agent 循环前自动调用（工作目录来自 WithSessionWorkDir
@@ -106,11 +130,12 @@ func SandboxFromContext(ctx context.Context) SandboxSession {
 }
 
 // newContextFromStd wraps a standard context.Context into a goagent.Context.
-// Used internally when we only have a plain context (e.g., from middleware adapter).
-// 会话值（SessionID/WorkDir）从 context value 透出——由 App.run 经
-// WithSessionContext 注入，工具据此实现「按会话隔离」的工作目录等行为。
+// 会话值（SessionID/WorkDir/Sandbox）从 context value 透出——由 App.run 经
+// WithSessionContext 注入。Logger 取运行所属 App 的日志器；Progress 把进度
+// 作为状态行事件发给本次运行的事件流（不进入模型上下文）；Store/Load 读写
+// 本会话的键值存储（同一会话的工具之间共享，跨会话隔离）。
 func newContextFromStd(ctx context.Context) Context {
-	return Context{
+	c := Context{
 		Context:   ctx,
 		SessionID: SessionIDFromContext(ctx),
 		WorkDir:   WorkDirFromContext(ctx),
@@ -120,4 +145,19 @@ func newContextFromStd(ctx context.Context) Context {
 		Store:     func(string, any) {},
 		Load:      func(string) (any, bool) { return nil, false },
 	}
+	if s := loop.ScopeFrom(ctx); s != nil && s.Logger != nil {
+		c.Logger = s.Logger
+	}
+	statusKey := "tool-progress"
+	if id := observer.ToolCallIDFromContext(ctx); id != "" {
+		statusKey += ":" + id
+	}
+	c.Progress = func(msg string) {
+		loop.EmitFromTool(ctx, loop.Event{Type: loop.EvtProgress, StatusKey: statusKey, Text: msg})
+	}
+	if rt := sessionRuntimeFrom(ctx); rt != nil {
+		c.Store = func(key string, val any) { rt.kv.Store(key, val) }
+		c.Load = func(key string) (any, bool) { return rt.kv.Load(key) }
+	}
+	return c
 }

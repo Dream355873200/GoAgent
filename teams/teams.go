@@ -23,7 +23,6 @@ import (
 	"strings"
 
 	"github.com/Dream355873200/GoAgent/compaction"
-	"github.com/Dream355873200/GoAgent/executor"
 	"github.com/Dream355873200/GoAgent/internal/loop"
 	"github.com/Dream355873200/GoAgent/permission"
 	"github.com/Dream355873200/GoAgent/provider"
@@ -64,7 +63,10 @@ type Config struct {
 var memberNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 
 // Run 运行团队：leader 以 task 为主任务启动循环，通过分派工具驱动成员；
-// leader 的最终文本即向用户的汇报。
+// leader 的最终文本即向用户的汇报。在某次 agent 运行之中调用时（ctx 来自
+// 该运行的工具执行），队长与成员的循环继承该运行的作用域（见
+// loop.NewChild）：每次工具调用按工具声明的权限级别过同一条检查链，观测
+// 数据归属同一会话。
 func Run(ctx context.Context, cfg Config, task string) (string, error) {
 	if err := validate(cfg); err != nil {
 		return "", err
@@ -86,7 +88,7 @@ func Run(ctx context.Context, cfg Config, task string) (string, error) {
 				},
 				"required": []string{"task"},
 			},
-			// 团队边界已在 run_team 工具调用处审批；成员内部不再走权限门。
+			// 分派本身没有副作用；成员的每次工具调用各自过检查链。
 			Permission: permission.LevelReadOnly,
 			Concurrent: true,
 			ExecuteFn: func(mctx context.Context, input json.RawMessage) (string, error) {
@@ -103,9 +105,10 @@ func Run(ctx context.Context, cfg Config, task string) (string, error) {
 
 	leader := cfg.Leader
 	leader.Tools = leaderTools
-	l := buildLoop(leader, cfg.SharedContext)
+	l := buildLoop(ctx, leader, cfg)
 
 	var final strings.Builder
+	var lastErr error
 	for ev := range l.Run(ctx, task) {
 		switch ev.Type {
 		case loop.EvtTextDelta:
@@ -116,17 +119,34 @@ func Run(ctx context.Context, cfg Config, task string) (string, error) {
 		case loop.EvtToolStart:
 			notify(cfg, "leader", "tool", ev.ToolName)
 		case loop.EvtError:
+			lastErr = ev.Error
 			notify(cfg, "leader", "error", fmt.Sprint(ev.Error))
 		}
 	}
-	return final.String(), nil
+	return finish(ctx, "队长", final.String(), lastErr)
+}
+
+// finish 统一运行结果：被取消时返回 ctx 的错误；模型报错且没有任何产出时
+// 返回该错误（此前错误被吞掉，调用方拿到一个空字符串当作成功）。
+func finish(ctx context.Context, who, text string, lastErr error) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if lastErr != nil && strings.TrimSpace(text) == "" {
+		return "", fmt.Errorf("%s执行失败: %w", who, lastErr)
+	}
+	return text, nil
 }
 
 // runMember 运行单个成员的轻量循环（角色卡 + 共享背景 + 微/自动压缩）。
 func runMember(ctx context.Context, cfg Config, member MemberRuntime, task string) (string, error) {
-	l := buildLoop(member, cfg.SharedContext)
+	if strings.TrimSpace(task) == "" {
+		return "", fmt.Errorf("任务说明不能为空")
+	}
+	l := buildLoop(ctx, member, cfg)
 
 	var final strings.Builder
+	var lastErr error
 	for ev := range l.Run(ctx, task) {
 		switch ev.Type {
 		case loop.EvtThinking:
@@ -142,12 +162,13 @@ func runMember(ctx context.Context, cfg Config, member MemberRuntime, task strin
 			}
 			notify(cfg, member.Name, "tool_done", preview)
 		case loop.EvtError:
+			lastErr = ev.Error
 			notify(cfg, member.Name, "error", fmt.Sprint(ev.Error))
 		case loop.EvtTextDelta:
 			final.WriteString(ev.Text)
 		}
 	}
-	return final.String(), nil
+	return finish(ctx, "成员 "+member.Name+" ", final.String(), lastErr)
 }
 
 // notify 团队事件透出（OnEvent 回调 + 主对话流 subagent_progress 双通道）。
@@ -157,10 +178,11 @@ func notify(cfg Config, member, typ, text string) {
 	}
 }
 
-// buildLoop 构建成员/队长的轻量循环：角色卡 + 共享背景 + 微/自动压缩。
-// 微压缩裁剪过期工具结果（长任务质量/成本关键）；图片结果由压缩层的
-// 统一回收策略保护，不会被截断损坏。
-func buildLoop(m MemberRuntime, shared string) *loop.Loop {
+// buildLoop 构建成员/队长的轻量循环：角色卡 + 共享背景 + 微/自动压缩，
+// 检查链与观测出口继承 ctx 所在的运行。微压缩裁剪过期工具结果（长任务
+// 质量/成本关键）；图片结果由压缩层的统一回收策略保护，不会被截断损坏。
+func buildLoop(ctx context.Context, m MemberRuntime, cfg Config) *loop.Loop {
+	shared := cfg.SharedContext
 	prov, maxTurns := resolve(m)
 
 	compCfg := compaction.Config{
@@ -175,12 +197,11 @@ func buildLoop(m MemberRuntime, shared string) *loop.Loop {
 		sys += "\n\n[团队共享背景]\n" + shared
 	}
 
-	return loop.New(loop.Config{
+	return loop.NewChild(ctx, loop.Config{
 		Provider:     prov,
 		Tools:        m.Tools,
 		SystemPrompt: sys,
 		MaxTurns:     maxTurns,
-		Executor:     executor.New(executor.Config{MaxConcurrency: 10}),
 		Compaction:   compMgr,
 	})
 }

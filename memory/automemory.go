@@ -12,9 +12,18 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/Dream355873200/GoAgent/internal/safename"
 )
 
+// mainName 是 MEMORY.md 主文件的记忆名（不含扩展名）。
+const mainName = "MEMORY"
+
 // AutoMemory 管理自动记忆系统。
+//
+// 锁约定：每个公开方法只加一次锁，内部统一调用不加锁的 *Locked 实现。
+// sync.RWMutex 不可重入，且有写者排队时会阻塞新读者，嵌套加锁（包括
+// 嵌套 RLock）都会死锁。
 type AutoMemory struct {
 	mu sync.RWMutex
 
@@ -43,10 +52,20 @@ type MemoryFile struct {
 	Content string `json:"content"`
 }
 
+// filePath 返回记忆名对应的文件路径。name 必须能作为单个文件名
+// （拒绝 ".."、路径分隔符等），防止读写记忆目录之外的文件。
+func (am *AutoMemory) filePath(name string) (string, error) {
+	return safename.Join("记忆名", am.dir, name, ".md")
+}
+
 // LoadAll 加载目录中所有 .md 记忆文件。
 func (am *AutoMemory) LoadAll() ([]MemoryFile, error) {
 	am.mu.RLock()
 	defer am.mu.RUnlock()
+	return am.loadAllLocked()
+}
+
+func (am *AutoMemory) loadAllLocked() ([]MemoryFile, error) {
 	if am.dir == "" {
 		return nil, nil
 	}
@@ -82,21 +101,23 @@ func (am *AutoMemory) LoadAll() ([]MemoryFile, error) {
 	return files, nil
 }
 
-// LoadMain 加载 MEMORY.md 主文件，自动截断超长内容。
+// LoadMain 加载 MEMORY.md 主文件，自动截断超长内容（超过 64 KiB 或
+// maxMainFileLines 行）。返回值用于注入提示词，不应原样写回文件。
 func (am *AutoMemory) LoadMain() string {
 	am.mu.RLock()
 	defer am.mu.RUnlock()
+	return am.loadMainLocked()
+}
+
+func (am *AutoMemory) loadMainLocked() string {
 	if am.dir == "" {
 		return ""
 	}
 
-	path := filepath.Join(am.dir, "MEMORY.md")
-	data, err := os.ReadFile(path)
+	content, err := readForPrompt(filepath.Join(am.dir, mainName+".md"))
 	if err != nil {
 		return ""
 	}
-
-	content := string(data)
 
 	// 截断超过 maxMainFileLines 的内容。
 	lines := strings.Split(content, "\n")
@@ -108,10 +129,19 @@ func (am *AutoMemory) LoadMain() string {
 	return strings.TrimSpace(content)
 }
 
-// Save 将内容保存到指定的记忆文件。
+// Save 将内容保存到指定的记忆文件。name 不合法（如含 ".." 或路径分隔符）
+// 时返回错误。
 func (am *AutoMemory) Save(name, content string) error {
 	am.mu.Lock()
 	defer am.mu.Unlock()
+	return am.saveLocked(name, content)
+}
+
+func (am *AutoMemory) saveLocked(name, content string) error {
+	path, err := am.filePath(name)
+	if err != nil {
+		return err
+	}
 	if am.dir == "" {
 		return nil
 	}
@@ -119,8 +149,6 @@ func (am *AutoMemory) Save(name, content string) error {
 	if err := os.MkdirAll(am.dir, 0755); err != nil {
 		return err
 	}
-
-	path := filepath.Join(am.dir, name+".md")
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
@@ -128,7 +156,7 @@ func (am *AutoMemory) Save(name, content string) error {
 func (am *AutoMemory) SaveMain(content string) error {
 	am.mu.Lock()
 	defer am.mu.Unlock()
-	return am.Save("MEMORY", content)
+	return am.saveLocked(mainName, content)
 }
 
 // Search 按关键词搜索相关的记忆文件。
@@ -136,7 +164,7 @@ func (am *AutoMemory) SaveMain(content string) error {
 func (am *AutoMemory) Search(keywords []string) ([]MemoryFile, error) {
 	am.mu.RLock()
 	defer am.mu.RUnlock()
-	all, err := am.LoadAll()
+	all, err := am.loadAllLocked()
 	if err != nil {
 		return nil, err
 	}
@@ -159,7 +187,7 @@ func (am *AutoMemory) Search(keywords []string) ([]MemoryFile, error) {
 func (am *AutoMemory) FormatForInjection() string {
 	am.mu.RLock()
 	defer am.mu.RUnlock()
-	main := am.LoadMain()
+	main := am.loadMainLocked()
 	if main == "" {
 		return ""
 	}
@@ -205,25 +233,28 @@ func fingerprint(content string) string {
 	return strings.ToLower(content)
 }
 
-// Exists 检查指定名称的记忆文件是否存在。
+// Exists 检查指定名称的记忆文件是否存在。name 不合法时返回 false。
 func (am *AutoMemory) Exists(name string) bool {
-	am.mu.RLock()
-	defer am.mu.RUnlock()
-	if am.dir == "" {
+	path, err := am.filePath(name)
+	if err != nil || am.dir == "" {
 		return false
 	}
-	path := filepath.Join(am.dir, name+".md")
-	_, err := os.Stat(path)
+	am.mu.RLock()
+	defer am.mu.RUnlock()
+	_, err = os.Stat(path)
 	return err == nil
 }
 
-// Delete 删除指定名称的记忆文件。
+// Delete 删除指定名称的记忆文件。name 不合法时返回错误。
 func (am *AutoMemory) Delete(name string) error {
-	am.mu.Lock()
-	defer am.mu.Unlock()
+	path, err := am.filePath(name)
+	if err != nil {
+		return err
+	}
 	if am.dir == "" {
 		return nil
 	}
-	path := filepath.Join(am.dir, name+".md")
+	am.mu.Lock()
+	defer am.mu.Unlock()
 	return os.Remove(path)
 }

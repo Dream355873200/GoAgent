@@ -24,6 +24,7 @@ func NotebookEditTool() goagent.ToolDef {
 		Description: "编辑 Jupyter Notebook 中的代码单元格。支持修改现有代码或添加新单元格。",
 		Input:       NotebookEditInput{},
 		Permission:  goagent.Normal,
+		FileEdit:    true,
 		Execute: func(ctx goagent.Context, in NotebookEditInput) (string, error) {
 			return executeNotebookEdit(in)
 		},
@@ -136,6 +137,7 @@ func NotebookAddCellTool() goagent.ToolDef {
 		Description: "向 Jupyter Notebook 添加新的代码或 markdown 单元格。",
 		Input:       NotebookAddCellInput{},
 		Permission:  goagent.Normal,
+		FileEdit:    true,
 		Execute: func(ctx goagent.Context, in NotebookAddCellInput) (string, error) {
 			return executeNotebookAddCell(in)
 		},

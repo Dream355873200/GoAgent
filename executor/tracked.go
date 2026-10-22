@@ -13,6 +13,8 @@ import (
 )
 
 // ToolState 表示工具执行的生命周期状态。
+//
+// Deprecated: 未被框架使用。agent 循环使用 StreamingExecutor（流式派发、取消与有界等待）。将在后续版本删除。
 type ToolState int
 
 const (
@@ -47,6 +49,8 @@ func (s ToolState) String() string {
 }
 
 // TrackedTool 追踪单个工具调用的完整状态。
+//
+// Deprecated: 未被框架使用。agent 循环使用 StreamingExecutor（流式派发、取消与有界等待）。将在后续版本删除。
 type TrackedTool struct {
 	// Call 是原始的工具调用信息。
 	Call ToolCall
@@ -88,6 +92,8 @@ func (t *TrackedTool) SetResult(result ToolResult) {
 }
 
 // TrackedExecutor 是增强的执行器，追踪所有工具的完整生命周期。
+//
+// Deprecated: 未被框架使用。agent 循环使用 StreamingExecutor（流式派发、取消与有界等待）。将在后续版本删除。
 type TrackedExecutor struct {
 	executor            *Executor
 	mu                  sync.RWMutex
@@ -96,6 +102,8 @@ type TrackedExecutor struct {
 }
 
 // NewTrackedExecutor 创建一个新的追踪执行器。
+//
+// Deprecated: 未被框架使用。agent 循环使用 StreamingExecutor（流式派发、取消与有界等待）。将在后续版本删除。
 func NewTrackedExecutor(exec *Executor) *TrackedExecutor {
 	return &TrackedExecutor{
 		executor:            exec,

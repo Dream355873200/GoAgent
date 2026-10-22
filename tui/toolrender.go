@@ -234,68 +234,6 @@ func extractToolDetail(toolName, toolInput string) string {
 	}
 }
 
-// summarizeToolResult 根据工具名生成结果摘要。
-func summarizeToolResult(toolName, toolInput, toolResult string) string {
-	switch toolName {
-	case "Read":
-		// 统计行数。
-		lines := strings.Count(toolResult, "\n")
-		fp := extractFilePath(toolInput)
-		if fp != "" {
-			return fmt.Sprintf("✓ 读取 %s (%d 行)", shortPath(fp), lines)
-		}
-		return fmt.Sprintf("✓ 读取完成 (%d 行)", lines)
-
-	case "Write":
-		lines := strings.Count(toolResult, "\n")
-		fp := extractFilePath(toolInput)
-		if fp != "" {
-			// toolResult 通常是成功消息，取写入内容的行数。
-			contentLines := countWriteLines(toolInput)
-			if contentLines > 0 {
-				lines = contentLines
-			}
-			return fmt.Sprintf("✓ 写入 %s (%d 行)", shortPath(fp), lines)
-		}
-		return truncateResult(toolResult, 120)
-
-	case "Edit":
-		fp := extractFilePath(toolInput)
-		if fp != "" {
-			return fmt.Sprintf("✓ 编辑 %s", shortPath(fp))
-		}
-		return truncateResult(toolResult, 120)
-
-	case "Bash":
-		// 显示命令输出（截断）。
-		return truncateResult(toolResult, 200)
-
-	case "Glob":
-		// 统计匹配文件数。
-		if toolResult == "" {
-			return "✓ 无匹配文件"
-		}
-		files := strings.Count(toolResult, "\n")
-		if !strings.HasSuffix(toolResult, "\n") && toolResult != "" {
-			files++
-		}
-		return fmt.Sprintf("✓ 匹配 %d 个文件", files)
-
-	case "Grep":
-		if toolResult == "" {
-			return "✓ 无匹配结果"
-		}
-		lines := strings.Count(toolResult, "\n")
-		if !strings.HasSuffix(toolResult, "\n") && toolResult != "" {
-			lines++
-		}
-		return fmt.Sprintf("✓ %d 行匹配", lines)
-
-	default:
-		return truncateResult(toolResult, 200)
-	}
-}
-
 // ── 辅助函数 ────────────────────────────────────────────────────────
 
 // shortPath 缩短文件路径，只保留最后 3 段。
@@ -306,26 +244,6 @@ func shortPath(p string) string {
 		return p
 	}
 	return ".../" + strings.Join(parts[len(parts)-3:], "/")
-}
-
-// extractFilePath 从工具输入 JSON 提取 file_path 字段。
-func extractFilePath(toolInput string) string {
-	if toolInput == "" {
-		return ""
-	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(toolInput), &raw); err != nil {
-		return ""
-	}
-	v, ok := raw["file_path"]
-	if !ok {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(v, &s); err != nil {
-		return ""
-	}
-	return s
 }
 
 // countWriteLines 从 Write 工具的输入 JSON 中统计 content 字段的行数。
@@ -350,23 +268,6 @@ func countWriteLines(toolInput string) int {
 		lines++
 	}
 	return lines
-}
-
-// truncateResult 截断结果文本。
-func truncateResult(s string, maxLen int) string {
-	if s == "" {
-		return ""
-	}
-	// 只取前几行。
-	lines := strings.SplitN(s, "\n", 6)
-	if len(lines) > 5 {
-		lines = lines[:5]
-		s = strings.Join(lines, "\n") + "\n..."
-	}
-	if len(s) > maxLen {
-		s = s[:maxLen] + "..."
-	}
-	return s
 }
 
 // extractAgentDesc 从 Agent_ 工具名和输入 JSON 中提取子 agent 描述。

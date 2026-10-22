@@ -77,12 +77,29 @@ app.UseTools(
 
 ### 权限模式
 
-```go
-// 交互式开发（默认）：ReadOnly 和 Normal 自动通过
-app := goagent.New(goagent.WithPermissionMode(goagent.PermissionAcceptEdits))
+| 模式 | 只读工具 | 普通操作 | 高风险操作 |
+|------|---------|---------|-----------|
+| `PermissionDefault` | 放行 | 询问 | 询问 |
+| `PermissionAcceptEdits` | 放行 | 编辑类工具（`FileEdit`）放行，其余询问 | 询问 |
+| `PermissionAuto` | 放行 | 分类器判定 | 分类器判定 |
+| `PermissionBypass` | 放行 | 放行 | 分类器判定 |
+| `PermissionPlanOnly` | 放行 | 拒绝 | 拒绝 |
+| `PermissionDenyAll` | 放行 | 拒绝（allow 规则除外） | 拒绝（allow 规则除外） |
 
-// CI/CD：跳过所有权限检查
+- deny 规则与 Guard 在所有模式下最先生效；allow 规则命中的调用直接放行，不经分类器。
+- auto 模式下 ask 规则仍询问用户；bypass 模式下命中 ask 规则的调用按高风险操作交给分类器。
+- 高风险操作（`permission.HighRisk`）：工具声明为 `RequireApproval` / `Dangerous`；递归删除、磁盘与系统操作、提权、破坏性 git 操作（强推、`reset --hard`、`clean -f` 等）、上传本地文件、原始网络连接、发布软件包、内联脚本（`bash -c`、`python -c` 等）、把下载内容交给解释器执行；写入系统目录或裸磁盘；涉及凭据（`~/.ssh`、`~/.aws`、`id_rsa`、`.netrc` 等）、shell 启动文件或 `.git/hooks`。宿主可以用 ask 规则补充自己的高风险操作。
+- 需要分类器判定而分类器不可用时（未配置 provider、`WithYoloClassifier(false)`、调用失败），该调用改为询问审批者，没有审批者则拒绝。
+
+```go
+// 自主运行：每个非只读调用由分类器把关
+app := goagent.New(goagent.WithPermissionMode(goagent.PermissionAuto))
+
+// CI/CD：不询问，高风险操作由分类器把关
 app := goagent.New(goagent.WithPermissionMode(goagent.PermissionBypass))
+
+// 交互式开发：只读与编辑类工具自动通过，其余询问
+app := goagent.New(goagent.WithPermissionMode(goagent.PermissionAcceptEdits))
 
 // 规划模式：只允许只读操作
 app := goagent.New(goagent.WithPermissionMode(goagent.PermissionPlanOnly))
@@ -157,26 +174,43 @@ app := goagent.New(goagent.WithApprover(&MyApprover{}))
 
 ### YOLO 权限分类器
 
-对齐 Claude Code 的 YOLO 权限分类器，使用 LLM 子模型判断工具调用是否安全。
+对齐 Claude Code 的 YOLO 权限分类器，使用模型判断工具调用是否安全、是否符合用户意图。
 
-**工作原理：**
-- 当 provider 存在时自动注入，无需手动配置
-- 两阶段分类：Stage 1（快速，256 tokens）→ Stage 2（深度思考，4096 tokens）
+**何时调用：**
+- 有 provider 时默认装配（`WithYoloClassifier(false)` 关闭）
+- 只在 auto 模式（每个非只读、非白名单调用）与 bypass 模式（只判定高风险调用）下调用，其他模式没有额外开销
 - 安全工具白名单（Read/Grep/Glob/Task 等）跳过分类，直接允许
-- API 不可用时 fail-open，退回到正常权限逻辑
-- 在规则引擎之后、默认级别检查之前执行
+- 分类器不可用（调用失败、上下文过长）时，该调用改为询问审批者，没有审批者则拒绝
+
+**成本：** 两阶段分类——Stage 1 快速判定（最多 256 tokens），判为危险时再做 Stage 2 复核（最多 4096 tokens）。默认使用主模型，可用 `WithYoloClassifierModel("…")` 指定同一 provider 上更快更便宜的模型。
 
 **权限检查流程：**
 1. Deny 规则（最高优先级）
-2. 权限模式（Bypass/AcceptEdits/Plan/DontAsk）
-3. Allow 规则
-4. **YOLO LLM 分类器** ← 自动注入
-5. 默认级别检查（ReadOnly/Normal/RequireApproval/Dangerous）
-6. 用户审批（Approver）
+2. Guard 链（可拒不可放）
+3. Ask 规则（auto 等模式下询问用户；bypass 下交给分类器）
+4. 权限模式（auto / bypass 在这里调用分类器）
+5. Allow 规则
+6. 默认级别检查（ReadOnly/Normal/RequireApproval/Dangerous）
+7. 用户审批（Approver）
 
-**Transcript 上下文：** 分类器会读取最近 20 条对话记录作为上下文，判断操作是否与用户意图一致。
+**Transcript 上下文：** 分类器读取发起本次调用的那段对话的最近 20 条记录，判断操作是否与用户意图一致（同一权限门被 pipeline 多个 worker 共用时，各自用自己的对话）。
 
-**Prompt 自定义：** 修改 `prompts/yolo-classifier.prompt.md` 可自定义分类规则。
+**Prompt 自定义：** `WithYoloPromptFile(path)` > 提示词目录中的 `yolo-classifier.prompt.md` > 嵌入的默认值。
+
+### 运行时切换模式
+
+```go
+app.SetPermissionMode(goagent.PermissionPlanOnly)          // 全局：所有在跑运行与后续运行
+app.SetSessionPermissionMode("sess-1", goagent.PermissionBypass) // 只作用于该会话
+app.ClearSessionPermissionMode("sess-1")                   // 撤销会话级设置，回到全局模式
+mode := app.SessionPermissionMode("sess-1")                // 会话当前生效的模式
+```
+
+切换立即作用于进行中的运行。全局切换不覆盖设置了会话级模式的会话。优先级从高到低：会话级运行时设置 > `WithSessionPermissionMode` 的解析结果 > 全局运行时覆写 > `WithPermissionMode`。多个用户共用一个 App 时，用户自己的模式切换应按会话进行。
+
+### "始终允许"
+
+用户在审批时勾选"始终允许"后，同一会话的后续调用（包括之后的运行）不再询问；授权不跨会话。普通工具按工具名记忆，shell 命令按"工具名 + 命令的前一到两个词"记忆。`app.SessionGrants(id)` 返回会话的授权集合，可以查看（`Keys()`）和撤销（`Clear()`）；`app.CloseSession(id)` 释放会话的全部内存状态，授权随之撤销。
 
 ---
 
@@ -184,11 +218,13 @@ app := goagent.New(goagent.WithApprover(&MyApprover{}))
 
 ### CLI REPL
 
-```bash
-go run ./cmd/goagent
+```go
+import "github.com/Dream355873200/GoAgent/cli"
+
+cli.Run(app) // 导入 cli 包后 app.RunCLI() 同样可用
 ```
 
-交互式 TUI 界面，支持：
+终端界面在 `cli` 包中，根包不依赖终端界面库。交互式 TUI 界面，支持：
 - 彩色输出和格式化
 - 工具执行状态实时显示
 - 推理过程（Thinking）展示
@@ -201,16 +237,19 @@ go run ./cmd/goagent
 app.RunHTTP(":8080")
 ```
 
+未配置 `WithHTTPAuthToken` 时只监听 `127.0.0.1`；对外服务配置令牌（或在已受保护的网络中用 `WithHTTPInsecure()`）。浏览器前端跨源访问用 `WithHTTPAllowedOrigins` 放行，未列出的跨站请求返回 403。HTTP 模式不会自动批准工具调用，需要显式配置 `WithApprover`。
+
 **REST 端点：**
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `POST` | `/chat` | SSE 流式传输对话（支持 `session_id` 多轮、`?session_id=` 多会话并行；SSE 断开不取消任务） |
-| `POST` | `/interrupt` | 中断当前任务 |
+| `POST` | `/interrupt` | 中断当前任务（`session_id` 必填） |
 | `GET` | `/sessions` | 会话列表摘要 |
 | `GET` | `/sessions/{id}/messages` | 会话历史消息 |
 | `POST` | `/execute` | 同步执行，返回结果 |
-| `POST` | `/approve` | 权限审批响应 |
+| `POST` | `/approve` | 权限审批响应（带 `session_id` 时只处置该会话的请求） |
+| `GET` | `/pending-approval` | 会话的未决审批（`?session_id=`） |
 | `GET` | `/health` | 健康检查 |
 | `GET` | `/tools` | 工具列表 |
 | `GET` | `/tasks` | 任务列表 |
@@ -226,6 +265,10 @@ app.RunHTTP(":8080")
 | `POST` | `/bgtasks/{id}/stop` | 停止后台任务 |
 | `GET` | `/usage` | Token 使用成本统计 |
 | `GET` | `/audit` | 工具执行分析 |
+| `GET` | `/mode` | 当前权限模式（`?session_id=` 返回该会话生效的模式） |
+| `POST` | `/mode` | 切换权限模式：`{"mode":"auto"}` 切换全局；带 `session_id` 只切换该会话，`mode` 为空表示撤销会话级设置 |
+| `GET` / `POST` | `/thinking` | 思考强度档位 |
+| `GET` / `POST` | `/model` | 当前模型 / 运行时切换模型 |
 
 **示例：**
 
@@ -251,7 +294,11 @@ result, err := app.Execute(ctx, "写一个 hello world")
 // 带历史的 SDK 调用
 history := loadHistoryFromDB(userID)
 for ev := range app.RunWithHistory(ctx, history, "继续上次的工作") {
-    saveEvent(ev)
+    if ev.Type == goagent.EventDone {
+        // 完整对话记录：传入的历史 + 本轮消息 + 自动摘要时追加的摘要记录。
+        // 原样存下、下一轮作为 history 传回即可；展示时过滤 IsMeta 消息。
+        saveHistoryToDB(userID, ev.Messages)
+    }
 }
 ```
 
@@ -383,7 +430,7 @@ app := goagent.New(
 | `Bash` | 执行 shell 命令，支持 timeout；cmd.Dir 按会话工作目录 | Normal |
 | `GitCommit` | 会话工作目录 git add -A + commit；无变更短路，非仓库明确报错 | Normal |
 | `WebSearch` | 搜索互联网 | Normal |
-| `WebFetch` | 获取网页内容 | Normal |
+| `WebFetch` | 获取网页内容；默认只允许公网地址（内网用 `WebFetchToolWith`） | ReadOnly |
 
 ### 文件工具的读写状态跟踪（readstate）
 
@@ -720,6 +767,18 @@ app := goagent.New(
 
 LLM 可以通过 `Agent_researcher`、`Agent_reviewer` 等工具调用子 agent。子 agent 的结果通过 `EventSubAgentProgress` 事件实时推送给主循环。
 
+子 agent 与主循环使用同一个循环实现：有界并发、工具 panic 恢复为错误结果、上下文压缩、输出截断续写、限流重试。在某次运行之中调用时（包括宿主工具里直接用 `agent.NewRunner(...).Run`），子 agent 的工具调用继承该运行的检查链（plan 模式、中间件、hooks、权限门）与观测出口，按工具声明的级别检查：
+
+```go
+tools, _ := app.AgentTools("Read", "Grep", "Bash") // 级别与并发声明取自注册时
+app.Tool("Agent_explore", app.AgentTool(agent.Definition{
+    Name: "explore", SystemPrompt: "…", Tools: tools, MaxTurns: 20,
+}))
+
+// 直接构造的工具：标上权限级别；Serial 表示不与同轮其他调用并行
+agent.ToolDef{Name: "deploy", InputSchema: schema, Permission: permission.LevelNormal, Serial: true, Execute: deploy}
+```
+
 ---
 
 ## Pipeline DAG 编排
@@ -882,14 +941,13 @@ app.UsePipeline(goagent.PipelineConfig{
     Supervisor: &goagent.PipelineAgentDef{
         Name:        "supervisor",
         Instruction: "审核方案：有创意且可行的调用 approve_result 批准，否则调用 reject_result 给出改进建议",
-        // Supervisor 自动获得 wait_for_review / approve_result / reject_result 工具
+        // Supervisor 自动获得 approve_result / reject_result 工具（按 index 逐条处置）
     },
 })
 ```
 
-`Review=true` 标记节点产出的结果需要 Supervisor 审核。Supervisor 是独立于 DAG 的"上帝节点"，不参与拓扑调度，自动获得三个审核工具：
-- `wait_for_review` — 等待一批结果
-- `approve_result` — 批准，触发 `OnResult`
+`Review=true` 标记节点产出的结果需要 Supervisor 审核。Supervisor 是独立于 DAG 的"上帝节点"，不参与拓扑调度；每批结果开一轮独立对话，自动获得两个审核工具：
+- `approve_result` — 批准第 index 条结果，以真实结果触发 `OnTaskResult`；本轮没有处置的结果在轮末自动批准
 - `reject_result` — 拒绝并附带改进建议，结果重新入队（超过 `MaxRetries` 后自动通过）
 
 ### 并行独立节点 + SharedData 注入
@@ -1029,12 +1087,15 @@ app := goagent.New(
 
 ## 上下文压缩
 
-当上下文接近 token 上限时，自动触发压缩：
+每次请求前，压缩层按顺序处理发给模型的视图：
 
-1. **工具结果压缩**：超大结果（> MaxResultSize）持久化到磁盘，替换为引用
-2. **Compact Boundary**：找到语义完整的边界（如函数定义、markdown 标题）
-3. **摘要压缩**：对保留的消息进行 LLM 摘要
-4. **Circuit Breaker**：连续两次压缩效果不好时停止，防止过度压缩
+1. **预算截断（L0）**：超过 `MaxResultSize` 的工具结果保留首尾、截断中间（含内联图片的结果不截断，较早的图片回收为占位符）
+2. **裁剪（L1）**：截断较早消息里的长文本
+3. **微压缩（L2）**：上下文接近窗口上限时，剥离已被模型消费过的工具结果
+4. **折叠（L3）**：把中间轮次折叠为摘要视图
+5. **自动摘要（L4）**：仍超过 `AutoCompactThreshold` 时请求模型摘要，保留最近一轮；连续 3 次失败后熔断，不再尝试
+
+L0–L3 只改视图。L4 的摘要以**摘要记录**追加进对话记录（`IsCompactSummary`、`CompactBoundary`，同时是元消息），随会话存储落盘；重新加载会话、排队续跑、`RunWithHistory` 传回历史时，循环用 `compaction.Project` 直接还原视图，不会再请求模型摘要一遍。`EventDone.Messages` 与 `WithTranscriptSink` 给出的是完整对话记录。
 
 ```go
 app := goagent.New(

@@ -58,6 +58,11 @@ func executeAskUser(ctx goagent.Context, in AskUserInput) (string, error) {
 		return askUserCallbackCtx(ctx, in.Question)
 	}
 
+	// App 配置了提问处理器（SetAskUserHandler）时，按本次运行的会话路由。
+	if h := goagent.AskUserHandlerFromContext(ctx); h != nil {
+		return h.AskSessionCtx(ctx, ctx.SessionID, in.Question, nil)
+	}
+
 	// 其次使用外部回调（TUI 模式）。
 	if askUserCallback != nil {
 		return askUserCallback(in.Question)
