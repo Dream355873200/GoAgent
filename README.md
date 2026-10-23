@@ -7,7 +7,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat-square&logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
-> 📝 The in-depth docs under `docs/` are currently Chinese-only. This README covers everything you need to get started; API references (godoc) are the source of truth for details.
+> 📝 The three-lesson tutorial is available in English; the rest of the in-depth docs under `docs/` are currently Chinese-only. This README covers everything you need to get started; API references (godoc) are the source of truth for details.
 
 ---
 
@@ -16,6 +16,7 @@
 - [Features](#features) · [Install](#install) · [Quick Start](#quick-start)
 - [Core Concepts](#core-concepts) · [Options Reference](#options-reference)
 - [HTTP Endpoints](#http-endpoints) · [Version History](#version-history) · [Roadmap](#roadmap)
+- 📚 [Three-lesson tutorial](docs/en/tutorial.md) — minimal agent → tools & multi-turn → pipeline
 
 ---
 
