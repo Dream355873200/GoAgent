@@ -1,6 +1,8 @@
 # GoAgent 内部机制详解
 
-> 本文档详细描述 GoAgent v0.4 新增的各项机制。
+> [English](en/mechanisms.md) | 简体中文
+
+> 本文档详细描述 GoAgent 各版本的内部机制。
 
 ---
 
