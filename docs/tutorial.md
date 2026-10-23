@@ -1,8 +1,10 @@
 # GoAgent 渐进式教程
 
+> [English](en/tutorial.md) | 简体中文
+
 三课学完 GoAgent 的核心：从 30 行的最小 agent，到带工具和记忆的多轮对话，再到多节点 DAG 流水线。每课代码完整可运行，学一个用一个。
 
-> 前置要求：Go 1.24+，一个 LLM API Key（OpenAI 兼容端点或 Anthropic）。
+> 前置要求：Go 1.25+，一个 LLM API Key（OpenAI 兼容端点或 Anthropic）。
 > 完整 API 参考见 [README](../README.md)，架构深潜见 [architecture.md](architecture.md)。
 
 ---
