@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Dream355873200/GoAgent/agent"
+	"github.com/Dream355873200/GoAgent/bgtask"
 	"github.com/Dream355873200/GoAgent/message"
 	"github.com/Dream355873200/GoAgent/protocol"
 	"github.com/Dream355873200/GoAgent/provider"
@@ -488,7 +489,9 @@ func TestB3_BackgroundSubagent(t *testing.T) {
 		"MAIN": {"tool:Agent_sub_bg", "main done"},
 		"SUB":  {"tool:probe", "sub done"},
 	}}
-	app := subApp(t, prov, func(ctx Context) (string, error) { <-ctx.Done(); return "", ctx.Err() }, WithBgTaskTools())
+	// 后台任务输出指到临时目录：默认会写进进程工作目录下的 .yume/tasks（go test 的工作目录是仓库根）。
+	app := subApp(t, prov, func(ctx Context) (string, error) { <-ctx.Done(); return "", ctx.Err() },
+		WithBgTaskTools(), WithBgTaskStore(bgtask.NewManager(t.TempDir())))
 	collect(app.RunSession(context.Background(), "b3-bg", "go"))
 	var info SubagentInfo
 	waitFor(t, "后台子代理登记", func() bool { var ok bool; info, ok = runningAgent(app, "b3-bg"); return ok })
