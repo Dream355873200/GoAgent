@@ -117,8 +117,9 @@ type App struct {
 
 	// mcpBusy 登记正被 MCP agent 调用使用的会话（见 mcpserver.go）。
 	mcpBusy sync.Map
-	// aguiFrontend 登记等待 AG-UI 前端返回结果的前端工具调用（见 agui.go）。
-	aguiFrontend aguiFrontendCalls
+	// frontend 登记等待前端返回结果的前端工具调用（见 frontend.go；AG-UI
+	// 与 v1 两个剖面的结果都投递到这里）。
+	frontend frontendCalls
 }
 
 // registeredTool wraps a user-defined tool with its generated schema.

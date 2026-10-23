@@ -51,6 +51,26 @@ export interface ChatOptions {
         retries?: number;
         delayMs?: number;
     };
+    /**
+     * 前端工具：客户端自己执行的工具（模型调用后照常收到 tool_start 帧，
+     * name 命中本清单即归客户端执行），执行完用 toolResult() 回传结果；
+     * 服务端等待结果有 30 分钟上限，断线后用 pendingTools() 查未完成的调用。
+     */
+    tools?: FrontendToolDecl[];
+}
+/** 前端工具声明（ChatOptions.tools 元素）。 */
+export interface FrontendToolDecl {
+    /** 工具名（字母数字与 _ -，最长 64）。 */
+    name: string;
+    /** 给模型看的“何时找我”。 */
+    description?: string;
+    /** 入参 JSON Schema 对象；省略 = 无参数。 */
+    parameters?: unknown;
+}
+/** 正在等待前端执行结果的工具调用（pendingTools() 的元素）。 */
+export interface FrontendToolCall {
+    tool_call_id: string;
+    name: string;
 }
 /** resume() 选项。 */
 export interface ResumeOptions {
@@ -123,6 +143,13 @@ export declare class GoAgentClient {
     }): Promise<void>;
     /** 回答引擎提问（ask_user 帧）。 */
     answer(requestId: string, answer: string): Promise<void>;
+    /**
+     * 回传前端工具的执行结果（chat({tools}) 声明的工具，收到对应 tool_start 帧后调用）。
+     * error 非空表示执行失败（作为工具错误交给模型）；等待中的运行即刻继续。
+     */
+    toolResult(sessionId: string, toolCallId: string, content: string, error?: string): Promise<void>;
+    /** 会话中等待前端执行结果的工具调用（断线重连后补齐）。 */
+    pendingTools(sessionId: string): Promise<FrontendToolCall[]>;
     /** 计划确认（plan_confirm 帧；该帧当前服务端不产生，保留）。 */
     confirmPlan(requestId: string, confirm: boolean, reason?: string): Promise<void>;
     /** 终止指定会话正在执行的 run。 */

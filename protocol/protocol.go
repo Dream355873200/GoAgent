@@ -166,6 +166,33 @@ type ChatRequest struct {
 	// AgentID 非空时消息作为指示投给该运行中的子代理（在它的工具批边界注入），
 	// 不开新 run；子代理不在运行时返回错误。
 	AgentID string `json:"agent_id,omitempty"`
+	// Tools 声明本次运行的前端工具（客户端自己执行）：模型调用时照常发
+	// tool_start 帧（name 命中本清单即归客户端执行），结果用
+	// POST /chat/tool-result 回传；调用等待结果有 30 分钟上限，超时按失败
+	// 结束。断线后用 GET /pending-tools 查未完成的调用。
+	Tools []FrontendToolDecl `json:"tools,omitempty"`
+}
+
+// FrontendToolDecl 是前端工具声明（ChatRequest.Tools 元素）。
+type FrontendToolDecl struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters,omitempty"`
+}
+
+// FrontendToolResult POST /chat/tool-result 的请求体——前端执行完工具后
+// 把结果回传给等待中的运行。error 非空表示执行失败（作为工具错误交给模型）。
+type FrontendToolResult struct {
+	SessionID  string `json:"session_id"`
+	ToolCallID string `json:"tool_call_id"`
+	Content    string `json:"content,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+// FrontendToolCall 是正在等待前端执行结果的工具调用。
+type FrontendToolCall struct {
+	ToolCallID string `json:"tool_call_id"`
+	Name       string `json:"name"`
 }
 
 // ApproveRequest POST /approve 请求体——权限审批决定。
@@ -262,7 +289,9 @@ func Describe() Description {
 			{TypeResync, "续传位置早于服务端缓冲（oldest 为缓冲中最旧帧的 session_seq）：其间的帧已丢弃，应从 /sessions/{id}/messages 重建"},
 		},
 		Endpoints: []EndpointInfo{
-			{"POST", "/chat", "SSE 流式对话；会话忙时：启用插话则转插话或排队（metadata.steered / queued），未启用则 error 拒绝；带 agent_id 时作为指示投给运行中的子代理"},
+			{"POST", "/chat", "SSE 流式对话；会话忙时：启用插话则转插话或排队（metadata.steered / queued），未启用则 error 拒绝；带 agent_id 时作为指示投给运行中的子代理；带 tools 时声明前端工具（模型调用后由客户端执行并经 /chat/tool-result 回传）"},
+			{"POST", "/chat/tool-result", "前端工具执行结果回传（等待中的运行即刻继续）"},
+			{"GET", "/pending-tools?session_id=", "会话中等待前端执行结果的工具调用（断线重连后补齐）"},
 			{"POST", "/agui", "AG-UI 1.0 剖面：请求体 RunAgentInput（threadId = 会话 ID），响应 AG-UI 事件流；审批与提问以 RUN_FINISHED{outcome:interrupt} 停车，下一次请求带 resume[] 作答"},
 			{"GET", "/agui/capabilities", "AG-UI AgentCapabilities"},
 			{"GET", "/runs/{session}/stream?after=&follow=", "会话事件流续传：先补发 session_seq > after 的帧（after 省略 = 从进行中运行的开头；0 = 缓冲中最旧的帧；也接受 Last-Event-ID 头），再转实时；follow=1 时跨运行持续推送，否则会话空闲后以 metadata 结束"},

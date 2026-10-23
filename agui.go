@@ -23,19 +23,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/Dream355873200/GoAgent/executor"
 	"github.com/Dream355873200/GoAgent/internal/loop"
 	"github.com/Dream355873200/GoAgent/internal/safename"
 	"github.com/Dream355873200/GoAgent/message"
-	"github.com/Dream355873200/GoAgent/observer"
-	"github.com/Dream355873200/GoAgent/permission"
 	"github.com/Dream355873200/GoAgent/protocol/agui"
 	"github.com/Dream355873200/GoAgent/provider"
 	"github.com/Dream355873200/GoAgent/session"
@@ -122,7 +118,7 @@ func (p *aguiParks) expire(app *App, thread string, park *aguiPark) {
 		app.resolveInterrupt(thread, id, kind, aguiAnswer{reason: "等待用户审批超时"})
 	}
 	for _, id := range park.frontend {
-		app.aguiFrontend.deliver(thread, id, aguiToolResult{err: "前端工具等待结果超时"})
+		app.frontend.deliver(thread, id, frontendResult{err: "前端工具等待结果超时"})
 	}
 }
 
@@ -133,148 +129,34 @@ func (a *App) aguiParkTimeout() time.Duration {
 	return defaultParkTimeout
 }
 
-// aguiFrontendEvent 是前端工具开始等待结果时发出的内部事件：AG-UI 流据此停车。
+// aguiFrontendEvent 是前端工具开始等待结果时发出的内部事件：AG-UI 流据此
+// 停车（机制本体在 frontend.go，剖面无关）。
 const aguiFrontendEvent = "goagent.frontend_tool"
 
-// aguiToolResult 是前端返回的工具结果（err 非空表示失败）。
-type aguiToolResult struct {
-	content string
-	err     string
-}
-
-// aguiFrontendCalls 登记等待前端返回结果的工具调用。结果可能先于调用开始
-// 等待到达（同一轮并行的前端工具，后一个还没开始执行），先存下来。
-type aguiFrontendCalls struct {
-	mu      sync.Mutex
-	waiting map[string]chan aguiToolResult // thread|toolCallId
-	early   map[string]aguiToolResult
-}
-
-func (f *aguiFrontendCalls) wait(ctx context.Context, thread, id string) (aguiToolResult, error) {
-	key := thread + "|" + id
-	f.mu.Lock()
-	if r, ok := f.early[key]; ok {
-		delete(f.early, key)
-		f.mu.Unlock()
-		return r, nil
-	}
-	if f.waiting == nil {
-		f.waiting = map[string]chan aguiToolResult{}
-	}
-	ch := make(chan aguiToolResult, 1)
-	f.waiting[key] = ch
-	f.mu.Unlock()
-	defer func() {
-		f.mu.Lock()
-		if f.waiting[key] == ch {
-			delete(f.waiting, key)
-		}
-		f.mu.Unlock()
-	}()
-	select {
-	case r := <-ch:
-		return r, nil
-	case <-ctx.Done():
-		return aguiToolResult{}, ctx.Err()
-	}
-}
-
-// deliver 交付一个前端工具结果（调用还没开始等待时先存下）。
-func (f *aguiFrontendCalls) deliver(thread, id string, r aguiToolResult) {
-	key := thread + "|" + id
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if ch, ok := f.waiting[key]; ok {
-		delete(f.waiting, key)
-		ch <- r
-		return
-	}
-	if f.early == nil {
-		f.early = map[string]aguiToolResult{}
-	}
-	f.early[key] = r
-}
-
-// forget 丢弃会话里没有被取走的结果（内核运行结束时）。
-func (f *aguiFrontendCalls) forget(thread string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for key := range f.early {
-		if strings.HasPrefix(key, thread+"|") {
-			delete(f.early, key)
-		}
-	}
-}
-
-// aguiToolNamePattern 是 provider 接受的工具名。
-var aguiToolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-
-// aguiFrontendTools 把 RunAgentInput.tools 转为本次运行的工具：模型调用时向流
-// 发出停车信号，等待前端在下一次请求中以 tool 消息带回结果。
+// aguiFrontendTools 把 RunAgentInput.tools 转为本次运行的前端工具：模型调用
+// 时发停车信号，等待前端在下一次请求中以 tool 消息带回结果。
 func (a *App) aguiFrontendTools(thread string, tools []agui.Tool) ([]loop.ToolEntry, error) {
-	var out []loop.ToolEntry
-	for _, t := range tools {
-		if !aguiToolNamePattern.MatchString(t.Name) {
-			return nil, fmt.Errorf("前端工具名 %q 不合法（只能含字母、数字、_ 与 -，最长 64）", t.Name)
-		}
-		params := map[string]any{"type": "object", "properties": map[string]any{}}
-		if len(t.Parameters) > 0 && string(t.Parameters) != "null" {
-			params = nil
-			if err := json.Unmarshal(t.Parameters, &params); err != nil || params == nil {
-				return nil, fmt.Errorf("前端工具 %s 的 parameters 不是 JSON Schema 对象", t.Name)
-			}
-		}
-		name := t.Name
-		out = append(out, loop.ToolEntry{
-			Name:        name,
-			Description: t.Description,
-			InputSchema: params,
-			Permission:  permission.LevelReadOnly,
-			Class:       executor.ClassReadOnly,
-			ExecuteFn: func(ctx context.Context, _ json.RawMessage) (string, error) {
-				id := observer.ToolCallIDFromContext(ctx)
-				_ = emitInRun(ctx, aguiFrontendEvent, map[string]string{"toolCallId": id, "name": name})
-				r, err := a.aguiFrontend.wait(ctx, thread, id)
-				if err != nil {
-					return "", fmt.Errorf("前端工具 %s 没有返回结果: %w", name, err)
-				}
-				if r.err != "" {
-					return "", errors.New(r.err)
-				}
-				return r.content, nil
-			},
-		})
+	decls := make([]FrontendToolDecl, len(tools))
+	for i, t := range tools {
+		decls[i] = FrontendToolDecl{Name: t.Name, Description: t.Description, Parameters: t.Parameters}
 	}
-	return out, nil
-}
-
-type runToolsKey struct{}
-
-// withRunTools 让本次运行额外带上 tools（与已注册工具重名的不加入）。
-func withRunTools(ctx context.Context, tools []loop.ToolEntry) context.Context {
-	if len(tools) == 0 {
-		return ctx
-	}
-	return context.WithValue(ctx, runToolsKey{}, tools)
-}
-
-func runToolsFrom(ctx context.Context) []loop.ToolEntry {
-	tools, _ := ctx.Value(runToolsKey{}).([]loop.ToolEntry)
-	return tools
+	return a.frontendTools(thread, decls, func(ctx context.Context, id, name string) {
+		_ = emitInRun(ctx, aguiFrontendEvent, map[string]string{"toolCallId": id, "name": name})
+	})
 }
 
 // aguiToolResults 取出请求中回答 ids 的 tool 消息。
-func aguiToolResults(in agui.RunAgentInput, ids []string) map[string]aguiToolResult {
+func aguiToolResults(in agui.RunAgentInput, ids []string) map[string]frontendResult {
 	want := map[string]bool{}
 	for _, id := range ids {
 		want[id] = true
 	}
-	out := map[string]aguiToolResult{}
+	out := map[string]frontendResult{}
 	for _, m := range in.Messages {
 		if m.Role != "tool" || !want[m.ToolCallID] {
 			continue
 		}
-		r := aguiToolResult{content: aguiContentText(m.Content)}
+		r := frontendResult{content: aguiContentText(m.Content)}
 		if m.Error != "" {
 			r.err = m.Error
 			if r.content != "" {
@@ -431,7 +313,7 @@ func (a *App) continueAGUI(ctx context.Context, out aguiOut, in agui.RunAgentInp
 	var remaining []string
 	for _, id := range park.frontend {
 		if r, ok := results[id]; ok {
-			a.aguiFrontend.deliver(thread, id, r)
+			a.frontend.deliver(thread, id, r)
 		} else {
 			remaining = append(remaining, id)
 		}
@@ -512,7 +394,7 @@ func (a *App) streamAGUIRun(ctx context.Context, out aguiOut, w *SessionWatcher,
 		}
 		switch {
 		case ev.Kind == SessionRunFinished && ev.RunID == kernelRunID:
-			a.aguiFrontend.forget(in.ThreadID)
+			a.frontend.forget(in.ThreadID)
 			out.write(m.closeAll()...)
 			if snap := a.aguiSnapshot(ctx, in.ThreadID); snap != nil {
 				out.write(*snap)

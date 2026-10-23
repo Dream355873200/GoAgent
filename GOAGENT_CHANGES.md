@@ -24,7 +24,8 @@ go.mod `replace` 指向此处。**每次向 GitHub 推送前**：把下面对应
 - **B6 可观测与测试**：`observer/oteltrace`（`gen_ai.*` span，经新的 `observer.ContextObserver` 随 ctx 传递）；
   `provider/scripted` 脚本化模型；`httprr` 录制回放（`anthropic.WithHTTPClient`、`openai.Config.HTTPClient`）；
   修复 `OnLLMStart` 在换后备/压缩重试/流中断恢复时没有对应的结束回调。
-- **B7 扩展**：AG-UI 前端工具（`success + pendingToolCallIds`）与改参审批（`editedArgs`，v1 `/approve` 的 `input`）；
+- **B7 扩展**：AG-UI 前端工具（`success + pendingToolCallIds`）与改参审批（`editedArgs`，v1 `/approve` 的 `input`；前端工具后来也进了 v1：
+  `/chat` 的 `tools` 字段 + `/chat/tool-result` 回传 + `/pending-tools`）；
   MCP elicitation 转成会话提问（`ElicitViaAskUser`）；`App.MCPServer` / `MCPHandler` / `ServeMCPStdio` 把工具与 agent
   暴露为 MCP 服务端；`WithPermissionClassifier` 可插拔分类器（`Gate.SetClassifier` 参数改为接口）。
 - **TS 客户端 0.4.0**：`resume()` / `autoResume`、`agents()` / `steerAgent()` / `interruptAgent()`、`approve(..., {input})`、

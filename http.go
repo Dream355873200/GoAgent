@@ -363,6 +363,25 @@ func newHTTPMux(app *App) *http.ServeMux {
 		}
 		runCtx = withRunID(runCtx, runID)
 
+		// 前端工具：客户端声明的、由客户端自己执行的工具注入本次运行。
+		// 模型调用时 tool_start 照常下发（name 命中本清单即归客户端执行），
+		// 结果经 POST /chat/tool-result 回传。
+		if len(req.Tools) > 0 {
+			decls := make([]FrontendToolDecl, len(req.Tools))
+			for i, t := range req.Tools {
+				decls[i] = FrontendToolDecl{Name: t.Name, Description: t.Description, Parameters: t.Parameters}
+			}
+			fe, err := app.frontendTools(sessionID, decls, nil)
+			if err != nil {
+				cancelRun(nil)
+				unregister()
+				writeFrame(protocol.Envelope{Type: protocol.TypeError, SessionID: sessionID, Error: err.Error()})
+				writeFrame(protocol.Envelope{Type: protocol.TypeMetadata, SessionID: sessionID})
+				return
+			}
+			runCtx = withRunTools(runCtx, fe)
+		}
+
 		// 多轮对话：session_id 命中已有会话则自动加载历史并逐条持久化；未传
 		// session_id 时按无状态单轮运行（不落盘）。
 		var events <-chan Event
@@ -400,6 +419,38 @@ func newHTTPMux(app *App) *http.ServeMux {
 			}
 		}()
 		writeSessionRun(ctx, watcher, sw, fw, sessionID, runID)
+	})
+
+	// POST /chat/tool-result — 前端工具执行结果回传：交给等待中的运行，
+	// 模型即刻继续（帧仍走原 /chat 连接的 SSE 流）。
+	mux.HandleFunc("POST /chat/tool-result", func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.FrontendToolResult
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ToolCallID == "" {
+			http.Error(w, "无效的请求体（tool_call_id 必填）", http.StatusBadRequest)
+			return
+		}
+		if req.SessionID != "" {
+			if err := safename.Check("session_id", req.SessionID); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":    "ok",
+			"delivered": app.deliverFrontendToolResult(req.SessionID, req.ToolCallID, req.Content, req.Error),
+		})
+	})
+
+	// GET /pending-tools — 会话中等待前端执行结果的工具调用（断线重连后补齐）。
+	mux.HandleFunc("GET /pending-tools", func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.URL.Query().Get("session_id")
+		if sessionID == "" {
+			http.Error(w, "session_id 必填", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"tools": app.PendingFrontendTools(sessionID)})
 	})
 
 	// GET /runs/{session}/stream — 会话事件流续传（断线重连、旁路观察）。

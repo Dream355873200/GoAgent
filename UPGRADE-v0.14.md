@@ -54,6 +54,7 @@ Go API 的变化、每个宿主具体要改什么。设计依据见 `design/`（
 | `anthropic.WithHTTPClient`、`openai.Config.HTTPClient`：自定义 provider 的 HTTP 客户端 | 需要代理、追踪、录制回放的宿主 | 可选 |
 | **新依赖** `go.opentelemetry.io/otel` v1.46.0（及仅测试用的 `otel/sdk`），`golang.org/x/sys` 升到 v0.47.0 | 所有宿主 | 与 MCP 新依赖一起 `go mod tidy` 一次即可 |
 | AG-UI 前端工具（`RunAgentInput.tools`）：以 `success + pendingToolCallIds` 停车，tool 消息带回结果；改参审批（`editedArgs`）；`/agui/capabilities` 的 `clientProvided`、`approveWithEdits` 为 true | AG-UI 客户端 | 可选，见第 7 节 |
+| **v1 也支持前端工具**：`/chat` 新增 `tools` 字段（客户端声明、客户端执行）、`POST /chat/tool-result` 回传结果、`GET /pending-tools` 查未完成调用；TS 客户端 0.5.0（`chat({tools})`、`toolResult()`、`pendingTools()`） | v1 客户端 | 可选；与 AG-UI 版共享同一内核机制，v1 流不断、无需停车 |
 | v1 `POST /approve` 新字段 `input`（批准时替换工具参数）；TS 客户端 0.4.0 `approve(id, true, {input})` | v1 客户端 | 可选 |
 | `WithMCP` 连接的 MCP 服务器发起的 elicitation 转成所在会话的提问（`payload.kind = "mcp_elicitation"`），此前客户端不声明该能力 | 用 `WithMCP` 且服务器会索取输入的宿主 | 客户端按 `kind` 渲染表单；不处理的提问照常可以文本作答 |
 | 新增 `App.MCPServer` / `MCPHandler` / `ServeMCPStdio`：把工具与 agent 暴露为 MCP 服务端 | 想被其他 MCP 客户端调用的宿主 | 可选 |
@@ -480,6 +481,10 @@ AG-UI 请求里的 `tools` 作为**前端执行的工具**注入本次运行（�
 | resume 只回答了部分中断 | 立即再次以 `interrupt` 结束，列出没回答的（此前会停在原处不再输出） |
 
 `/agui/capabilities` 的 `tools.clientProvided` 现为 `true`。
+
+#### v1 剖面的同款能力
+
+v1 也可以声明前端工具（`POST /chat` 的 `tools` 字段，类型与 AG-UI 的声明一致），但**协议形态更直接**——v1 的流不断，模型调用时 `tool_start` 帧实时推给客户端，客户端执行完 `POST /chat/tool-result` 回传（`error` 非空 = 工具失败），等待中的运行即刻继续；不存在停车与续跑。配套 `GET /pending-tools?session_id=` 查未完成的调用（断线重连后补齐），等待结果上限 30 分钟，到点按失败结束。TS 客户端 0.5.0：`chat({tools})`、`toolResult(sessionId, toolCallId, content, error?)`、`pendingTools(sessionId)`。
 
 ### 7.2 改参审批
 

@@ -72,6 +72,7 @@ func (a *App) CloseSession(sessionID string) {
 	if hub := a.eventHub(); hub != nil {
 		hub.close(sessionID)
 	}
+	a.frontend.forget(sessionID) // 未被取走的前端工具结果随会话丢弃
 }
 
 // SessionGrants 返回会话的"始终允许"授权集合（会话还没有运行过时为 nil）。
