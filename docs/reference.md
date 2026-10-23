@@ -738,8 +738,8 @@ func (m *LoggingMiddleware) AfterTool(ctx goagent.Context, name string, result *
 
 app := goagent.New(
     goagent.ProviderConfig{Model: "gpt-4o", APIKey: "sk-..."},
-    goagent.WithMiddleware(&LoggingMiddleware{}),
 )
+app.Use(&LoggingMiddleware{}) // 中间件在构造后经 Use 注册
 ```
 
 ### 内置中间件
@@ -796,10 +796,13 @@ app := goagent.New(
 ### 预置 Hooks
 
 ```go
-hooks.Log()          // 结构化日志
-hooks.Audit()        // 审计日志
-hooks.Metrics()      // Prometheus 指标
-hooks.RateLimit(10)  // 限流
+// 函数 hook：注册到指定事件
+logHook := hooks.NewFuncHook("audit", []hooks.HookEvent{hooks.EventPreToolUse},
+    func(ctx context.Context, hc *hooks.HookContext) (*hooks.HookResult, error) {
+        audit.Log("tool", hc.ToolName)
+        return nil, nil
+    })
+app := goagent.New(goagent.WithHooks(logHook))
 ```
 
 ---

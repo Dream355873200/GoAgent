@@ -7,7 +7,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat-square&logo=go)](https://golang.org)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
-> 📝 The three-lesson tutorial is available in English; the rest of the in-depth docs under `docs/` are currently Chinese-only. This README covers everything you need to get started; API references (godoc) are the source of truth for details.
+> 📝 All in-depth docs under `docs/` are bilingual — English under `docs/en/`, Chinese under `docs/` (each has a language switcher at the top). This README covers everything you need to get started; API references (godoc) are the source of truth for details.
 
 ---
 
