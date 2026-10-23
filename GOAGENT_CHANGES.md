@@ -5,6 +5,33 @@ Dream355873200/GoAgent 的本地增强副本。amobileCreater 的 engine 通过
 go.mod `replace` 指向此处。**每次向 GitHub 推送前**：把下面对应条目
 整理进正式 commit，然后移除 replace 升级版本号。
 
+## 2026-10-23（v0.14：会话事件总线、自定义事件、子代理治理、MCP 换芯、AG-UI、可观测与测试、扩展）
+
+完整升级说明与宿主迁移清单见 [UPGRADE-v0.14.md](UPGRADE-v0.14.md)（第 8 节按宿主列出必做与可选项）。推送前需要宿主侧确认的要点：
+- **依赖变化**：新增 `github.com/modelcontextprotocol/go-sdk v1.8.0`（`mcp` 包内部换官方 SDK）与
+  `go.opentelemetry.io/otel` v1.46.0（固定在 v1.46：v1.47 要求 Go 1.26）；`golang.org/x/sys` 升到 v0.47.0；
+  `gorilla/websocket` 移除。**engine 升级后必须 `go mod tidy`**（已在临时副本验证：tidy 后 build/vet 通过）。
+- **B1 会话事件总线**：每会话追加式事件日志（2000 帧 / 8 MiB），`/chat` 帧带 `session_seq`、`run_id`；
+  `GET /runs/{session}/stream?after=` 断线续传（`Last-Event-ID` 同样有效，落后过多时首帧 `resync`）；审批与提问按会话路由到
+  所有挂着的连接；`interrupted.reason`；`session.ErrBusy`。
+- **B2 自定义事件**：`ctx.Emit` / `App.EmitEvent` / `RegisterEvent`，v1 `custom` 帧；`observer.CustomEventObserver`；
+  修复 `MultiObserver` 不转发 `LLMObserver` 钩子。
+- **B3 子代理治理**：子代理按 `tool_use_id` 可寻址，`SteerAgent` / `InterruptAgent` / `Subagents`，`agent_send` /
+  `agent_status` 工具，`/agents` 端点与 `/chat`、`/queue`、`/interrupt` 的 `agent_id`；全量事件模式；每会话默认 8 个并发上限。
+- **B4 MCP 换芯**：门面不变；接通取消、进度、图片、工具列表变更；默认协议 2025-11-25。
+- **B5 AG-UI 1.0 剖面**：`POST /agui`、`GET /agui/capabilities`；审批/提问停车；消息 UID 在流式阶段确定（v1 `message_id`）；
+  拒绝原因送达模型。
+- **B6 可观测与测试**：`observer/oteltrace`（`gen_ai.*` span，经新的 `observer.ContextObserver` 随 ctx 传递）；
+  `provider/scripted` 脚本化模型；`httprr` 录制回放（`anthropic.WithHTTPClient`、`openai.Config.HTTPClient`）；
+  修复 `OnLLMStart` 在换后备/压缩重试/流中断恢复时没有对应的结束回调。
+- **B7 扩展**：AG-UI 前端工具（`success + pendingToolCallIds`）与改参审批（`editedArgs`，v1 `/approve` 的 `input`）；
+  MCP elicitation 转成会话提问（`ElicitViaAskUser`）；`App.MCPServer` / `MCPHandler` / `ServeMCPStdio` 把工具与 agent
+  暴露为 MCP 服务端；`WithPermissionClassifier` 可插拔分类器（`Gate.SetClassifier` 参数改为接口）。
+- **TS 客户端 0.4.0**：`resume()` / `autoResume`、`agents()` / `steerAgent()` / `interruptAgent()`、`approve(..., {input})`、
+  `FrameType.Custom` / `Resync`。**amobileCreater 桌面端**的 vendored 副本需要重新同步。
+- 验证：`go build ./...`、`go vet ./...`、`go test -race ./...` 通过；官方 `@ag-ui/client` 1.0.3 实连（停车/恢复 16 项、
+  前端工具 + 改参 8 项）零告警；MCP stdio 双向实连通过。
+
 ## 2026-10-22（v0.13 架构收敛）
 
 完整升级说明见 [UPGRADE-v0.13.md](UPGRADE-v0.13.md)（在 v0.12 之上）。推送前需要宿主侧确认的要点：

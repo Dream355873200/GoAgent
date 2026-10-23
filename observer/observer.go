@@ -277,6 +277,93 @@ type LLMObserver interface {
 // ctxToolCallIDKey 是工具调用 span 关联的 context 键（不导出防碰撞）。
 type ctxToolCallIDKey struct{}
 
+type ctxRunIDKey struct{}
+
+// WithRunID 给一次运行（会话的一条输入）打上唯一标识：App 在启动循环前设置，
+// 运行中的模型请求、工具调用、子代理都在它派生的 ctx 里，观察者据此把同一
+// 次运行的回调归到一起（例如 OpenTelemetry 的 span 父子关系）。
+func WithRunID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, ctxRunIDKey{}, id)
+}
+
+// RunIDFromContext 返回 WithRunID 设置的运行标识（未设置时为空）。
+func RunIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(ctxRunIDKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// CustomEventObserver 是自定义事件的可选观察接口（goagent.Emit /
+// App.EmitEvent 发射时调用）。value 是事件的 JSON 值。
+type CustomEventObserver interface {
+	OnCustomEvent(ctx context.Context, name string, value json.RawMessage)
+}
+
+// ContextObserver 是可选接口：观察者借它把自己的值（典型是追踪 span）放进循环
+// 随后使用的 ctx，运行内的代码由此继承父子关系——模型请求、工具执行、子代理，
+// 以及工具内部经 ctx 传递的 HTTP、数据库调用。
+//
+// RunContext 在 OnSessionStart 之后调用，返回值是本次运行此后使用的 ctx；
+// ToolContext 在工具执行前（权限检查之前）调用，ctx 已带 WithToolCallID 设置的
+// 调用 ID，返回值是这次工具执行使用的 ctx。实现只应在 ctx 上附加值。
+type ContextObserver interface {
+	RunContext(ctx context.Context) context.Context
+	ToolContext(ctx context.Context) context.Context
+}
+
+// MultiObserver 同样转发可选接口：成员实现了哪个就转发给哪个。
+
+func (m *MultiObserver) RunContext(ctx context.Context) context.Context {
+	for _, o := range m.observers {
+		if co, ok := o.(ContextObserver); ok {
+			ctx = co.RunContext(ctx)
+		}
+	}
+	return ctx
+}
+
+func (m *MultiObserver) ToolContext(ctx context.Context) context.Context {
+	for _, o := range m.observers {
+		if co, ok := o.(ContextObserver); ok {
+			ctx = co.ToolContext(ctx)
+		}
+	}
+	return ctx
+}
+
+func (m *MultiObserver) OnLLMStart(ctx context.Context, info *LLMCallInfo) {
+	for _, o := range m.observers {
+		if lo, ok := o.(LLMObserver); ok {
+			lo.OnLLMStart(ctx, info)
+		}
+	}
+}
+
+func (m *MultiObserver) OnLLMDone(ctx context.Context, info *LLMCallInfo, result *LLMResult) {
+	for _, o := range m.observers {
+		if lo, ok := o.(LLMObserver); ok {
+			lo.OnLLMDone(ctx, info, result)
+		}
+	}
+}
+
+func (m *MultiObserver) OnLLMError(ctx context.Context, info *LLMCallInfo, err error) {
+	for _, o := range m.observers {
+		if lo, ok := o.(LLMObserver); ok {
+			lo.OnLLMError(ctx, info, err)
+		}
+	}
+}
+
+func (m *MultiObserver) OnCustomEvent(ctx context.Context, name string, value json.RawMessage) {
+	for _, o := range m.observers {
+		if co, ok := o.(CustomEventObserver); ok {
+			co.OnCustomEvent(ctx, name, value)
+		}
+	}
+}
+
 // WithToolCallID 把工具调用 ID 塞进 ctx。loop 在 OnToolStart 前调用，
 // 同一次调用的 OnToolDone/OnToolError 携带同一个 ctx——宿主实现
 // Observer 时无需自行配对，直接从 ctx 提取 ID 即可拿到 trace/span 关联。

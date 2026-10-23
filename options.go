@@ -46,21 +46,21 @@ type appConfig struct {
 	builtinTools        bool
 	toolKits            []ToolKit
 	sessionManager      *session.Manager
-	sessionWorkDirFn    func(sessionID string) string // 会话 → 工作目录解析（多会话多根目录）
-	sessionProjectCtxFn func(sessionID string) []string // 会话 → 追加项目上下文文件
-	sessionPromptDirFn  func(sessionID string) string   // 会话 → 提示词目录（覆盖全局）
-	sessionToolFilterFn func(sessionID, toolName string) bool // 会话 → 工具可见性谓词（true 保留）
+	sessionWorkDirFn    func(sessionID string) string                       // 会话 → 工作目录解析（多会话多根目录）
+	sessionProjectCtxFn func(sessionID string) []string                     // 会话 → 追加项目上下文文件
+	sessionPromptDirFn  func(sessionID string) string                       // 会话 → 提示词目录（覆盖全局）
+	sessionToolFilterFn func(sessionID, toolName string) bool               // 会话 → 工具可见性谓词（true 保留）
 	sessionRoleCardFn   func(sessionID string) string                       // 会话 → 角色卡（注入 system prompt；空 = 无）
 	subAgentTraceFn     func(ctx Context) string                            // 子代理轨迹目录（nil = 不落盘）
 	sessionPermModeFn   func(sessionID string) (PermissionModeOption, bool) // 会话 → 权限模式覆写（ok=false 回退全局）
-	sandbox             Sandbox                       // 沙箱工厂（nil = 无沙箱，默认）
-	sandboxPolicy       Policy                        // 沙箱默认策略（WithSandbox 时生效）
-	autoPersist         *bool                         // nil 表示使用默认（true）
-	skipInputValidation bool                          // true = 关闭工具入参 schema 校验
-	permissionMode      *permission.PermissionMode    // nil 表示使用默认
+	sandbox             Sandbox                                             // 沙箱工厂（nil = 无沙箱，默认）
+	sandboxPolicy       Policy                                              // 沙箱默认策略（WithSandbox 时生效）
+	autoPersist         *bool                                               // nil 表示使用默认（true）
+	skipInputValidation bool                                                // true = 关闭工具入参 schema 校验
+	permissionMode      *permission.PermissionMode                          // nil 表示使用默认
 	permissionRules     *permission.RuleSet
 	permissionGuards    []permission.Guard // 外部策略链（单调：可拒不可放）
-	thinkingEffort      string // 思考强度档位（off/low/medium/high；空 = 不干预）
+	thinkingEffort      string             // 思考强度档位（off/low/medium/high；空 = 不干预）
 	hooks               []hooks.Hook       // 用户注册的 hooks
 	subAgentDefs        []agent.Definition // 子 agent 定义
 	sessionMemoryCfg    *sessionmem.Config // 会话记忆配置（nil 表示禁用）
@@ -89,9 +89,10 @@ type appConfig struct {
 
 	// 外部 prompt 目录（优先从此目录加载，找不到则 fallback 到嵌入默认值）
 	promptDir      string
-	yoloPromptFile string // YOLO 分类 prompt 外部文件路径
-	yoloDisabled   bool   // WithYoloClassifier(false)：不装配分类器
-	yoloModel      string // 分类器使用的模型（空 = 主 provider 当前模型）
+	yoloPromptFile string                // YOLO 分类 prompt 外部文件路径
+	yoloDisabled   bool                  // WithYoloClassifier(false)：不装配分类器
+	yoloModel      string                // 分类器使用的模型（空 = 主 provider 当前模型）
+	classifier     permission.Classifier // WithPermissionClassifier：替换 YOLO 分类器
 
 	// 库内日志（WithLogger 注入；nil = slog.Default()）
 	logger *slog.Logger
@@ -131,6 +132,17 @@ type appConfig struct {
 	// 对话记录落地回调（WithTranscriptSink）：每个循环轮次完成及 run 结束时
 	// 以完整消息列表调用。nil = 不回调（默认）。
 	transcriptSink func(sessionID string, msgs []message.Message)
+
+	// 会话事件日志配置（WithSessionStream）。nil 时日志只在 HTTP 模式启用，
+	// 取默认上限。
+	sessionStream *SessionStreamConfig
+
+	// 子代理治理（WithSubagentStream / WithMaxSubagents，见 subagents.go）。
+	subagentStream string
+	maxSubagents   int
+
+	// AG-UI 剖面（WithAGUI，见 agui.go）。
+	agui AGUIConfig
 }
 
 // ProviderConfig 是 LLM Provider 的配置，可直接传给 New()。
@@ -228,6 +240,13 @@ type Approver interface {
 // 已实现此接口。
 type ContextApprover interface {
 	ApproveWithContext(ctx context.Context, toolName string, input string, permission Permission) (allow bool, alwaysAllow bool)
+}
+
+// ReasonApprover 是 ContextApprover 的可选扩展：拒绝时给出原因，原因写进交给
+// 模型的工具结果（"权限被拒绝: <原因>"）。PermissionHandler 实现它：/approve 的
+// reason、AG-UI 审批的 reason、停车超时都经此到达模型。
+type ReasonApprover interface {
+	ApproveWithReason(ctx context.Context, toolName string, input string, permission Permission) (allow bool, alwaysAllow bool, reason string)
 }
 
 // --- Options ---
@@ -586,6 +605,26 @@ func WithPermissionRules(rules *PermissionRules) Option {
 func WithPermissionGuard(gd permission.Guard) Option {
 	return optionFunc(func(c *appConfig) {
 		c.permissionGuards = append(c.permissionGuards, gd)
+	})
+}
+
+// WithPermissionClassifier 用自定义分类器替换默认的 YOLO 分类器：规则引擎、
+// 外部策略服务，或在 permission.NewYoloClassifier 之前加一道快速判断的组合。
+// 调用时机与 YOLO 相同——auto 模式判定每个非只读、非白名单的调用，bypass 模式
+// 判定高风险调用与命中 ask 规则的调用。裁决为 BehaviorAsk 或返回错误时改为
+// 询问审批者（没有审批者则拒绝）；拒绝原因写进交给模型的工具结果。设置后
+// WithYoloClassifier、WithYoloClassifierModel、WithYoloPromptFile 不再生效。
+//
+//	goagent.WithPermissionClassifier(permission.ClassifierFunc(
+//	    func(ctx context.Context, req permission.ClassifyRequest) (permission.Classification, error) {
+//	        if strings.Contains(req.Input, "prod") {
+//	            return permission.Classification{Behavior: permission.BehaviorDeny, Reason: "禁止操作生产环境"}, nil
+//	        }
+//	        return permission.Classification{Behavior: permission.BehaviorAllow}, nil
+//	    }))
+func WithPermissionClassifier(c permission.Classifier) Option {
+	return optionFunc(func(c2 *appConfig) {
+		c2.classifier = c
 	})
 }
 

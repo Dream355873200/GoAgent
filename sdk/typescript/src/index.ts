@@ -3,6 +3,7 @@
  *
  * 与 GoAgent 引擎（RunHTTP）通信的零依赖客户端：对话 SSE 流式消费
  * （统一信封 Envelope：字符串 type / 连接内单调 seq / 协议版本 v）、
+ * 断线续传（session_seq + resume() / chat({ autoResume })）、
  * 交互原语回传（审批 / 提问 / 计划确认）、插话与排队、会话 / 任务 /
  * 计划 / 后台任务 / 用量等 REST 端点的类型化封装。
  *
@@ -21,10 +22,10 @@
  * }
  * ```
  */
-import type { Envelope, Description, QueueItem, SessionSummary } from "./types.js";
+import type { Envelope, Description, QueueItem, SessionSummary, SubagentInfo } from "./types.js";
 
 export { FrameType, PROTOCOL_VERSION } from "./types.js";
-export type { Envelope, ChatRequest, Description, QueueItem, SessionSummary } from "./types.js";
+export type { Envelope, ChatRequest, Description, QueueItem, SessionSummary, SubagentInfo } from "./types.js";
 
 /** 客户端选项。 */
 export interface ClientOptions {
@@ -43,6 +44,21 @@ export interface ChatOptions {
   /** 空闲唤醒：message 为空时取该会话排队的队头作为本轮输入（后台任务终态通知等）。 */
   resumeQueue?: boolean;
   /** AbortSignal——断开 SSE 连接。任务在引擎侧继续后台执行；中止任务请改用 interrupt()。 */
+  signal?: AbortSignal;
+  /**
+   * 断线自动续传：连接在收到 metadata 之前中断（网络错误或流意外结束）时，以最后收到的
+   * session_seq 调用 resume() 接着读，调用方看到的仍是一条连续的帧序列（期间可能出现 resync 帧）。
+   * true 等价于 { retries: 5, delayMs: 1000 }。
+   */
+  autoResume?: boolean | { retries?: number; delayMs?: number };
+}
+
+/** resume() 选项。 */
+export interface ResumeOptions {
+  /** 最后收到的 session_seq。省略时从进行中运行的开头读起；0 表示从服务端缓冲中最旧的帧读起。 */
+  after?: number;
+  /** true 时跨运行持续推送直到 signal 中止；否则会话空闲且已读到最新时以 metadata 结束。 */
+  follow?: boolean;
   signal?: AbortSignal;
 }
 
@@ -105,7 +121,7 @@ export class GoAgentClient {
   /**
    * 流式对话：POST /chat，逐帧 yield 统一信封。末帧恒为 metadata。
    * 首帧通常是 run_start；会话忙时（插话、排队、拒绝）不开新 run，没有 run_start。
-   * 消费中断（abort/异常）不会终止引擎侧任务——任务继续跑完落盘，可经 messages() 回放。
+   * 消费中断（abort/异常）不会终止引擎侧任务——任务继续跑完落盘，可经 resume() 续传或 messages() 回放。
    */
   async *chat(req: ChatOptions): AsyncGenerator<Envelope, void, undefined> {
     const res = await this.fetchImpl(`${this.baseUrl}/chat`, {
@@ -117,19 +133,82 @@ export class GoAgentClient {
     if (!res.ok || !res.body) {
       throw new GoAgentError(await res.text().catch(() => res.statusText), res.status);
     }
-    yield* parseSSE(res.body);
+    if (!req.autoResume) {
+      yield* parseSSE(res.body);
+      return;
+    }
+    const { retries = 5, delayMs = 1000 } = req.autoResume === true ? {} : req.autoResume;
+    let sessionId = req.sessionId;
+    let last: number | undefined;
+    let body: ReadableStream<Uint8Array> = res.body;
+    for (let attempt = 0; ; ) {
+      try {
+        for await (const frame of parseSSE(body)) {
+          if (frame.session_id) sessionId = frame.session_id;
+          if (frame.session_seq) last = frame.session_seq;
+          attempt = 0;
+          yield frame;
+          if (frame.type === "metadata") return;
+        }
+      } catch (err) {
+        if (req.signal?.aborted) throw err;
+      }
+      // 没收到 metadata 就断了：以最后的 session_seq 续传。
+      if (!sessionId || last === undefined) return;
+      for (;;) {
+        if (attempt++ >= retries) throw new GoAgentError("SSE 连接中断且续传失败", 0);
+        await sleep(delayMs, req.signal);
+        try {
+          body = await this.openStream(sessionId, { after: last, signal: req.signal });
+          break;
+        } catch (err) {
+          if (req.signal?.aborted) throw err;
+        }
+      }
+    }
+  }
+
+  /**
+   * 会话事件流续传：GET /runs/{session}/stream。先补发 session_seq > after 的帧，再转实时。
+   * 续传位置早于服务端缓冲时首帧为 resync。非 follow 模式下会话空闲后以 metadata 结束。
+   */
+  async *resume(sessionId: string, opts: ResumeOptions = {}): AsyncGenerator<Envelope, void, undefined> {
+    yield* parseSSE(await this.openStream(sessionId, opts));
+  }
+
+  private async openStream(sessionId: string, opts: ResumeOptions): Promise<ReadableStream<Uint8Array>> {
+    const q = new URLSearchParams();
+    if (opts.after !== undefined) q.set("after", String(opts.after));
+    if (opts.follow) q.set("follow", "1");
+    const qs = q.toString();
+    const res = await this.fetchImpl(`${this.baseUrl}/runs/${encodeURIComponent(sessionId)}/stream${qs ? `?${qs}` : ""}`, {
+      headers: this.headers(),
+      signal: opts.signal,
+    });
+    if (!res.ok || !res.body) {
+      throw new GoAgentError(await res.text().catch(() => res.statusText), res.status);
+    }
+    return res.body;
   }
 
   // ---------- 交互原语回传 ----------
 
-  /** 权限审批决定（permission_request 帧的 request_id）。 */
-  async approve(requestId: string, allow: boolean, opts?: { alwaysAllow?: boolean; reason?: string; sessionId?: string }): Promise<void> {
+  /**
+   * 权限审批决定（permission_request 帧的 request_id）。
+   * 批准时可用 `input` 替换工具参数（完整替换，按工具的入参 schema 校验；不记为始终允许）。
+   */
+  async approve(
+    requestId: string,
+    allow: boolean,
+    opts?: { alwaysAllow?: boolean; reason?: string; sessionId?: string; input?: Record<string, unknown> },
+  ): Promise<void> {
     await this.post("/approve", {
       request_id: requestId,
       allow,
       always_allow: opts?.alwaysAllow,
       reason: opts?.reason,
       session_id: opts?.sessionId,
+      input: opts?.input,
     });
   }
 
@@ -195,6 +274,28 @@ export class GoAgentClient {
   async removeQueued(sessionId: string, itemId: string): Promise<string> {
     const res = await this.post<{ text: string }>("/queue/remove", { session_id: sessionId, item_id: itemId });
     return res.text;
+  }
+
+  // ---------- 子代理 ----------
+
+  /** 会话中的子代理（运行中与最近 5 分钟内结束的）。 */
+  async agents(sessionId: string): Promise<SubagentInfo[]> {
+    return this.get(`/agents?session_id=${encodeURIComponent(sessionId)}`);
+  }
+
+  /** 单个子代理的快照与结束后保留的对话记录。 */
+  async agent(sessionId: string, agentId: string): Promise<{ agent: SubagentInfo; messages: unknown[] }> {
+    return this.get(`/agents/${encodeURIComponent(agentId)}?session_id=${encodeURIComponent(sessionId)}`);
+  }
+
+  /** 给运行中的子代理发指示：在它的下一个工具批边界生效。子代理不在运行时抛出 404。 */
+  async steerAgent(sessionId: string, agentId: string, message: string): Promise<void> {
+    await this.post("/queue", { session_id: sessionId, agent_id: agentId, message });
+  }
+
+  /** 只中断该子代理：父运行收到"被用户中断"的结果后继续。子代理不在运行时抛出 404。 */
+  async interruptAgent(sessionId: string, agentId: string, reason?: string): Promise<void> {
+    await this.post("/interrupt", { session_id: sessionId, agent_id: agentId, reason });
   }
 
   // ---------- 运行时控制 ----------
@@ -284,7 +385,8 @@ export class GoAgentClient {
 
 /**
  * 解析 SSE 字节流为信封序列。只处理 data: 行（本协议不使用事件名行
- * 与多行 data），容忍跨 chunk 分帧与 CRLF 行尾；注释行（: ping 心跳）跳过。
+ * 与多行 data），容忍跨 chunk 分帧与 CRLF 行尾；注释行（: ping 心跳）与
+ * id 行（续传端点）跳过。
  */
 export async function* parseSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<Envelope, void, undefined> {
   const reader = body.getReader();
@@ -310,4 +412,20 @@ export async function* parseSSE(body: ReadableStream<Uint8Array>): AsyncGenerato
   } finally {
     reader.releaseLock();
   }
+}
+
+/** 可中止的等待（续传重试间隔）。 */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(t);
+        reject(signal.reason);
+      },
+      { once: true },
+    );
+  });
 }

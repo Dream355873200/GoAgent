@@ -1809,6 +1809,9 @@ func (p *pipeline) runLightweight(ctx context.Context, agentDef *PipelineAgentDe
 		case loop.EvtProgress:
 			// 429 状态行等：StatusKey 非空 = 原地更新语义，Text 空 = 清除。
 			p.emitEvent(agentDef.Name, "progress", ev.Text, ev.StatusKey)
+		case loop.EvtCustom:
+			// 节点工具发射的自定义事件到达发起流水线的运行的事件流。
+			loop.EmitFromTool(ctx, ev)
 		}
 	}
 	flushTextTrace()

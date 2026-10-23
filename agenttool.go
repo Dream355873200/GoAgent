@@ -3,6 +3,7 @@ package goagent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/Dream355873200/GoAgent/bgtask"
 	"github.com/Dream355873200/GoAgent/internal/loop"
 	"github.com/Dream355873200/GoAgent/internal/safename"
+	"github.com/Dream355873200/GoAgent/message"
 	"github.com/Dream355873200/GoAgent/observer"
 	"github.com/Dream355873200/GoAgent/permission"
 	"github.com/Dream355873200/GoAgent/provider"
@@ -114,6 +116,10 @@ func agentToolDef(def agent.Definition, resolve func() provider.Provider, bgMgr 
 				run.SystemPrompt += "\n\n# 环境\n工作目录: " + ctx.WorkDir + "（工具中的相对路径以此为基准）"
 			}
 			toolUseID := observer.ToolCallIDFromContext(ctx)
+			agentID := toolUseID
+			if agentID == "" {
+				agentID = newRequestID("agent")
+			}
 			var mgr *bgtask.Manager
 			if bgMgr != nil {
 				mgr = bgMgr()
@@ -122,17 +128,58 @@ func agentToolDef(def agent.Definition, resolve func() provider.Provider, bgMgr 
 				if mgr == nil {
 					return "", fmt.Errorf("后台运行未启用（宿主未开启后台任务），请去掉 run_in_background 直接运行")
 				}
-				return startBackgroundAgent(ctx, mgr, run, resolve(), in.Task, toolUseID), nil
+				return startBackgroundAgent(ctx, mgr, run, resolve(), in.Task, toolUseID, agentID)
 			}
 
-			progress := newAgentProgress(ctx, toolUseID, def.Name)
+			// 子代理的 ctx 可被单独取消（InterruptAgent）：父运行不受影响，收到
+			// 错误结果后继续。在会话运行之中时登记到子代理表，并带上自己的插话车道。
+			subCtx, cancel := context.WithCancelCause(ctx.Context)
+			defer cancel(nil)
+			rt := sessionRuntimeFrom(ctx)
+			path := agentID
+			if rt != nil {
+				handle, err := rt.agents.start(agentID, agentIDFrom(ctx), def.Name, false, func(reason string) {
+					cancel(&agentInterrupt{reason: reason})
+				})
+				if err != nil {
+					return "", err
+				}
+				path = handle.info.Path
+				subCtx = loop.WithChildSteering(withAgentID(subCtx, agentID), handle.lane)
+			}
+			finish := func(status, detail, result string, res *agent.RunResult) {
+				if rt == nil {
+					return
+				}
+				var msgs []message.Message
+				if res != nil {
+					msgs = res.Messages
+				}
+				rt.agents.finish(agentID, status, detail, result, msgs)
+			}
+
+			progress := newAgentProgress(ctx, toolUseID, def.Name, path)
+			if rt != nil {
+				progress.onUpdate = func(p agent.Progress) { rt.agents.progress(agentID, p.Activity, p.ToolUses, p.Tokens) }
+			}
 			runner := agent.NewRunner(resolve()).OnProgress(progress.update).OnEvent(subAgentTracer(traceFn, ctx, toolUseID))
-			result, err := runner.Run(ctx, run, in.Task)
+			if rt != nil && rt.agents.fullStream() {
+				runner.ForwardTo(path)
+			}
+			result, err := runner.Run(subCtx, run, in.Task)
 			if err != nil {
-				progress.finish("failed", err.Error())
+				var ai *agentInterrupt
+				if errors.As(context.Cause(subCtx), &ai) && ctx.Err() == nil {
+					progress.finish(AgentCancelled, ai.reason)
+					finish(AgentCancelled, ai.reason, "", nil)
+					return "", errors.New(interruptedAgentText(def.Name, ai.reason))
+				}
+				progress.finish(AgentFailed, err.Error())
+				finish(AgentFailed, err.Error(), "", nil)
 				return "", fmt.Errorf("agent「%s」执行失败: %w", def.Name, err)
 			}
-			progress.finish("done", "")
+			progress.finish(AgentDone, "")
+			finish(AgentDone, "", result.FinalText, result)
 			return fmt.Sprintf("%s\n\n--- agent「%s」: %d 轮, %d+%d tokens ---",
 				result.FinalText, def.Name, result.TurnCount,
 				result.Usage.InputTokens, result.Usage.OutputTokens), nil
@@ -141,50 +188,86 @@ func agentToolDef(def agent.Definition, resolve func() provider.Provider, bgMgr 
 }
 
 // startBackgroundAgent 在后台启动子 agent 并立即返回。任务脱离本次 run：
-// 保留会话值（工作目录等）但不随本轮中断取消，只响应 TaskStop；进度
-// 仍经本轮事件流推送直到本轮结束，之后只写入任务输出文件。终态由
-// bgtask 的 OnTaskDone 回注会话。
-func startBackgroundAgent(ctx Context, mgr *bgtask.Manager, def agent.Definition, prov provider.Provider, task, toolUseID string) string {
+// 保留会话值（工作目录等）但不随本轮中断取消，只响应 TaskStop 与
+// InterruptAgent；进度仍经本轮事件流推送直到本轮结束，之后只写入任务输出
+// 文件。终态由 bgtask 的 OnTaskDone 回注会话。
+func startBackgroundAgent(ctx Context, mgr *bgtask.Manager, def agent.Definition, prov provider.Provider, task, toolUseID, agentID string) (string, error) {
+	runCtx, stop := context.WithCancelCause(context.WithoutCancel(ctx.Context))
+	rt := sessionRuntimeFrom(ctx)
+	path := agentID
+	var taskID string
+	if rt != nil {
+		handle, err := rt.agents.start(agentID, agentIDFrom(ctx), def.Name, true, func(reason string) {
+			stop(&agentInterrupt{reason: reason})
+			_ = mgr.Kill(taskID)
+		})
+		if err != nil {
+			stop(nil)
+			return "", err
+		}
+		path = handle.info.Path
+		runCtx = loop.WithChildSteering(withAgentID(runCtx, agentID), handle.lane)
+	}
 	taskID, taskCtx, cancel := mgr.RegisterAgent(ctx.SessionID, def.Name, task, def.Name, def.Model, toolUseID)
-	runCtx, stop := context.WithCancel(context.WithoutCancel(ctx.Context))
-	context.AfterFunc(taskCtx, stop)
+	context.AfterFunc(taskCtx, func() { stop(nil) })
+	if rt != nil {
+		rt.agents.setTask(agentID, taskID)
+	}
 
-	progress := newAgentProgress(runCtx, toolUseID, def.Name)
+	progress := newAgentProgress(runCtx, toolUseID, def.Name, path)
 	progress.onUpdate = func(p agent.Progress) {
 		mgr.UpdateProgress(taskID, p.ToolUses, p.Tokens)
 		if p.Activity != "" {
 			_ = mgr.AppendOutput(taskID, p.Activity+"\n")
 		}
+		if rt != nil {
+			rt.agents.progress(agentID, p.Activity, p.ToolUses, p.Tokens)
+		}
+	}
+	runner := agent.NewRunner(prov).OnProgress(progress.update)
+	if rt != nil && rt.agents.fullStream() {
+		runner.ForwardTo(path)
 	}
 	go func() {
 		defer cancel()
-		defer stop()
-		result, err := agent.NewRunner(prov).OnProgress(progress.update).Run(runCtx, def, task)
+		defer stop(nil)
+		result, err := runner.Run(runCtx, def, task)
 		if err != nil {
-			progress.finish("failed", err.Error())
+			status := AgentFailed
+			var ai *agentInterrupt
+			if errors.As(context.Cause(runCtx), &ai) || taskCtx.Err() != nil {
+				status = AgentCancelled
+			}
+			progress.finish(status, err.Error())
 			mgr.Fail(taskID, err)
+			if rt != nil {
+				rt.agents.finish(agentID, status, err.Error(), "", nil)
+			}
 			return
 		}
-		progress.finish("done", "")
+		progress.finish(AgentDone, "")
 		_ = mgr.AppendOutput(taskID, "\n"+result.FinalText+"\n")
 		mgr.Complete(taskID, result.FinalText, result.Messages)
+		if rt != nil {
+			rt.agents.finish(agentID, AgentDone, "", result.FinalText, result.Messages)
+		}
 	}()
-	return fmt.Sprintf("agent「%s」已在后台启动（task_id=%s）。完成后会自动通知你；"+
-		"期间可继续其他工作，需要时用 TaskOutput 查看进度、TaskStop 终止。不要轮询等待。", def.Name, taskID)
+	return fmt.Sprintf("agent「%s」已在后台启动（task_id=%s，agent_id=%s）。完成后会自动通知你；"+
+		"期间可继续其他工作，需要时用 TaskOutput 查看进度、agent_send 补充指示、TaskStop 终止。不要轮询等待。", def.Name, taskID, agentID), nil
 }
 
 // agentProgress 把 Runner 进度转成 subagent_progress 事件（经所属 run 的
 // 事件流下发，按 tool_use ID 关联到调用卡片）。
 type agentProgress struct {
-	ctx      context.Context
-	id, name string
-	last     agent.Progress
-	mu       sync.Mutex
-	onUpdate func(agent.Progress)
+	ctx            context.Context
+	id, name, path string
+	last           agent.Progress
+	mu             sync.Mutex
+	onUpdate       func(agent.Progress)
 }
 
-func newAgentProgress(ctx context.Context, toolUseID, name string) *agentProgress {
-	return &agentProgress{ctx: ctx, id: toolUseID, name: name}
+func newAgentProgress(ctx context.Context, toolUseID, name, path string) *agentProgress {
+	return &agentProgress{ctx: ctx, id: toolUseID, name: name, path: path}
 }
 
 func (p *agentProgress) update(pr agent.Progress) {
@@ -218,6 +301,7 @@ func (p *agentProgress) emit(status string, pr agent.Progress) {
 		AgentActivity: pr.Activity,
 		AgentToolUses: pr.ToolUses,
 		AgentTokens:   pr.Tokens,
+		AgentPath:     p.path,
 	})
 }
 

@@ -3,8 +3,11 @@ package goagent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
+
+	"github.com/Dream355873200/GoAgent/observer"
 )
 
 // AskUserRequest 是发送给前端的提问请求。
@@ -20,6 +23,12 @@ type AskUserRequest struct {
 	// SessionID 发起提问的会话（AskSession/AskSessionCtx 填写；无会话信息
 	// 的 Ask/AskStructured 为空）。前端恢复流程按会话查询未决提问。
 	SessionID string `json:"session_id,omitempty"`
+
+	// AgentPath 非空表示提问来自该子代理（归属路径；AskSessionCtx 从 ctx 取）。
+	AgentPath string `json:"agent_path,omitempty"`
+
+	// ToolUseID 是发起提问的工具调用 ID（AskSessionCtx 从 ctx 取）。
+	ToolUseID string `json:"tool_use_id,omitempty"`
 
 	// Payload 结构化交互载荷（可选）。通用库不感知领域语义——宿主工具
 	// 经 AskStructured 附加任意 JSON 对象（如确认卡的选项列表），随 SSE
@@ -76,6 +85,8 @@ type AskUserHandler struct {
 	nextID   atomic.Int64
 	mu       sync.Mutex
 	closed   bool
+	// router 把提问发布到会话事件日志（HTTP 模式安装，见 installSessionRouting）。
+	router func(*AskUserRequest) bool
 }
 
 // NewAskUserHandler 创建异步提问处理器。
@@ -138,9 +149,9 @@ func (h *AskUserHandler) AskStructured(question string, payload map[string]any) 
 	return h.AskSession("", question, payload)
 }
 
-// AskSession 按会话路由的提问：请求优先发往该会话绑定的活跃连接
-// （AskStructured / Ask 在无会话信息时落到最近绑定的连接），没有任何
-// 绑定连接时退回共享 channel（SDK 直连消费模式）。
+// AskSession 按会话路由的提问：请求先发往该会话的显式订阅（Subscribe），
+// 再发布到会话事件日志（HTTP 模式），都没有时退回共享 channel（SDK 直连
+// 消费模式）。
 func (h *AskUserHandler) AskSession(sessionID string, question string, payload map[string]any) (string, error) {
 	return h.AskSessionCtx(context.Background(), sessionID, question, payload)
 }
@@ -155,6 +166,7 @@ func (h *AskUserHandler) AskSessionCtx(ctx context.Context, sessionID string, qu
 		h.mu.Unlock()
 		return "", fmt.Errorf("ask handler 已关闭")
 	}
+	router := h.router
 	h.mu.Unlock()
 
 	id := h.nextID.Add(1)
@@ -165,6 +177,8 @@ func (h *AskUserHandler) AskSessionCtx(ctx context.Context, sessionID string, qu
 		RequestID: requestID,
 		Question:  question,
 		SessionID: sessionID,
+		AgentPath: AgentPathFromContext(ctx),
+		ToolUseID: observer.ToolCallIDFromContext(ctx),
 		Payload:   payload,
 		seq:       id,
 		ch:        responseCh,
@@ -173,8 +187,7 @@ func (h *AskUserHandler) AskSessionCtx(ctx context.Context, sessionID string, qu
 	// 注册到 pending map。
 	h.pending.Store(requestID, req)
 
-	// 优先路由到活跃连接（提问与回答它的流在同一连接上）。
-	if h.streams.Send(sessionID, req) {
+	if h.streams.Send(sessionID, req) || (router != nil && router(req)) {
 		return h.waitAnswer(ctx, requestID, responseCh)
 	}
 
@@ -216,6 +229,19 @@ func (h *AskUserHandler) PendingBySession(sessionID string) *AskUserRequest {
 	return best
 }
 
+// pendingAllBySession 返回会话全部未决的提问（按发起顺序）。
+func (h *AskUserHandler) pendingAllBySession(sessionID string) []*AskUserRequest {
+	var out []*AskUserRequest
+	h.pending.Range(func(_, v any) bool {
+		if req := v.(*AskUserRequest); req.SessionID == sessionID {
+			out = append(out, req)
+		}
+		return true
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].seq < out[j].seq })
+	return out
+}
+
 // waitAnswer 等待前端回答，ctx 取消（run 被中断）时立即解除阻塞。
 func (h *AskUserHandler) waitAnswer(ctx context.Context, requestID string, responseCh chan string) (string, error) {
 	select {
@@ -226,6 +252,13 @@ func (h *AskUserHandler) waitAnswer(ctx context.Context, requestID string, respo
 		h.pending.Delete(requestID)
 		return "", fmt.Errorf("提问随 run 中断取消: %w", ctx.Err())
 	}
+}
+
+// setRouter 安装会话事件日志路由（nil 移除）。
+func (h *AskUserHandler) setRouter(fn func(*AskUserRequest) bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.router = fn
 }
 
 // AskUserHTTPRequest 是 HTTP /askuser 端点的请求格式。

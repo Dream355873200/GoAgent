@@ -97,6 +97,28 @@ type App struct {
 	// Guard 增删即时作用于它们——多个会话可以同时在跑。
 	gatesMu sync.Mutex
 	gates   map[*permission.Gate]*liveGate
+
+	// hub 是会话事件日志（见 sessionlog.go；WithSessionStream 或 HTTP 模式
+	// 启用，未启用时为 nil）。
+	hubMu sync.Mutex
+	hub   *eventHub
+
+	// interactionRouting 为 true 时没有显式订阅的审批与提问发布到会话事件
+	// 日志（HTTP 模式启用；受 mu 保护）。
+	interactionRouting bool
+
+	// events 是已注册的自定义事件 schema（RegisterEvent）；runSinks 登记各
+	// 会话进行中运行的事件出口（EmitEvent 注入）。见 custom.go。
+	events   eventRegistry
+	runSinks runSinks
+
+	// aguiParks 登记 AG-UI 剖面中停在审批/提问上的运行（见 agui.go）。
+	aguiParks aguiParks
+
+	// mcpBusy 登记正被 MCP agent 调用使用的会话（见 mcpserver.go）。
+	mcpBusy sync.Map
+	// aguiFrontend 登记等待 AG-UI 前端返回结果的前端工具调用（见 agui.go）。
+	aguiFrontend aguiFrontendCalls
 }
 
 // registeredTool wraps a user-defined tool with its generated schema.
@@ -131,6 +153,11 @@ func New(opts ...Option) *App {
 
 	// 初始化 Observer 注册表。
 	app.obsRegistry = observer.NewSyncObservable()
+
+	// 会话事件日志（WithSessionStream）；HTTP 模式在构建路由表时启用。
+	if app.config.sessionStream != nil {
+		app.enableEventHub()
+	}
 
 	// 初始化成本追踪（WithCostTracking）。
 	if app.config.costTracking {
@@ -256,6 +283,9 @@ func New(opts ...Option) *App {
 	if app.provider != nil {
 		for _, def := range app.config.subAgentDefs {
 			app.useToolsSkipDuplicates(NamedTool{Name: "Agent_" + def.Name, Def: app.AgentTool(def)})
+		}
+		if len(app.config.subAgentDefs) > 0 {
+			app.useToolsSkipDuplicates(app.AgentControlTools()...)
 		}
 	}
 
@@ -493,6 +523,14 @@ func (a *App) RunWithSessionHistory(ctx context.Context, sessionID string, histo
 	events := make(chan Event, 64)
 	go func() {
 		defer close(events)
+		// 运行结束条目在释放会话之后追加：客户端看到结束帧后立即发下一条
+		// 消息时，会话已经空闲。
+		var finish func()
+		defer func() {
+			if finish != nil {
+				finish()
+			}
+		}()
 		if mgr := a.config.sessionManager; mgr != nil {
 			if err := mgr.Acquire(sessionID); err != nil {
 				events <- Event{Type: EventError, Error: err}
@@ -500,8 +538,10 @@ func (a *App) RunWithSessionHistory(ctx context.Context, sessionID string, histo
 			}
 			defer mgr.Release(sessionID)
 		}
+		out, fin := a.teeSessionRun(ctx, sessionID, events)
+		finish = fin
 		sess := &session.Session{ID: sessionID, Messages: history}
-		a.run(ctx, input, sess, events, false)
+		a.run(ctx, input, sess, out, false)
 		// queue 车道续跑：本轮结束后依次消费排队消息（同一会话、同一事件流），
 		// 直到队列排空或 ctx 被取消（用户中断则停止消费，消息留在队列里）。
 		if a.config.steering != nil {
@@ -510,8 +550,8 @@ func (a *App) RunWithSessionHistory(ctx context.Context, sessionID string, histo
 				if !ok {
 					break
 				}
-				events <- Event{Type: EventQueueRun, Text: next}
-				a.run(ctx, next, sess, events, false)
+				out <- Event{Type: EventQueueRun, Text: next}
+				a.run(ctx, next, sess, out, false)
 			}
 		}
 	}()
@@ -536,6 +576,13 @@ func (a *App) RunSession(ctx context.Context, sessionID string, input string) <-
 	events := make(chan Event, 64)
 	go func() {
 		defer close(events)
+		// 运行结束条目在释放会话之后追加（见 RunWithSessionHistory）。
+		var finish func()
+		defer func() {
+			if finish != nil {
+				finish()
+			}
+		}()
 
 		mgr := a.config.sessionManager
 		if mgr == nil {
@@ -559,6 +606,7 @@ func (a *App) RunSession(ctx context.Context, sessionID string, input string) <-
 
 		// 空输入 = 空闲唤醒：取队头作为本轮输入（后台任务在会话空闲时
 		// 完成，通知只能等这里消费）；队列空则无事可做。
+		var queued string
 		if input == "" {
 			if a.config.steering == nil {
 				return
@@ -567,15 +615,20 @@ func (a *App) RunSession(ctx context.Context, sessionID string, input string) <-
 			if !ok {
 				return
 			}
-			events <- Event{Type: EventQueueRun, Text: next}
-			input = next
+			queued, input = next, next
+		}
+
+		out, fin := a.teeSessionRun(ctx, sessionID, events)
+		finish = fin
+		if queued != "" {
+			out <- Event{Type: EventQueueRun, Text: queued}
 		}
 
 		// 更新状态为运行中。
 		_ = mgr.UpdateState(ctx, sessionID, sessionStateRunning)
 
 		// 运行 agent，传入历史消息。
-		a.run(ctx, input, sess, events, true)
+		a.run(ctx, input, sess, out, true)
 
 		// queue 车道续跑：本轮结束后依次消费排队消息（同一会话、同一
 		// 事件流），直到队列排空或 ctx 被取消（用户中断则停止消费，
@@ -587,8 +640,8 @@ func (a *App) RunSession(ctx context.Context, sessionID string, input string) <-
 				if !ok {
 					break
 				}
-				events <- Event{Type: EventQueueRun, Text: next}
-				a.run(ctx, next, sess, events, true)
+				out <- Event{Type: EventQueueRun, Text: next}
+				a.run(ctx, next, sess, out, true)
 			}
 		}
 
@@ -765,6 +818,29 @@ func (a *App) ReplaceTool(name string, def ToolDef) {
 	a.registerToolLocked(name, def)
 }
 
+// RemoveTool 注销一个工具，返回它此前是否已注册。线程安全，对之后开始的
+// 运行生效（进行中的运行保留开始时的工具集）。
+func (a *App) RemoveTool(name string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.removeToolLocked(name)
+}
+
+func (a *App) removeToolLocked(name string) bool {
+	if _, ok := a.tools[name]; !ok {
+		return false
+	}
+	delete(a.tools, name)
+	order := a.toolOrder[:0:0]
+	for _, n := range a.toolOrder {
+		if n != name {
+			order = append(order, n)
+		}
+	}
+	a.toolOrder = order
+	return true
+}
+
 // ToolNames 返回已注册工具的名称列表（按注册顺序）。
 func (a *App) ToolNames() []string {
 	a.mu.RLock()
@@ -842,8 +918,9 @@ func (a *App) RunHTTP(addr string) error {
 // SetApprover 替换审批者（WithApprover 的运行时形态），对之后开始的运行生效。
 func (a *App) SetApprover(ap Approver) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.config.approver = ap
+	a.mu.Unlock()
+	a.installInteractionRouting()
 }
 
 // SetSessionManager 替换会话管理器（WithSessionManager 的运行时形态）。应在
@@ -871,8 +948,9 @@ func (a *App) MemoryDir() string {
 //	builtin.SetAskUserCallback(h.Ask)
 func (a *App) SetAskUserHandler(h *AskUserHandler) {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.askUserHandler = h
+	a.mu.Unlock()
+	a.installInteractionRouting()
 }
 
 // SetPlanConfirmHandler 设置异步计划确认处理器。
@@ -1010,12 +1088,19 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 			}
 		}
 	}
+	// 本次运行附带的工具（AG-UI 前端工具）：与已注册工具重名的不加入。
+	for _, extra := range runToolsFrom(ctx) {
+		if a.tools[extra.Name] == nil {
+			tools = append(tools, extra)
+		}
+	}
 	mws := make([]MiddlewareWithFilter, len(a.middlewares))
 	copy(mws, a.middlewares)
 	a.mu.RUnlock()
 
 	// 子系统初始化。
 	rt := a.sessionRuntime(sessionID)
+	rt.agents.configure(cfg.maxSubagents, cfg.subagentStream, cfg.steering)
 
 	// 1. Compaction Manager（对齐 Claude Code 流程）。按会话常驻：自动摘要的
 	// 熔断状态需要跨运行保留，按运行新建会让熔断每条用户消息都被重置。
@@ -1153,6 +1238,7 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 		SuspendGate: cfg.suspendGate,
 
 		SkipInputValidation: cfg.skipInputValidation,
+		InputUID:            inputUIDFrom(ctx),
 	}
 
 	// PlanChecker 仅在 Plan 系统启用时注入。
@@ -1166,6 +1252,13 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	// Store/Load 读写本会话的键值存储，内置 AskUser 工具按会话路由提问。
 	ctx = withSessionRuntime(ctx, rt)
 	ctx = withAskUserHandler(ctx, askHandler)
+	ctx = observer.WithRunID(ctx, newRequestID("run"))
+	// 自定义事件：工具里 Emit 的值按已注册的 schema 校验；会话运行登记事件
+	// 出口，宿主可从运行之外经 EmitEvent 注入。
+	ctx = withEventRegistry(ctx, &a.events)
+	if !ephemeralSession(sessionID) {
+		defer a.runSinks.register(sessionID, out)()
+	}
 
 	// 插话通道：仅真实会话（sess 非空且非 ephemeral）接线。beginRun
 	// 打开 guide 车道，run 结束（含 error/interrupt 退出）时 endRun
@@ -1413,6 +1506,12 @@ func toPublicEvent(ev loop.Event) Event {
 		Usage:       ev.Usage,
 		Error:       ev.Error,
 
+		InterruptReason: ev.Reason,
+		CustomName:      ev.CustomName,
+		CustomValue:     ev.CustomValue,
+		AgentPath:       ev.AgentPath,
+		MessageID:       ev.MessageID,
+
 		AgentID:       ev.AgentID,
 		AgentDesc:     ev.AgentDesc,
 		AgentStatus:   ev.AgentStatus,
@@ -1434,10 +1533,20 @@ func (a *approverAdapter) Approve(toolName string, input string, level permissio
 }
 
 func (a *approverAdapter) ApproveContext(ctx context.Context, toolName string, input string, level permission.Level) (bool, bool) {
-	if ca, ok := a.inner.(ContextApprover); ok {
-		return ca.ApproveWithContext(ctx, toolName, input, Permission(level))
+	allow, always, _ := a.ApproveReason(ctx, toolName, input, level)
+	return allow, always
+}
+
+func (a *approverAdapter) ApproveReason(ctx context.Context, toolName string, input string, level permission.Level) (bool, bool, string) {
+	switch inner := a.inner.(type) {
+	case ReasonApprover:
+		return inner.ApproveWithReason(ctx, toolName, input, Permission(level))
+	case ContextApprover:
+		allow, always := inner.ApproveWithContext(ctx, toolName, input, Permission(level))
+		return allow, always, ""
 	}
-	return a.inner.Approve(toolName, input, Permission(level))
+	allow, always := a.inner.Approve(toolName, input, Permission(level))
+	return allow, always, ""
 }
 
 // wrapApprover wraps a public Approver into a permission.Approver.

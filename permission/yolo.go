@@ -2,6 +2,7 @@ package permission
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -85,6 +86,25 @@ func (c *YoloClassifier) Classify(ctx context.Context, messages []message.Messag
 	}
 
 	return YoloResult{ShouldBlock: true, Reason: "unknown classifier mode"}
+}
+
+// ClassifyCall 实现 Classifier：判定为危险时拒绝，否则放行；API 失败或对话
+// 记录超出上下文窗口时返回错误（权限门改为询问用户）。
+func (c *YoloClassifier) ClassifyCall(ctx context.Context, req ClassifyRequest) (Classification, error) {
+	r := c.Classify(ctx, req.Transcript, req.ToolName, req.Input)
+	switch {
+	case r.Unavailable:
+		return Classification{}, errors.New("YOLO 分类器调用失败")
+	case r.TranscriptTooLong:
+		return Classification{}, errors.New("对话记录超出 YOLO 分类器的上下文窗口")
+	case r.ShouldBlock:
+		reason := "YOLO 分类器阻止"
+		if r.Reason != "" {
+			reason += ": " + r.Reason
+		}
+		return Classification{Behavior: BehaviorDeny, Reason: reason}, nil
+	}
+	return Classification{Behavior: BehaviorAllow, Reason: "YOLO 分类器允许"}, nil
 }
 
 func (c *YoloClassifier) runStage(ctx context.Context, transcript string, stage int) YoloResult {

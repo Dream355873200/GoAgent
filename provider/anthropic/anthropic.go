@@ -34,8 +34,9 @@ import (
 
 // Provider 实现 provider.Provider，对接 Anthropic Claude API。
 type Provider struct {
-	client  anthropic.Client
-	baseURL string // 可选，自定义 API 地址
+	client     anthropic.Client
+	baseURL    string       // 可选，自定义 API 地址
+	httpClient *http.Client // 可选，自定义 HTTP 客户端
 
 	mu    sync.RWMutex // 保护 model：SetModel 可与进行中的请求并发
 	model string
@@ -58,6 +59,14 @@ func WithBaseURL(url string) Option {
 	}
 }
 
+// WithHTTPClient 使用自定义 HTTP 客户端（代理、追踪、测试中的 httprr 录制回放）。
+// 不要设置 http.Client.Timeout：它覆盖整个流式响应，长回复会被截断。
+func WithHTTPClient(c *http.Client) Option {
+	return func(p *Provider) {
+		p.httpClient = c
+	}
+}
+
 // New 创建 Anthropic Provider。
 func New(apiKey string, opts ...Option) *Provider {
 	p := &Provider{
@@ -73,6 +82,9 @@ func New(apiKey string, opts ...Option) *Provider {
 	}
 	if p.baseURL != "" {
 		clientOpts = append(clientOpts, option.WithBaseURL(p.baseURL))
+	}
+	if p.httpClient != nil {
+		clientOpts = append(clientOpts, option.WithHTTPClient(p.httpClient))
 	}
 	p.client = anthropic.NewClient(clientOpts...)
 

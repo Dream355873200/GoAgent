@@ -55,6 +55,11 @@ type Config struct {
 	// ExtraBody 原样合并进每个 chat/completions 请求体（浅合并，ExtraBody 优先）。
 	// 逃生舱：各后端的私有参数（如某些网关的思考开关）无需改库即可透传。
 	ExtraBody map[string]any
+
+	// HTTPClient 自定义 HTTP 客户端（代理、追踪、测试中的 httprr 录制回放）；
+	// 为空时使用内置客户端（限 2 分钟等待响应头）。不要设置 http.Client.Timeout：
+	// 它覆盖整个流式响应，长回复会被截断。
+	HTTPClient *http.Client
 }
 
 // Provider 实现 OpenAI 兼容的 provider.Provider 接口。
@@ -85,11 +90,15 @@ func New(cfg Config) *Provider {
 	}
 	// 不设 http.Client.Timeout（它覆盖整个流式响应，长回复会被误杀）；
 	// 只限响应头等待，流式读取的空闲由 consumeStream 的看门狗兜底。
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = responseHeaderTimeout
+	client := cfg.HTTPClient
+	if client == nil {
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.ResponseHeaderTimeout = responseHeaderTimeout
+		client = &http.Client{Transport: transport}
+	}
 	return &Provider{
 		config:     cfg,
-		client:     &http.Client{Transport: transport},
+		client:     client,
 		imgFormats: map[string]string{},
 	}
 }

@@ -21,6 +21,14 @@ type ServerConfig struct {
 	// Streamable HTTP
 	URL     string
 	Headers map[string]string // 附加请求头（如 Authorization）
+
+	// ProtocolVersion 握手时请求的协议版本（空 = DefaultProtocolVersion）。
+	ProtocolVersion string
+
+	// Elicit 处理服务器在工具调用中向用户索取的输入（elicitation/create，见
+	// ElicitHandler）。为空时不向服务器声明 elicitation 能力。WithMCP 连接的
+	// 服务器默认使用 goagent.ElicitViaAskUser（转成所在会话的一次提问）。
+	Elicit ElicitHandler
 }
 
 // Validate 校验配置完整性（name 必填，command 与 url 二选一）。
@@ -34,27 +42,13 @@ func (c ServerConfig) Validate() error {
 	return nil
 }
 
-// Dial 按配置建立传输并完成初始化握手。失败时已启动的子进程会被清理。
+// Dial 按配置建立连接并完成初始化握手（官方 Go SDK 承载：调用取消、进度
+// 通知、工具列表变更、图片结果都可用）。失败时已启动的子进程会被清理。
 func Dial(ctx context.Context, cfg ServerConfig) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	var transport Transport
-	if cfg.Command != "" {
-		t, err := NewStdioTransportConfig(StdioConfig{Command: cfg.Command, Args: cfg.Args, Env: cfg.Env, Dir: cfg.Dir})
-		if err != nil {
-			return nil, err
-		}
-		transport = t
-	} else {
-		transport = NewHTTPTransportConfig(HTTPConfig{URL: cfg.URL, Headers: cfg.Headers})
-	}
-	client := NewClient(transport, WithName(cfg.Name))
-	if err := client.Connect(ctx); err != nil {
-		_ = client.Disconnect()
-		return nil, err
-	}
-	return client, nil
+	return dialSDK(ctx, cfg)
 }
 
 // Connect 一步完成：建立连接、握手、发现工具并转换为框架工具。

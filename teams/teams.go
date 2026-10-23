@@ -121,6 +121,8 @@ func Run(ctx context.Context, cfg Config, task string) (string, error) {
 		case loop.EvtError:
 			lastErr = ev.Error
 			notify(cfg, "leader", "error", fmt.Sprint(ev.Error))
+		case loop.EvtCustom:
+			loop.EmitFromTool(ctx, ev)
 		}
 	}
 	return finish(ctx, "队长", final.String(), lastErr)
@@ -166,6 +168,8 @@ func runMember(ctx context.Context, cfg Config, member MemberRuntime, task strin
 			notify(cfg, member.Name, "error", fmt.Sprint(ev.Error))
 		case loop.EvtTextDelta:
 			final.WriteString(ev.Text)
+		case loop.EvtCustom:
+			loop.EmitFromTool(ctx, ev)
 		}
 	}
 	return finish(ctx, "成员 "+member.Name+" ", final.String(), lastErr)

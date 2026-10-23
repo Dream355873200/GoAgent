@@ -119,10 +119,12 @@ func (a *App) newGate(rt *sessionRuntime) (gate *permission.Gate, sessionMode bo
 		gate.AddGuard(gd)
 	}
 	gate.SetEditTools(editTools)
-	// YOLO 分类器（默认装配）：auto 模式判定每个非只读调用，bypass 模式只
-	// 判定高风险调用，其他模式不调用。提示词优先级：WithYoloPromptFile >
-	// 提示词目录中的同名文件 > 嵌入的默认值。
-	if prov != nil && !cfg.yoloDisabled {
+	// 分类器：WithPermissionClassifier 优先；否则默认装配 YOLO 分类器。auto
+	// 模式判定每个非只读调用，bypass 模式只判定高风险调用，其他模式不调用。
+	// YOLO 提示词优先级：WithYoloPromptFile > 提示词目录中的同名文件 > 嵌入的默认值。
+	if cfg.classifier != nil {
+		gate.SetClassifier(cfg.classifier)
+	} else if prov != nil && !cfg.yoloDisabled {
 		yoloCfg := permission.YoloClassifierConfig{Mode: "both", Model: cfg.yoloModel}
 		if cfg.yoloPromptFile != "" {
 			yoloCfg.PromptFile = cfg.yoloPromptFile

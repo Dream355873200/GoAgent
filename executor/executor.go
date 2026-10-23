@@ -64,6 +64,8 @@ type ToolCall struct {
 	// 为 nil 时跳过预检查直接执行。
 	// 对齐 Claude Code 的 StreamingToolExecutor 在 executeTool 内做权限检查。
 	PreCheck PreCheckFn
+	// Context 非空时变换这次调用使用的 ctx（PreCheck 与 Execute 都用变换后的）。
+	Context func(context.Context) context.Context
 }
 
 // effect 返回调用的有效分级（显式 Class 优先，兼容字段兜底）。
@@ -169,6 +171,9 @@ func (e *Executor) executeOne(ctx context.Context, call ToolCall) (res ToolResul
 	// 所属的 tool_use（observer.ToolCallIDFromContext）。
 	if call.ID != "" {
 		ctx = observer.WithToolCallID(ctx, call.ID)
+	}
+	if call.Context != nil {
+		ctx = call.Context(ctx)
 	}
 
 	defer func() {

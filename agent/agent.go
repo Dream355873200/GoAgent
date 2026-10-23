@@ -111,6 +111,10 @@ type Runner struct {
 	// onEvent 细粒度事件回调（可选）；与 onProgress 同锁串行调用。
 	onEvent func(AgentEvent)
 
+	// forwardPath 非空时子 agent 的过程事件带上该归属路径转发进所在运行的
+	// 事件流（见 ForwardTo）。
+	forwardPath string
+
 	progMu sync.Mutex // 串行化进度/事件回调
 }
 
@@ -129,6 +133,39 @@ func (r *Runner) OnProgress(fn func(Progress)) *Runner {
 func (r *Runner) OnEvent(fn func(AgentEvent)) *Runner {
 	r.onEvent = fn
 	return r
+}
+
+// ForwardTo 让子 agent 的过程事件——正文与思考增量、工具调用与结果、插话、
+// 工具状态行、自定义事件——带上归属路径 path 转发进所在运行的事件流，不进入
+// 其对话记录。更深层子 agent 已带路径的事件原样转发。path 为空时只转发进度
+// 与自定义事件（默认）。
+func (r *Runner) ForwardTo(path string) *Runner {
+	r.forwardPath = path
+	return r
+}
+
+// relay 决定子循环的事件是否转发进所在运行的事件流。
+func (r *Runner) relay(ctx context.Context, ev loop.Event) {
+	full := r.forwardPath != ""
+	switch {
+	case ev.Type == loop.EvtSubAgentProgress:
+		// 子 agent 工具里再派生的子 agent：进度总是转发。
+		loop.EmitFromTool(ctx, ev)
+	case ev.Type == loop.EvtCustom, ev.Type == loop.EvtProgress && strings.HasPrefix(ev.StatusKey, "tool-progress"):
+		// 自定义事件与工具经 Context.Progress 上报的状态行总是转发；循环自身的
+		// 状态行（限流重试等）只属于子 agent。
+		if full && ev.AgentPath == "" {
+			ev.AgentPath = r.forwardPath
+		}
+		loop.EmitFromTool(ctx, ev)
+	case !full:
+	case ev.AgentPath != "":
+		loop.EmitFromTool(ctx, ev)
+	case ev.Type == loop.EvtTextDelta, ev.Type == loop.EvtThinking, ev.Type == loop.EvtToolStart,
+		ev.Type == loop.EvtToolDone, ev.Type == loop.EvtSteer:
+		ev.AgentPath = r.forwardPath
+		loop.EmitFromTool(ctx, ev)
+	}
 }
 
 // emit 细粒度事件出口（progMu 与进度上报同锁，保证轨迹顺序稳定）。
@@ -201,6 +238,9 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 	})
 	comp.SetProvider(prov)
 
+	// 子 agent 自己的插话车道（宿主经 WithChildSteering 放入；子循环在自己的
+	// 工具批边界消费它，不继承父运行的插话来源）。
+	steer, ctx := loop.TakeChildSteering(ctx)
 	l := loop.NewChild(ctx, loop.Config{
 		Provider:     prov,
 		Tools:        tools,
@@ -209,6 +249,7 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 		Model:        def.Model,
 		MaxTokens:    def.MaxTokens,
 		Compaction:   comp,
+		Steering:     steer,
 	})
 
 	var (
@@ -236,6 +277,10 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 	}
 
 	for ev := range l.Run(ctx, input) {
+		r.relay(ctx, ev)
+		if ev.AgentPath != "" {
+			continue // 更深层子 agent 的事件：只转发，不计入本 agent 的进度与轨迹
+		}
 		switch ev.Type {
 		case loop.EvtThinking:
 			anyOutput = true
@@ -274,15 +319,6 @@ func (r *Runner) Run(ctx context.Context, def Definition, input string) (*RunRes
 			flush()
 			lastErr = ev.Error
 			r.emit(AgentEvent{Type: "error", Text: ev.Error.Error()})
-		case loop.EvtSubAgentProgress:
-			// 子 agent 工具里再派生的子 agent：进度转发到所在运行的事件流。
-			loop.EmitFromTool(ctx, ev)
-		case loop.EvtProgress:
-			// 工具经 Context.Progress 上报的状态行同样转发；循环自身的状态
-			// 行（限流重试等）只属于子 agent，不转发。
-			if strings.HasPrefix(ev.StatusKey, "tool-progress") {
-				loop.EmitFromTool(ctx, ev)
-			}
 		}
 	}
 	flush()

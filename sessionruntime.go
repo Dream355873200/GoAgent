@@ -21,6 +21,9 @@ type sessionRuntime struct {
 	// grants 是会话内各次运行共享的"始终允许"授权。
 	grants *permission.Grants
 
+	// agents 是会话的子代理表（见 subagents.go）。
+	agents *subagentRegistry
+
 	compactorOnce sync.Once
 	compactor     *compaction.Manager
 
@@ -29,7 +32,7 @@ type sessionRuntime struct {
 }
 
 func newSessionRuntime(id string) *sessionRuntime {
-	return &sessionRuntime{id: id, grants: permission.NewGrants()}
+	return &sessionRuntime{id: id, grants: permission.NewGrants(), agents: newSubagentRegistry(id)}
 }
 
 func ephemeralSession(id string) bool {
@@ -57,10 +60,18 @@ func (a *App) existingRuntime(sessionID string) *sessionRuntime {
 }
 
 // CloseSession 释放会话在内存中的常驻状态：工具键值存储、压缩管理器、
-// "始终允许"授权与会话级权限模式。宿主删除会话时应同时调用；会话之后再次
-// 运行会从空状态开始（对话历史由会话存储保存，不受影响）。
+// "始终允许"授权、会话级权限模式、子代理表（运行中的子代理被中断）与会话
+// 事件日志（正在读取的游标随之结束）。
+// 宿主删除会话时应同时调用；会话之后再次运行会从空状态开始（对话历史由会话
+// 存储保存，不受影响）。
 func (a *App) CloseSession(sessionID string) {
+	if rt := a.existingRuntime(sessionID); rt != nil {
+		rt.agents.cancelAll("会话已关闭")
+	}
 	a.runtimes.Delete(sessionID)
+	if hub := a.eventHub(); hub != nil {
+		hub.close(sessionID)
+	}
 }
 
 // SessionGrants 返回会话的"始终允许"授权集合（会话还没有运行过时为 nil）。

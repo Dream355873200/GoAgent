@@ -1,0 +1,5 @@
+schema-1.0.json is the AG-UI protocol 1.0 JSON Schema, copied verbatim from
+https://github.com/ag-ui-protocol/ag-ui (spec/1.0/schema.json), published at
+https://ag-ui.com/spec/1.0/schema.json. AG-UI is released under the MIT License,
+Copyright (c) 2025 the AG-UI authors. It is used here only by tests, to validate
+every event GoAgent's AG-UI profile emits.

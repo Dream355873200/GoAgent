@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -86,11 +87,19 @@ func (m *Manager) Acquire(sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.active[sessionID] {
-		return fmt.Errorf("会话 %s 正在运行中", sessionID)
+		return &busyError{id: sessionID}
 	}
 	m.active[sessionID] = true
 	return nil
 }
+
+// ErrBusy 表示会话正在运行中（Acquire 失败）；用 errors.Is 判断。
+var ErrBusy = errors.New("session busy")
+
+type busyError struct{ id string }
+
+func (e *busyError) Error() string        { return fmt.Sprintf("会话 %s 正在运行中", e.id) }
+func (e *busyError) Is(target error) bool { return target == ErrBusy }
 
 // Release 释放会话的活跃状态。
 // 内部使用，由 App.RunSession 在结束时调用。

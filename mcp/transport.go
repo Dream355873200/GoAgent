@@ -24,7 +24,10 @@ import (
 	"sync/atomic"
 )
 
-// Transport 是 MCP 传输接口。
+// Transport 是 MCP 传输接口（NewClient 使用）。
+//
+// Deprecated: Dial / Connect 由官方 Go SDK 承载，不再经过本接口；本接口与
+// StdioTransport、HTTPTransport 只为直接调用 NewClient 的代码保留。
 type Transport interface {
 	// Send 发送请求并等待对应 id 的响应（id 由传输层分配，覆盖 req.ID）。
 	// ctx 取消时立即返回 ctx.Err()。
@@ -62,6 +65,8 @@ type StdioTransport struct {
 }
 
 // NewStdioTransport 创建一个新的 stdio 传输。
+//
+// Deprecated: 用 Dial / Connect（ServerConfig.Command）。
 // command 是要启动的 MCP 服务器命令，args 是命令参数。
 func NewStdioTransport(command string, args ...string) (*StdioTransport, error) {
 	return NewStdioTransportConfig(StdioConfig{Command: command, Args: args})
@@ -269,6 +274,8 @@ type HTTPTransport struct {
 }
 
 // NewHTTPTransport 创建一个新的 HTTP 传输。
+//
+// Deprecated: 用 Dial / Connect（ServerConfig.URL）。
 func NewHTTPTransport(baseURL string) *HTTPTransport {
 	return NewHTTPTransportConfig(HTTPConfig{URL: baseURL})
 }

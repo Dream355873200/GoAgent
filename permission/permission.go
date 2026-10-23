@@ -107,6 +107,12 @@ type ContextApprover interface {
 	ApproveContext(ctx context.Context, toolName string, input string, permission Level) (allow bool, alwaysAllow bool)
 }
 
+// ReasonApprover 是可选的扩展接口：在 ContextApprover 之上，拒绝时给出原因。
+// 原因写进交给模型的工具结果（"权限被拒绝: <原因>"），模型据此调整做法。
+type ReasonApprover interface {
+	ApproveReason(ctx context.Context, toolName string, input string, permission Level) (allow bool, alwaysAllow bool, reason string)
+}
+
 // classifyTimeout 是单次 YOLO 分类调用的超时。
 const classifyTimeout = 30 * time.Second
 
@@ -119,7 +125,7 @@ type Gate struct {
 	mode              PermissionMode
 	rules             *RuleSet
 	guards            []Guard           // 外部策略链（单调：可拒不可放，见 Guard 注释）
-	classifier        *YoloClassifier   // YOLO LLM 分类器（对齐 Claude Code）
+	classifier        Classifier        // 分类器（默认 YOLO LLM 分类器，对齐 Claude Code）
 	currentTranscript []message.Message // 由 loop 每轮更新，供 YOLO 分类器使用
 	editTools         map[string]bool   // AcceptEdits 模式下自动放行的编辑类工具
 }
@@ -216,11 +222,51 @@ func (g *Gate) RemoveGuard(name string) {
 	}
 }
 
-// SetClassifier 设置 YOLO LLM 分类器。auto 模式下它判定每个非只读、非白名单
-// 的工具调用，bypass 模式下只判定高风险调用；判定为危险时拒绝。分类器未
-// 设置或调用失败时，这些调用改为询问用户（没有审批者则拒绝）。其他模式
-// 不调用分类器。
-func (g *Gate) SetClassifier(c *YoloClassifier) {
+// Classifier 裁决一次工具调用：auto 模式下判定每个非只读、非白名单的调用，
+// bypass 模式下判定高风险调用与命中 ask 规则的调用，其他模式不调用。
+//
+// 返回 BehaviorAllow 放行、BehaviorDeny 拒绝（Reason 写进交给模型的工具结果）、
+// BehaviorAsk 改为询问用户。返回错误表示分类器不可用，同样改为询问用户；
+// 没有审批者时拒绝。每次调用有 30 秒超时（ctx）。
+//
+// 默认实现是 YoloClassifier（LLM 两阶段判定）。宿主可以换成规则引擎、外部
+// 策略服务，或在 YOLO 之前加一道快速判断的组合。
+type Classifier interface {
+	ClassifyCall(ctx context.Context, req ClassifyRequest) (Classification, error)
+}
+
+// ClassifyRequest 是待裁决的工具调用。
+type ClassifyRequest struct {
+	ToolName string
+	// Input 是调用参数（JSON）。
+	Input string
+	Level Level
+	// Why 说明为何需要裁决，如 "auto 模式下的操作"、"高风险操作（写入系统目录）"。
+	Why string
+	// Transcript 是调用所在对话的记录（构建上下文用）。
+	Transcript []message.Message
+}
+
+// Classification 是分类器的裁决。
+type Classification struct {
+	Behavior PermissionBehavior
+	Reason   string
+}
+
+// ClassifierFunc 让普通函数实现 Classifier。
+type ClassifierFunc func(ctx context.Context, req ClassifyRequest) (Classification, error)
+
+// ClassifyCall 实现 Classifier。
+func (f ClassifierFunc) ClassifyCall(ctx context.Context, req ClassifyRequest) (Classification, error) {
+	return f(ctx, req)
+}
+
+// SetClassifier 设置分类器（nil 表示不用分类器）。分类器未设置或调用失败
+// 时，需要裁决的调用改为询问用户（没有审批者则拒绝）。
+func (g *Gate) SetClassifier(c Classifier) {
+	if y, ok := c.(*YoloClassifier); ok && y == nil {
+		c = nil
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.classifier = c
@@ -328,7 +374,7 @@ func (g *Gate) checkResult(ctx context.Context, toolName string, input string, l
 		if !askRule && ruleRes != nil && ruleRes.Behavior == BehaviorAllow {
 			return *ruleRes
 		}
-		return judge(ctx, clf, transcript, toolName, input, "高风险操作（"+reason+"）")
+		return judge(ctx, clf, transcript, toolName, input, level, "高风险操作（"+reason+"）")
 	case ModeAuto:
 		if level == LevelReadOnly || IsSafeYoloTool(toolName) {
 			return PermissionResult{
@@ -340,7 +386,7 @@ func (g *Gate) checkResult(ctx context.Context, toolName string, input string, l
 		if ruleRes != nil && ruleRes.Behavior == BehaviorAllow {
 			return *ruleRes
 		}
-		return judge(ctx, clf, transcript, toolName, input, "auto 模式下的操作")
+		return judge(ctx, clf, transcript, toolName, input, level, "auto 模式下的操作")
 	case ModePlan:
 		if level != LevelReadOnly {
 			return PermissionResult{
@@ -403,10 +449,12 @@ func (g *Gate) checkResult(ctx context.Context, toolName string, input string, l
 	}
 }
 
-// judge 把调用交给分类器判定；分类器未设置或不可用时退回询问用户。
-func judge(ctx context.Context, clf *YoloClassifier, transcript []message.Message, toolName, input, what string) PermissionResult {
+// judge 把调用交给分类器裁决；分类器未设置或不可用时退回询问用户。
+func judge(ctx context.Context, clf Classifier, transcript []message.Message, toolName, input string, level Level, what string) PermissionResult {
 	if clf != nil {
-		if r, decided := classify(ctx, clf, transcript, toolName, input); decided {
+		if r, decided := classify(ctx, clf, ClassifyRequest{
+			ToolName: toolName, Input: input, Level: level, Why: what, Transcript: transcript,
+		}); decided {
 			return r
 		}
 	}
@@ -417,23 +465,24 @@ func judge(ctx context.Context, clf *YoloClassifier, transcript []message.Messag
 	}
 }
 
-// classify 调用 YOLO 分类器。decided 为 false 表示分类器不可用（API 失败、
-// 上下文过长），由调用方决定退路。
-func classify(ctx context.Context, clf *YoloClassifier, transcript []message.Message, toolName, input string) (PermissionResult, bool) {
+// classify 调用分类器。decided 为 false 表示分类器不可用（返回错误或无效的
+// 裁决），由调用方决定退路。
+func classify(ctx context.Context, clf Classifier, req ClassifyRequest) (PermissionResult, bool) {
 	cctx, cancel := context.WithTimeout(ctx, classifyTimeout)
 	defer cancel()
-	result := clf.Classify(cctx, transcript, toolName, input)
-	if result.Unavailable || result.TranscriptTooLong {
+	c, err := clf.ClassifyCall(cctx, req)
+	if err != nil {
 		return PermissionResult{}, false
 	}
-	if result.ShouldBlock {
-		reason := "YOLO 分类器阻止"
-		if result.Reason != "" {
-			reason += ": " + result.Reason
-		}
-		return PermissionResult{Behavior: BehaviorDeny, Reason: reason, Source: "yolo_classifier"}, true
+	source := "classifier"
+	if _, ok := clf.(*YoloClassifier); ok {
+		source = "yolo_classifier"
 	}
-	return PermissionResult{Behavior: BehaviorAllow, Reason: "YOLO 分类器允许", Source: "yolo_classifier"}, true
+	switch c.Behavior {
+	case BehaviorAllow, BehaviorDeny, BehaviorAsk:
+		return PermissionResult{Behavior: c.Behavior, Reason: c.Reason, Source: source}, true
+	}
+	return PermissionResult{}, false
 }
 
 // Check 决定是否允许工具调用。
@@ -481,9 +530,13 @@ func (g *Gate) ask(ctx context.Context, toolName string, input string, level Lev
 	g.mu.RUnlock()
 
 	var allow, alwaysAllow bool
-	if ca, ok := g.approver.(ContextApprover); ok {
-		allow, alwaysAllow = ca.ApproveContext(ctx, toolName, input, level)
-	} else {
+	var reason string
+	switch a := g.approver.(type) {
+	case ReasonApprover:
+		allow, alwaysAllow, reason = a.ApproveReason(ctx, toolName, input, level)
+	case ContextApprover:
+		allow, alwaysAllow = a.ApproveContext(ctx, toolName, input, level)
+	default:
 		allow, alwaysAllow = g.approver.Approve(toolName, input, level)
 	}
 
@@ -504,6 +557,9 @@ func (g *Gate) ask(ctx context.Context, toolName string, input string, level Lev
 	g.deniedCache[cacheKey] = true
 	g.mu.Unlock()
 
+	if reason != "" {
+		return false, reason
+	}
 	return false, "用户拒绝"
 }
 

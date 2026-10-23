@@ -226,7 +226,7 @@ func (m *Manager) CompleteShell(taskID string, exitCode int, output string) {
 // Kill 停止一个正在运行的任务。
 func (m *Manager) Kill(taskID string) error {
 	m.mu.Lock()
-	t, ok := m.tasks[taskID]
+	t, ok := m.lookupLocked(taskID)
 	if !ok {
 		m.mu.Unlock()
 		return fmt.Errorf("任务 %s 不存在", taskID)
@@ -303,22 +303,42 @@ func (m *Manager) AppendOutput(taskID, content string) error {
 	return err
 }
 
-// Get 获取任务状态。
+// Get 获取任务状态（taskID 也可以是创建任务的 tool_use ID，见 lookupLocked）。
 func (m *Manager) Get(taskID string) *TaskState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.tasks[taskID]
+	t, _ := m.lookupLocked(taskID)
+	return t
+}
+
+// lookupLocked 按任务 ID 查找；找不到时按创建它的 tool_use ID 查找——后台子
+// 代理的 agent_id 就是它，模型可以直接用 agent_id 调 TaskOutput / TaskStop。
+// 调用方需持锁。
+func (m *Manager) lookupLocked(id string) (*TaskState, bool) {
+	if t, ok := m.tasks[id]; ok {
+		return t, true
+	}
+	if id == "" {
+		return nil, false
+	}
+	for _, t := range m.tasks {
+		if t.ToolUseID == id {
+			return t, true
+		}
+	}
+	return nil, false
 }
 
 // GetOutput 获取任务输出。
 // block=true 时阻塞等待完成（最多 timeout）。
 func (m *Manager) GetOutput(taskID string, block bool, timeout time.Duration) (*TaskState, string, error) {
 	m.mu.RLock()
-	t, ok := m.tasks[taskID]
+	t, ok := m.lookupLocked(taskID)
 	m.mu.RUnlock()
 	if !ok {
 		return nil, "", fmt.Errorf("任务 %s 不存在", taskID)
 	}
+	taskID = t.ID
 
 	if !block || t.Status.IsTerminal() {
 		output := readOutputFile(t.OutputFile)

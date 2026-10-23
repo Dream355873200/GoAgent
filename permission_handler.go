@@ -6,6 +6,9 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+
+	"github.com/Dream355873200/GoAgent/observer"
+	"github.com/Dream355873200/GoAgent/permission"
 )
 
 // PermissionRequest 是发送给前端的权限审批请求。
@@ -30,6 +33,12 @@ type PermissionRequest struct {
 	// SessionID 是发起审批的会话（由运行 ctx 决定）。
 	SessionID string `json:"session_id,omitempty"`
 
+	// AgentPath 非空表示审批来自该子代理（归属路径）。
+	AgentPath string `json:"agent_path,omitempty"`
+
+	// ToolUseID 是等待审批的工具调用 ID。
+	ToolUseID string `json:"tool_use_id,omitempty"`
+
 	// once 确保只能调用一次 Approve/Deny。
 	once sync.Once
 	ch   chan permissionResponse
@@ -40,6 +49,7 @@ type permissionResponse struct {
 	allow  bool
 	always bool
 	reason string
+	input  json.RawMessage // 批准时替换工具参数（改参审批）
 }
 
 // Approve 批准此工具调用。
@@ -47,6 +57,15 @@ type permissionResponse struct {
 func (r *PermissionRequest) Approve(alwaysAllow bool) {
 	r.once.Do(func() {
 		r.ch <- permissionResponse{allow: true, always: alwaysAllow}
+	})
+}
+
+// ApproveWithInput 批准此工具调用，并以 input 替换它的参数（完整替换）执行。
+// 修改后的参数按工具的入参 schema 校验，交给模型的工具结果会注明参数被修改过。
+// 不会记为"始终允许"。
+func (r *PermissionRequest) ApproveWithInput(input json.RawMessage) {
+	r.once.Do(func() {
+		r.ch <- permissionResponse{allow: true, input: append(json.RawMessage(nil), input...)}
 	})
 }
 
@@ -95,6 +114,9 @@ type PermissionHandler struct {
 	nextID   atomic.Int64
 	mu       sync.Mutex
 	closed   bool
+	// router 把请求发布到会话事件日志（HTTP 模式安装，见 installSessionRouting）：
+	// 没有显式 Subscribe 的会话经它到达所有挂在该会话上的连接。
+	router func(*PermissionRequest) bool
 }
 
 // NewPermissionHandler 创建异步权限处理器。
@@ -133,16 +155,20 @@ func (h *PermissionHandler) ResolveForSession(sessionID, requestID string, allow
 	return h.resolve(requestID, sessionID, true, allow, alwaysAllow, reason)
 }
 
+// ResolveWithInput 批准属于 sessionID 的请求，并以 input 替换工具参数（见
+// PermissionRequest.ApproveWithInput）。sessionID 为空时不校验会话归属。
+func (h *PermissionHandler) ResolveWithInput(sessionID, requestID string, input json.RawMessage) bool {
+	req := h.take(requestID, sessionID, sessionID != "")
+	if req == nil {
+		return false
+	}
+	req.ApproveWithInput(input)
+	return true
+}
+
 func (h *PermissionHandler) resolve(requestID, sessionID string, checkSession, allow, alwaysAllow bool, reason string) bool {
-	val, ok := h.pending.Load(requestID)
-	if !ok {
-		return false
-	}
-	req := val.(*PermissionRequest)
-	if checkSession && req.SessionID != sessionID {
-		return false
-	}
-	if _, ok := h.pending.LoadAndDelete(requestID); !ok {
+	req := h.take(requestID, sessionID, checkSession)
+	if req == nil {
 		return false
 	}
 	if allow {
@@ -151,6 +177,22 @@ func (h *PermissionHandler) resolve(requestID, sessionID string, checkSession, a
 		req.Deny(reason)
 	}
 	return true
+}
+
+// take 取走待处理的请求（checkSession 时只取属于 sessionID 的）。
+func (h *PermissionHandler) take(requestID, sessionID string, checkSession bool) *PermissionRequest {
+	val, ok := h.pending.Load(requestID)
+	if !ok {
+		return nil
+	}
+	req := val.(*PermissionRequest)
+	if checkSession && req.SessionID != sessionID {
+		return nil
+	}
+	if _, ok := h.pending.LoadAndDelete(requestID); !ok {
+		return nil
+	}
+	return req
 }
 
 // PendingBySession 返回某会话当前未决的审批请求（按发起顺序）。前端重载/
@@ -187,14 +229,23 @@ func (h *PermissionHandler) Approve(toolName string, input string, perm Permissi
 }
 
 // ApproveWithContext 是带 context 的审批方法（实现 ContextApprover）。
-// 请求路由到 ctx 所属会话的活跃连接；没有绑定连接时走共享 channel
-// （SDK 直连消费模式）。context 取消时自动拒绝。
+// 请求按 ctx 所属会话路由：先找该会话的显式订阅（Subscribe），再发布到会话
+// 事件日志（HTTP 模式），都没有时走共享 channel（SDK 直连消费模式）。
+// context 取消时自动拒绝。
 func (h *PermissionHandler) ApproveWithContext(ctx context.Context, toolName string, input string, perm Permission) (bool, bool) {
+	allow, always, _ := h.ApproveWithReason(ctx, toolName, input, perm)
+	return allow, always
+}
+
+// ApproveWithReason 同 ApproveWithContext，并返回拒绝原因（实现 ReasonApprover）：
+// Resolve / ResolveForSession 给出的 reason 由此写进交给模型的工具结果。
+func (h *PermissionHandler) ApproveWithReason(ctx context.Context, toolName string, input string, perm Permission) (bool, bool, string) {
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
-		return false, false
+		return false, false, ""
 	}
+	router := h.router
 	h.mu.Unlock()
 
 	requestID := newRequestID("perm")
@@ -205,6 +256,8 @@ func (h *PermissionHandler) ApproveWithContext(ctx context.Context, toolName str
 		ToolInput:  json.RawMessage(input),
 		Permission: perm.String(),
 		SessionID:  SessionIDFromContext(ctx),
+		AgentPath:  AgentPathFromContext(ctx),
+		ToolUseID:  observer.ToolCallIDFromContext(ctx),
 		ch:         responseCh,
 		seq:        h.nextID.Add(1),
 	}
@@ -212,17 +265,8 @@ func (h *PermissionHandler) ApproveWithContext(ctx context.Context, toolName str
 	// 注册到 pending map。
 	h.pending.Store(requestID, req)
 
-	// 优先路由到该会话绑定的活跃连接；未命中再走共享 channel 兜底。
-	if h.streams.Send(req.SessionID, req) {
-		// 等待前端回复。
-		select {
-		case resp := <-responseCh:
-			h.pending.Delete(requestID)
-			return resp.allow, resp.always
-		case <-ctx.Done():
-			h.pending.Delete(requestID)
-			return false, false
-		}
+	if h.streams.Send(req.SessionID, req) || (router != nil && router(req)) {
+		return h.wait(ctx, requestID, responseCh)
 	}
 
 	// 兜底：发到共享 channel（直连消费模式）。
@@ -230,16 +274,29 @@ func (h *PermissionHandler) ApproveWithContext(ctx context.Context, toolName str
 	case h.requests <- req:
 	case <-ctx.Done():
 		h.pending.Delete(requestID)
-		return false, false
+		return false, false, ""
 	}
+	return h.wait(ctx, requestID, responseCh)
+}
 
-	// 等待前端回复。
+// wait 等待前端回复，ctx 取消时按拒绝处理。
+func (h *PermissionHandler) wait(ctx context.Context, requestID string, responseCh chan permissionResponse) (bool, bool, string) {
 	select {
 	case resp := <-responseCh:
 		h.pending.Delete(requestID)
-		return resp.allow, resp.always
+		if resp.allow && resp.input != nil && !permission.SetEditedInput(ctx, resp.input) {
+			return false, false, "这次调用不支持修改参数后执行"
+		}
+		return resp.allow, resp.always, resp.reason
 	case <-ctx.Done():
 		h.pending.Delete(requestID)
-		return false, false
+		return false, false, ""
 	}
+}
+
+// setRouter 安装会话事件日志路由（nil 移除）。
+func (h *PermissionHandler) setRouter(fn func(*PermissionRequest) bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.router = fn
 }

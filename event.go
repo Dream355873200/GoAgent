@@ -86,6 +86,11 @@ const (
 	// 与 EventSteer 分离：排队消息是用户真实输入（渲染为普通用户气泡、
 	// 开新一轮），插话是运行中注入（渲染带插话标记、归属当前轮）。
 	EventQueueRun
+
+	// EventCustom — 自定义事件（Emit / Context.Emit / App.EmitEvent）。
+	// CustomName 是事件名（<命名空间>.<事件名>），CustomValue 是 JSON 值。
+	// 展示层信号：不进入会话记录，进入会话事件日志。
+	EventCustom
 )
 
 // Event is emitted by the agent loop for the consumer to react to.
@@ -155,17 +160,37 @@ type Event struct {
 	AgentToolUses int
 	// AgentTokens 是子 agent 消耗的 token 数。
 	AgentTokens int
+	// MessageID 是事件所属消息在对话记录中的 UID（message.Message.UID）：正文、
+	// 思考、工具开始属于本轮的助手消息，工具结束属于该工具的结果消息。
+	MessageID string
+	// AgentPath 非空表示事件属于某个子代理（归属路径，如 "toolu_01.toolu_07"）：
+	// subagent_progress 描述的子代理；WithSubagentStream(SubagentStreamFull) 时
+	// 转发进父流的子代理正文、思考、工具事件；子代理里发起的审批与提问。
+	AgentPath string
 
 	// Question 是 EventAskUser 的问题内容。
 	Question string
 	// Answer 是 EventAskUser 的回答（由前端通过 /askuser 端点返回）。
 	Answer string
 
+	// RequestID 是交互请求（EventNeedApproval、EventAskUser）的标识，回答时
+	// 原样带回（/approve、/askuser）。
+	RequestID string
+	// Permission 是 EventNeedApproval 请求的权限级别。
+	Permission string
+	// Payload 是 EventAskUser 的结构化载荷（AskStructured / AskSessionCtx 附加）。
+	Payload map[string]any
+
 	// PlanContent 是 EventPlanConfirm 的计划内容。
 	PlanContent string
 	// PlanConfirm 是 EventPlanConfirm 的用户确认结果。
 	PlanConfirm bool
 
-	// InterruptReason 是 EventInterrupt 的原因。
+	// InterruptReason 是 EventInterrupt 的原因；EventInterrupted 时为中断方给出
+	// 的原因（InterruptHandler.Interrupt 的 reason，没有时为空）。
 	InterruptReason string
+
+	// CustomName / CustomValue 是 EventCustom 的事件名与 JSON 值。
+	CustomName  string
+	CustomValue json.RawMessage
 }

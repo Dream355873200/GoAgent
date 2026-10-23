@@ -131,6 +131,41 @@ func (c *combinedObserver) OnLLMError(ctx context.Context, info *LLMCallInfo, er
 	}
 }
 
+func (c *combinedObserver) OnCustomEvent(ctx context.Context, name string, value json.RawMessage) {
+	if o, ok := c.base.(CustomEventObserver); ok {
+		o.OnCustomEvent(ctx, name, value)
+	}
+	for _, ob := range c.border {
+		if o, ok := ob.(CustomEventObserver); ok {
+			o.OnCustomEvent(ctx, name, value)
+		}
+	}
+}
+
+func (c *combinedObserver) RunContext(ctx context.Context) context.Context {
+	if o, ok := c.base.(ContextObserver); ok {
+		ctx = o.RunContext(ctx)
+	}
+	for _, ob := range c.border {
+		if o, ok := ob.(ContextObserver); ok {
+			ctx = o.RunContext(ctx)
+		}
+	}
+	return ctx
+}
+
+func (c *combinedObserver) ToolContext(ctx context.Context) context.Context {
+	if o, ok := c.base.(ContextObserver); ok {
+		ctx = o.ToolContext(ctx)
+	}
+	for _, ob := range c.border {
+		if o, ok := ob.(ContextObserver); ok {
+			ctx = o.ToolContext(ctx)
+		}
+	}
+	return ctx
+}
+
 // IntoContext 把 observer 注入 ctx：此后经 ResolveObserver 拿到的视图
 // 会把注入的 observer 与 base 合并广播。
 //

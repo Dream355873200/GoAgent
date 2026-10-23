@@ -74,23 +74,41 @@ func ToFrameworkTools(client *Client, tools []ToolInfo) []FrameworkTool {
 					}
 				}
 
-				result, err := client.CallTool(ctx, remote, args)
+				var onProgress func(Progress)
+				if report := progressReporterFrom(ctx); report != nil {
+					onProgress = func(p Progress) { report(p.String()) }
+				}
+				result, err := client.CallToolWithProgress(ctx, remote, args, onProgress)
 				if err != nil {
 					return "", err
 				}
 
-				text := result.ExtractText()
 				if result.IsError {
+					text := result.ExtractText()
 					if text == "" {
 						text = "MCP 工具返回错误"
 					}
 					return "", errors.New(text)
 				}
-				return text, nil
+				// 第一张图片以内联图片标记交给模型（provider 转成多模态输入）。
+				return result.ModelText(), nil
 			},
 		}
 	}
 	return result
+}
+
+type progressReporterKey struct{}
+
+// WithProgressReporter 让 FrameworkTool.Execute 把服务端的进度通知（一行描述）
+// 交给 report——通常是框架工具 Context 的 Progress（状态行，不进入模型上下文）。
+func WithProgressReporter(ctx context.Context, report func(msg string)) context.Context {
+	return context.WithValue(ctx, progressReporterKey{}, report)
+}
+
+func progressReporterFrom(ctx context.Context) func(string) {
+	report, _ := ctx.Value(progressReporterKey{}).(func(string))
+	return report
 }
 
 // DiscoverAndConvert 连接到 MCP 服务器（已连接则跳过握手），发现工具，并转换为框架工具。
