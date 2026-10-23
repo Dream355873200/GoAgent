@@ -1,5 +1,7 @@
 # GoAgent 架构详解
 
+> [English](en/architecture.md) | 简体中文
+
 > 本文档详细描述 GoAgent 的内部架构，对齐 Claude Code 的核心设计。
 
 ---

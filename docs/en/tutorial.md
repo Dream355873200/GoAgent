@@ -5,7 +5,7 @@
 Learn GoAgent's core in three lessons: from a 30-line minimal agent, to multi-turn conversations with tools and memory, to a multi-node DAG pipeline. Every lesson's code is complete and runnable.
 
 > Prerequisites: Go 1.25+, an LLM API key (OpenAI-compatible endpoint or Anthropic).
-> Full API reference: [README](../../README.md). Architecture deep-dives: [architecture.md](../architecture.md) (Chinese).
+> Full API reference: [README](../../README.md). Architecture deep-dives: [architecture.md](architecture.md).
 
 ---
 
@@ -277,6 +277,6 @@ Deeper topics (supervisor review, transaction rollback, dynamic LLM-built graphs
 | Embedding into a web service | reference.md "Run modes", "AG-UI 1.0 profile" |
 | Delegating big tasks to subagents | reference.md "Sub-agent system" (incl. subagent governance) |
 | Agent-built DAGs at runtime | README "Dynamic pipelines" (L1 implemented) |
-| Architecture principles | [architecture.md](../architecture.md) / [mechanisms.md](../mechanisms.md) (Chinese) |
+| Architecture principles | [architecture.md](architecture.md) / [mechanisms.md](../mechanisms.md) (Chinese) |
 
 One rule of thumb to remember: **when dependencies are inherent to the task (extract → polish → review) use a Pipeline; when the agent must decide at runtime, use a subagent or a single agent + tools.** A pipeline isn't "more advanced" — it's a different shape of problem.
