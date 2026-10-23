@@ -1,6 +1,6 @@
 // Package retrieval 实现 RAG（检索增强生成）的共享底座与双形态接线。
 //
-// 形态定位（README 补缺清单定稿）——RAG 在应用里是嵌入管道为主、
+// 形态定位（设计定稿）——RAG 在应用里是嵌入管道为主、
 // agent 工具为辅：
 //
 //	共享底座：Document 类型（Content+Metadata 贯穿全程，审计引用来源）

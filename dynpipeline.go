@@ -28,7 +28,7 @@ import (
 //   - 消息流固定 string（MessageType 不开放）
 //   - 无事务、无 OnResult 回调
 //   - DAG 校验：无环 / 工具存在 / 节点数与 instruction 上限
-//   - 节点失败即终止（重规划是 L2，见 README TODO）
+//   - 节点失败即终止（重规划是 L2，见 design/BACKLOG.md）
 // ---------------------------------------------------------------------------
 
 // DynPipelineSpec 是 LLM 生成的动态 pipeline 声明（JSON DSL）。
