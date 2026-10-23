@@ -1,5 +1,7 @@
 # GoAgent 完整参考
 
+> [English](en/reference.md) | 简体中文
+
 > 本文档是 README 的 L2/L3 深度参考：权限、运行模式、会话、内置工具、
 > 中间件、Hooks、Observer、子 Agent、Pipeline、内存、压缩、Provider、Prompt。
 > 刚入门？先读 [tutorial.md](tutorial.md)（三课渐进式教程）和 [README](../README.md)（核心概念）。
