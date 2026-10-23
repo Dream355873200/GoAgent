@@ -169,6 +169,8 @@ func New(opts ...Option) *App {
 		app.bgTaskStore = store
 		if bgTaskToolsProvider != nil {
 			app.useToolsSkipDuplicates(bgTaskToolsProvider(store)...)
+		} else {
+			app.logger.Warn("goagent: WithBgTaskTools 已启用但未检测到 builtin 包（请加空白导入 _ \"github.com/Dream355873200/GoAgent/builtin\"），后台任务工具未注册")
 		}
 		// 终态自动通知进主循环：任务完成/失败/终止 → steering queue
 		// 车道注入（RunSession 结束后自动续跑，模型立即知晓结果并跟进，
@@ -195,6 +197,8 @@ func New(opts ...Option) *App {
 		}
 		if taskToolsProvider != nil {
 			app.useToolsSkipDuplicates(taskToolsProvider(app.taskStore)...)
+		} else {
+			app.logger.Warn("goagent: WithTaskTools 已启用但未检测到 builtin 包（请加空白导入 _ \"github.com/Dream355873200/GoAgent/builtin\"），Task 工具未注册")
 		}
 	}
 
@@ -212,6 +216,8 @@ func New(opts ...Option) *App {
 		}
 		if issueToolsProvider != nil {
 			app.useToolsSkipDuplicates(issueToolsProvider(store)...)
+		} else {
+			app.logger.Warn("goagent: WithIssueTools 已启用但未检测到 builtin 包（请加空白导入 _ \"github.com/Dream355873200/GoAgent/builtin\"），Issue 工具未注册")
 		}
 	}
 
@@ -224,12 +230,18 @@ func New(opts ...Option) *App {
 		}
 		if planToolsProvider != nil {
 			app.useToolsSkipDuplicates(planToolsProvider(app.planMgr)...)
+		} else {
+			app.logger.Warn("goagent: WithPlanTools 已启用但未检测到 builtin 包（请加空白导入 _ \"github.com/Dream355873200/GoAgent/builtin\"），Plan 工具未注册")
 		}
 	}
 
 	// AskUser 工具（WithAskTools 启用时才注册）。
-	if app.config.enableAskTools && askToolsProvider != nil {
-		app.useToolsSkipDuplicates(askToolsProvider()...)
+	if app.config.enableAskTools {
+		if askToolsProvider != nil {
+			app.useToolsSkipDuplicates(askToolsProvider()...)
+		} else {
+			app.logger.Warn("goagent: WithAskTools 已启用但未检测到 builtin 包（请加空白导入 _ \"github.com/Dream355873200/GoAgent/builtin\"），AskUser 工具未注册")
+		}
 	}
 
 	// 自动注册内置工具（WithBuiltinTools）。
@@ -364,6 +376,8 @@ func (a *App) Use(mw Middleware, opts ...MiddlewareOption) {
 func (a *App) autoRegisterBuiltinTools() {
 	if builtinToolsProvider != nil {
 		a.useToolsSkipDuplicates(builtinToolsProvider()...)
+	} else {
+		a.logger.Warn("goagent: WithBuiltinTools 已启用但未检测到 builtin 包（请加空白导入 _ \"github.com/Dream355873200/GoAgent/builtin\"），所有内置工具（Read/Write/Edit/Glob/Grep/Bash/WebSearch/WebFetch）都未注册")
 	}
 }
 

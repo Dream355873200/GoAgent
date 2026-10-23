@@ -41,7 +41,7 @@ v0.13 完成了 [v0.12 升级指南第 5 节](UPGRADE-v0.12.md#5-已知限制与
 | 会删除会话 | 删除时同时调用 `app.CloseSession(id)` | [1.4](#14-会话运行时会话级状态集中管理) |
 | 依赖多次 `Run` / `RunWithHistory` 之间共享 `Context.Store` 的数据 | 改用真实会话（`RunWithSessionHistory` / `RunSession`） | [1.4](#14-会话运行时会话级状态集中管理) |
 | 想把 `.yume` 换成自己的目录名 | `goagent.WithStateDir(".myapp")` | [1.5](#15-状态目录名可配置) |
-| 用到了本版标为 Deprecated 的 API | 按替代方案迁移（下一版删除） | [1.6](#16-废弃的-api下一版删除) |
+| 用到了本版已删除或标为 Deprecated 的 API | 已删除的见 1.6 第一张表（直接删除，编译报错即说明有残留调用）；仍保留 Deprecated 的见第二张表 | [1.6](#16-已删除的-api与仍保留的废弃-api) |
 | 用过 `app.Group(...).Use(mw)` | 分组中间件现在真正生效（此前从未执行），确认行为符合预期 | [1.7](#17-其他行为变化缺陷修复) |
 
 不在表中的项目一般无需改动，直接升级即可。
@@ -143,25 +143,31 @@ cli 包只使用 App 的公开 API。为此 App 新增了 `SetApprover`、`SetSe
   - 会话记忆、动态 pipeline 快照。
 - 数据已在 `.yume` 下的项目，不改配置即可。
 
-### 1.6 废弃的 API（下一版删除）
+### 1.6 已删除的 API 与仍保留的废弃 API
 
-下列公开 API 没有接入任何执行路径，或已有接入了的替代实现。本版标为 `Deprecated`，下一版删除：
+**已删除（本版直接删）**。下列公开 API 要么没有接入任何执行路径（调用不产生任何效果），要么已被更正确的实现取代。两个宿主项目（amobileCreater engine、AnimeCreater）经验证均未使用：
 
-| 废弃的 API | 替代方案 |
+| 删除的 API | 原因与替代方案 |
 |---|---|
-| `permission.AIClassifier`、`NewAIClassifier`、`AIClassifierConfig`、`ClassificationResult` | 内置 YOLO 分类器：`PermissionAuto` 模式，或 bypass 模式下的高风险调用（`WithYoloClassifier`） |
-| `permission.ParseToolPattern`、`MatchToolCall`、`ToolPattern` | `RuleSet`（按从入参提取的命令、路径匹配）。旧函数按入参原文做前缀匹配，入参是 JSON 时根本匹配不上 |
-| `provider.StreamingFallbackProvider`、`RetryStreamProvider`、`DefaultFallbackConditions`、`FallbackCondition` | `goagent.WithFallback`；限流与过载重试由循环处理 |
-| `provider.FastModeProvider` 及其配置 | 无 |
-| `executor.TrackedExecutor`、`TrackedTool`、`ToolState` | `executor.StreamingExecutor` |
-| `agent.QueryTracker`、`QueryContext` 等查询追踪类型；`agent.AgentContext` | observer 包 |
+| `permission.ParseToolPattern`、`MatchToolCall`、`ToolPattern` | 被活的 `RuleSet` 取代（按从入参提取的命令、路径匹配）。旧函数按入参 JSON 原文做前缀匹配，根本匹配不上 |
+| `permission.AIClassifier`、`NewAIClassifier`、`AIClassifierConfig`、`ClassificationResult` | 接不进权限门；实际分类走内置 YOLO 分类器（`PermissionAuto` 模式，或 bypass 模式下的高风险调用，`WithYoloClassifier` 配置） |
+| `compaction.CompactableTools`（registry 变量）、`IsCompactable`、`RegisterCompactableTool` | 注册不产生任何效果；微压缩的工具范围见活字段 `MicrocompactConfig.CompactableTools`（默认 `DefaultCompactableTools`） |
+| `compaction.CompactBoundaryIndex`、`MessagesAfterCompactBoundary`、`MarkCompactBoundary`、`BoundaryMetadata` | 框架已不产生 `IsCompactBoundary` 消息；改用 `compaction.Project`（摘要记录 + UID 边界投影） |
+| `agent.AgentContext` | 未被框架使用，子 agent 上下文由 Runner 内部管理 |
+| `goagent.InternalPlanConfirmRequest` | 未被使用；计划确认请求见 `PlanConfirmRequest` |
+| `tools` 包（工具自动降级） | 从未接入执行路径，且其中间件接口与 `goagent.Middleware` 不兼容，恢复需重写而非去注释 |
+
+**保留废弃（标 `Deprecated`，不删）**。下列公开 API 独立可用，只是框架自身不消费；哪天需要，去掉注释即可恢复：
+
+| 保留废弃的 API | 替代方案 |
+|---|---|
+| `provider.StreamingFallbackProvider`、`RetryStreamProvider`、`DefaultFallbackConditions`、`FallbackCondition` | `goagent.WithFallback`（仅整请求切换；流中已输出内容后失败的无缝切换是本族独特能力） |
+| `provider.FastModeProvider` 及其配置 | 无（轻任务自动切小模型） |
+| `executor.TrackedExecutor`、`TrackedTool`、`ToolState` | `executor.StreamingExecutor`（合成 tool_result 与有界并发已被 loop 内建吸收；剩余独特价值是外部观测工具状态机） |
+| `agent.QueryTracker`、`QueryContext` 等查询追踪类型 | observer 包 |
 | `compaction.RunForkedAgent`、`DefaultForkedAgent` 等 | `App.AgentTool` / `agent.Runner` |
 | `compaction.FileTracker` | `WithPostCompactReminder` |
 | `compaction.GenerateToolUseSummary` 等工具调用摘要函数 | 无 |
-| `compaction.CompactableTools`、`IsCompactable`、`RegisterCompactableTool` | `MicrocompactConfig.CompactableTools`（默认 `DefaultCompactableTools`）。此前注册不产生任何效果 |
-| `compaction.CompactBoundaryIndex`、`MessagesAfterCompactBoundary`、`MarkCompactBoundary` | `compaction.Project` |
-| `tools` 包（工具自动降级） | 无 |
-| `goagent.InternalPlanConfirmRequest` | `PlanConfirmRequest` |
 
 另外删除了 internal 包里没有接线的代码，外部代码本来就无法使用，不受影响：
 - 已被 `SuspendGate` 取代的 `ResumableLoop` / `PauseManager`；
@@ -180,6 +186,19 @@ cli 包只使用 App 的公开 API。为此 App 新增了 `SetApprover`、`SetSe
   - 路径提取此前只认 Windows 盘符路径，现在也支持 POSIX 路径；
   - 只在图片标记之后的正文里查找路径，base64 数据里的 "/" 不会被误当成路径；
   - 占位文案不再引用宿主特有的 `vision_ask` 工具。
+
+### 1.8 builtin 系工具缺导入从静默失效改为显式警告
+
+builtin 系工具的实现由 `builtin` 包的 `init()` 向框架注册（打破 `goagent → builtin → goagent` 循环依赖）。
+此前宿主若忘了导入 builtin，`WithBuiltinTools` / `WithTaskTools` / `WithIssueTools` / `WithPlanTools` /
+`WithBgTaskTools` / `WithAskTools` 全部静默无效——开关"看起来开了"，工具一个都没注册，运行期没有任何提示。
+
+现在这 6 个开关在 provider 缺失时，`New()` 会通过注入的 logger 发出 Warn 日志，内容包含修复指引
+（加空白导入 `_ "github.com/Dream355873200/GoAgent/builtin"`）。回归测试见根包 `builtinwarn_fix_test.go`
+（缺 provider 时 6 条警告齐全、provider 在场时无误报）。
+
+文档同步：README 两个入口示例补上了缺失的 builtin 空白导入（最简示例此前照抄会静默无工具）；
+配置表标注了 ★ 最小集（10 个高频选项）与 ⚠️ builtin 系标注；新增「运行入口怎么选」决策表。
 
 ---
 
@@ -229,5 +248,8 @@ cli 包只使用 App 的公开 API。为此 App 新增了 `SetApprover`、`SetSe
 - **继续拆分包结构**：把 HTTP 服务（`http.go` 与各个 handler）、pipeline / teams 编排逐步移入子包，根包只保留 App 核心。HTTP 服务依赖大量 App 内部状态，需要先在 App 上整理出稳定的扩展接口。
 - **压缩记录的覆盖范围**：摘要记录目前只覆盖 L4 自动摘要。L0–L3（预算截断、裁剪、微压缩、折叠）是确定性的，每次运行从记录重新计算。压缩后重注入的提醒暂不持久化。
 - **会话运行时的空闲回收**：目前由宿主调用 `CloseSession`，后续可增加按空闲时间自动回收。
-- **删除本版标为 Deprecated 的 API。**
+- **可插拔的权限分类器接口**：在 `permission.Gate` 上开放分类器注入点（宿主可换自己的小模型/prompt），
+  吸收已删除的 `ClassificationResult`（allow/deny/ask + 理由）结构设计——这是删除 `permission.AIClassifier` 时唯一值得回收的概念。
+  "宿主自定义可压缩工具"无需新增机制，活字段 `MicrocompactConfig.CompactableTools` 已覆盖。
+- **删除仍保留 Deprecated 的 provider / executor / compaction / agent API**（见 1.6 第二张表），或确认某族有真实需求后接线。
 - **目录沙箱仍不是安全边界**（同 v0.12）：需要真正的隔离时，等待容器级的 Tier 2，或在部署层面隔离进程。

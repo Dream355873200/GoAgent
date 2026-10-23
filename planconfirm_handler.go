@@ -143,11 +143,3 @@ type PlanConfirmHandlerInterface interface {
 
 // Ensure PlanConfirmHandler implements PlanConfirmHandlerInterface
 var _ PlanConfirmHandlerInterface = (*PlanConfirmHandler)(nil)
-
-// InternalPlanConfirmRequest 内部使用的计划确认请求。
-//
-// Deprecated: 未被任何代码使用，将在后续版本删除；计划确认请求见 PlanConfirmRequest。
-type InternalPlanConfirmRequest struct {
-	RequestID   string
-	PlanContent string
-}

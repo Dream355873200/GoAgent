@@ -88,6 +88,10 @@ package main
 import (
     "github.com/Dream355873200/GoAgent"
     "github.com/Dream355873200/GoAgent/cli"
+
+    // 必须空白导入：builtin 包通过 init() 向框架注册内置工具实现，
+    // 漏掉这行 WithBuiltinTools() 会静默无效（运行时日志会警告）
+    _ "github.com/Dream355873200/GoAgent/builtin"
 )
 
 func main() {
@@ -115,6 +119,8 @@ import (
 
 	"github.com/Dream355873200/GoAgent"
 	"github.com/Dream355873200/GoAgent/cli"
+	// 注册内置工具实现（空白导入，见最简示例说明）
+	_ "github.com/Dream355873200/GoAgent/builtin"
 	"github.com/Dream355873200/GoAgent/hooks"
 )
 
@@ -184,6 +190,17 @@ for ev := range events {
 }
 ```
 
+### 运行入口怎么选
+
+| 入口 | 什么时候用 | 历史与落盘 |
+|------|-----------|-----------|
+| `Run(ctx, input)` | 单次问答、无状态嵌入调用 | 内存内一次性行走，不落盘 |
+| `RunWithHistory(ctx, history, input)` | 宿主自己保管历史（自己存 `[]message.Message`） | 不落盘 |
+| `RunSession(ctx, sessionID, input)` | 多轮会话（**推荐**，sessionID 须为安全文件名） | **唯一自动落盘**的入口：逐条持久化，重载续跑不重复压缩，"始终允许"授权/会话权限模式随会话保留 |
+| `RunWithSessionHistory(ctx, sessionID, history, input)` | 需要会话身份（工作目录/工具过滤/权限随 sessionID 生效）但历史由宿主自管 | 不落盘 |
+| `RunHTTP(addr)` | 把 App 变成 HTTP SSE 服务 | 见「HTTP API」节 |
+| `RunPipeline(ctx)` / `RunDynPipeline(...)` | 固定/动态多 agent 流水线 | 见「Pipeline」节 |
+
 ---
 
 ## New() 参数说明
@@ -230,30 +247,36 @@ goagent.WithAnthropic()
 
 ### With* Option 列表
 
+共 58 个选项，按需取用——**日常使用只需 ★ 标记的 10 个**，其余面向高级场景，不读也不影响上手。
+
+> ⚠️ 带 ⚠️ 的 builtin 系选项要求 `import _ "github.com/Dream355873200/GoAgent/builtin"`：
+> 工具实现由该包的 `init()` 向框架注册（避免循环依赖），漏掉导入时选项静默无效，
+> 运行时日志会给出警告。
+
 | Option | 说明 | 默认值 |
 |--------|------|--------|
-| `WithSystemPrompt(s)` | 系统提示词（纯字符串模式，不走 prompt 体系） | 无 |
+| ★ `WithSystemPrompt(s)` | 系统提示词（纯字符串模式，不走 prompt 体系） | 无 |
 | `WithPromptDir(dir)` | 外部 prompt 目录（优先从此加载，找不到 fallback 嵌入默认值） | 无 |
-| `WithBuiltinTools()` | 开启所有内置工具（Read/Write/Edit/Glob/Grep/Bash/WebSearch/WebFetch） | 不启用 |
-| `WithTaskTools()` | 启用 Task 管理工具（TaskCreate/Update/Get/List），默认内存存储 | 不启用 |
-| `WithPlanTools()` | 启用 Plan Mode 工具（EnterPlanMode/ExitPlanMode） | 不启用 |
-| `WithAskTools()` | 启用 AskUser 工具（用户交互确认） | 不启用 |
-| `WithBgTaskTools()` | 启用后台任务工具（TaskStop/TaskOutput） | 不启用 |
-| `WithIssueTools()` | 启用问题记录工具（IssueReport/IssueResolve，测试驱动场景） | 不启用 |
+| ★ ⚠️ `WithBuiltinTools()` | 开启所有内置工具（Read/Write/Edit/Glob/Grep/Bash/WebSearch/WebFetch） | 不启用 |
+| ⚠️ `WithTaskTools()` | 启用 Task 管理工具（TaskCreate/Update/Get/List），默认内存存储 | 不启用 |
+| ⚠️ `WithPlanTools()` | 启用 Plan Mode 工具（EnterPlanMode/ExitPlanMode） | 不启用 |
+| ⚠️ `WithAskTools()` | 启用 AskUser 工具（用户交互确认） | 不启用 |
+| ⚠️ `WithBgTaskTools()` | 启用后台任务工具（TaskStop/TaskOutput） | 不启用 |
+| ⚠️ `WithIssueTools()` | 启用问题记录工具（IssueReport/IssueResolve，测试驱动场景） | 不启用 |
 | `WithLogger(l)` | 注入库内日志（pipeline 轨迹/节点错误现场），标准 `log/slog` | `slog.Default()` |
 | `WithDebugMode()` | 测试模式：loop 细节日志（逐轮请求参数、工具调用明细）额外输出；关键事件（限流/切后备/错误）默认就有 | 不启用 |
 | `WithToolKits(kits...)` | 按领域注册工具包（FileKit、ShellKit 等） | 无 |
-| `WithMaxTurns(n)` | 最大循环次数 | `100` |
-| `WithMaxConcurrency(n)` | 最大并发工具数 | `10` |
+| ★ `WithMaxTurns(n)` | 最大循环次数 | `100` |
+| ★ `WithMaxConcurrency(n)` | 最大并发工具数 | `10` |
 | `WithTokenBudget(n)` | Token 预算上限 | `0`（无限） |
-| `WithPermissionMode(mode)` | 权限模式（Default/AcceptEdits/Auto/Bypass/PlanOnly/DenyAll）；Auto 由 YOLO 分类器判定每个非只读调用，Bypass 不询问但高风险操作仍经分类器 | `Default`（ReadOnly 自动通过，其他询问） |
-| `WithPermissionRules(rules)` | 自定义权限规则（Allow/Deny/Ask） | 无 |
-| `WithApprover(a)` | 自定义审批者 | CLI 交互式询问，SDK 自动拒绝 |
+| ★ `WithPermissionMode(mode)` | 权限模式（Default/AcceptEdits/Auto/Bypass/PlanOnly/DenyAll）；Auto 由 YOLO 分类器判定每个非只读调用，Bypass 不询问但高风险操作仍经分类器 | `Default`（ReadOnly 自动通过，其他询问） |
+| ★ `WithPermissionRules(rules)` | 自定义权限规则（Allow/Deny/Ask） | 无 |
+| ★ `WithApprover(a)` | 自定义审批者 | CLI 交互式询问，SDK 自动拒绝 |
 | `WithMemoryDir(dir)` | 跨会话持久化内存目录 | 不启用 |
 | `WithStateDir(name)` | 项目目录下存放运行状态的目录名（会话存储、计划、后台任务输出、项目 skill、worktree 等；进程级） | `.yume` |
 | `WithProjectContext(path)` | 项目上下文文件（类似 CLAUDE.md） | 无 |
-| `WithSessionManager(mgr)` | 会话管理器，启用多轮持久化 | 不启用（单次会话） |
-| `WithAutoPersist(bool)` | 会话结束自动持久化 | `true` |
+| ★ `WithSessionManager(mgr)` | 会话管理器，启用多轮持久化 | 不启用（单次会话） |
+| ★ `WithAutoPersist(bool)` | 会话结束自动持久化 | `true` |
 | `WithSessionWorkDir(fn)` | 按 sessionID 解析会话工作目录（注入 ctx，Bash cmd.Dir / 文件工具相对路径以此为基准，单进程多会话多项目互不串） | 不启用（进程 cwd） |
 | `WithSessionToolFilter(fn)` | 按会话过滤本次 run 暴露给模型的工具（`fn(sessionID, toolName) bool`，不改注册表） | 不启用（全部工具） |
 | `WithSessionPromptDir(fn)` | 按会话解析提示词目录（返回 `""` 沿用全局 `WithPromptDir`） | 不启用 |
@@ -268,7 +291,7 @@ goagent.WithAnthropic()
 | `WithSessionMemory(cfg)` | 会话内定期记忆提取 | 不启用 |
 | `WithSubAgents(defs...)` | 注册子 agent | 无 |
 | `WithFallback(p)` | 备用 Provider（主 Provider 过载时切换） | 无 |
-| `WithHooks(h...)` | 注册 Hook 回调 | 无 |
+| ★ `WithHooks(h...)` | 注册 Hook 回调 | 无 |
 | `WithObservers(obs...)` | 注册 Observer | 无 |
 | `WithCostTracking()` | 启用成本追踪 | 不启用 |
 | `WithAnalytics()` | 启用使用分析 | 不启用 |
@@ -619,14 +642,12 @@ goagent/
 │
 ├── permission/             # 权限系统
 │   ├── permission.go      # Gate + 5 模式 + 3 态
-│   ├── rules.go           # RuleSet + 优先级评估
-│   └── matcher.go         # ToolPattern 匹配
+│   ├── rules.go           # RuleSet + 优先级评估（工具模式与入参值匹配）
 │
-├── compaction/             # 四层上下文压缩
+├── compaction/             # 对话记录投影 + 多层上下文压缩
 │   ├── compaction.go      # Manager + Circuit Breaker
-│   ├── boundary.go        # Compact Boundary 管理
-│   ├── whitelist.go       # 可压缩工具白名单
-│   └── restore.go         # 压缩后文件恢复
+│   ├── boundary.go        # Project：对话记录 → 模型视图
+│   └── restore.go         # 压缩后文件恢复（已废弃，未接线）
 │
 ├── memory/                 # 记忆系统
 │   ├── memory.go          # Manager + BuildSystemPromptSuffix
@@ -641,7 +662,6 @@ goagent/
 │
 ├── agent/                  # Sub-Agent 系统
 │   ├── agent.go           # Definition + Runner
-│   ├── context.go         # AgentContext
 │   └── tool.go            # Agent_* 工具定义
 │
 ├── mcp/                    # MCP 客户端

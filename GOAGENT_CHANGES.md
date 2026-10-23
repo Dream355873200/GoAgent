@@ -8,6 +8,11 @@ go.mod `replace` 指向此处。**每次向 GitHub 推送前**：把下面对应
 ## 2026-10-22（v0.13 架构收敛）
 
 完整升级说明见 [UPGRADE-v0.13.md](UPGRADE-v0.13.md)（在 v0.12 之上）。推送前需要宿主侧确认的要点：
+- **builtin 系工具缺导入不再静默**：`WithBuiltinTools` / `WithTaskTools` / `WithIssueTools` /
+  `WithPlanTools` / `WithBgTaskTools` / `WithAskTools` 在未导入 builtin 包时，`New()` 现在发出
+  Warn 日志（含空白导入修复指引），不再静默无效。README 两个入口示例补上缺失的
+  `_ "github.com/Dream355873200/GoAgent/builtin"`；配置表标注 ★ 最小集与 ⚠️ builtin 系；
+  新增「运行入口怎么选」决策表。回归测试 `builtinwarn_fix_test.go`。
 
 - **CLI**：终端界面移到 `cli` 包，根包不再依赖 bubbletea。`app.RunCLI()` 需要
   `import _ ".../cli"`，或改为 `cli.Run(app)`；未导入时提示后返回。
@@ -23,8 +28,12 @@ go.mod `replace` 指向此处。**每次向 GitHub 推送前**：把下面对应
 - **会话运行时**："始终允许"在会话内跨运行有效（`SessionGrants`）；`SetPermissionMode` / Guard 增删
   作用于所有在跑运行；新增 `SetSessionPermissionMode` 等会话级模式，`POST /mode` 支持 `session_id`；
   无会话的运行各自隔离键值存储；`CloseSession` 释放内存状态。
-- **清理**：internal/loop 未接线机制删除；公开包未接线机制标 Deprecated（下一版删除）；`.yume`
-  改为 `WithStateDir` / `statedir`（默认不变）。
+- **清理**：internal/loop 未接线机制删除；`.yume` 改为 `WithStateDir` / `statedir`（默认不变）。
+  公开包中接线已断或被取代的 API 本版直接删除（`permission.ParseToolPattern`/`MatchToolCall`/`ToolPattern`、
+  `permission.AIClassifier` 族、`compaction.CompactableTools` registry/`IsCompactable`/`RegisterCompactableTool`、
+  CompactBoundary 三件套 + `BoundaryMetadata`、`agent.AgentContext`、`goagent.InternalPlanConfirmRequest`、`tools` 包）——
+  两个宿主均未使用；独立可用但框架不用的（provider fallback/fastmode、`TrackedExecutor`、`QueryTracker`、
+  forked agent 族）保留 Deprecated 不删。可插拔分类器接口记入后续路线。
 - **顺带修复**：`app.Group(...).Use(mw)` 分组中间件此前从未执行；`LLMJudge` 未发送裁判 system
   prompt；手动压缩的微压缩此前不生效且就地改写消息；图片占位符的路径提取与宿主工具名耦合。
 - **测试**：新增 `cleanup_fix_test.go`、`runner_fix_test.go`、`sessionruntime_fix_test.go`、
