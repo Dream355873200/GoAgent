@@ -8,6 +8,11 @@ go.mod `replace` 指向此处。**每次向 GitHub 推送前**：把下面对应
 ## 2026-10-22（v0.13 架构收敛）
 
 完整升级说明见 [UPGRADE-v0.13.md](UPGRADE-v0.13.md)（在 v0.12 之上）。推送前需要宿主侧确认的要点：
+- **线协议修复（UPGRADE-v0.13 §1.9）**：`seq` 盖章与写出同锁（此前并发写可乱序）；会话忙且未开插话时
+  第二个 `/chat` 在订阅前拒绝（此前会切断在跑任务的审批与提问）；`RunHTTP` 自动配置 AskUserHandler
+  （此前 AskUser 读服务器 stdin）。新增 `tool_done.tool_is_error`、`usage` 缓存 token；`GET /protocol`
+  补全漏登的 10 个路由；删除未接线的 `websocket` 包。TS 客户端升到 0.2.0：修 `steer()`、加鉴权、补端点与类型。
+  **amobileCreater 桌面端注意**：vendored 客户端需重新同步，`enqueue()` 返回值由数字改为 `{id, pending}`。
 - **builtin 系工具缺导入不再静默**：`WithBuiltinTools` / `WithTaskTools` / `WithIssueTools` /
   `WithPlanTools` / `WithBgTaskTools` / `WithAskTools` 在未导入 builtin 包时，`New()` 现在发出
   Warn 日志（含空白导入修复指引），不再静默无效。README 两个入口示例补上缺失的

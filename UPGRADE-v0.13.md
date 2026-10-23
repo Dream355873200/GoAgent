@@ -200,6 +200,38 @@ builtin 系工具的实现由 `builtin` 包的 `init()` 向框架注册（打破
 文档同步：README 两个入口示例补上了缺失的 builtin 空白导入（最简示例此前照抄会静默无工具）；
 配置表标注了 ★ 最小集（10 个高频选项）与 ⚠️ builtin 系标注；新增「运行入口怎么选」决策表。
 
+### 1.9 HTTP/SSE 线协议的三处缺陷修复与新增字段
+
+对线协议的完整审计见 [design/CONTRACT.md](design/CONTRACT.md)。本版先修三处缺陷，补两个字段；全部向后兼容，协议版本 `v` 仍为 1。
+
+**缺陷修复**
+
+- **`seq` 与线上顺序可能不一致**：事件流、审批转发、提问转发三个协程并发写同一条连接，此前 `seq` 在写锁外分配，两个协程拿到序号后谁先写出不确定，客户端据此判断的丢帧与乱序会误报。现在盖章与写出在同一把锁内（`frameWriter`）。
+- **会话忙时第二个 `/chat` 会切断在跑任务的审批与提问**：未启用 `WithSteering` 时，同一会话的第二个请求本应被拒绝，但拒绝发生在订阅之后——它先把在跑那条连接的审批/提问通道换成自己的，返回时再注销，在跑任务之后的审批与提问就再也到不了任何连接。现在拒绝在订阅之前完成，帧序列为 `error`、`metadata`（不再有 `run_start`）。
+- **HTTP 模式下内置 AskUser 回退去读服务器 stdin**：`RunHTTP` 此前只自动配置中断处理器，没有配置提问处理器，未调用 `SetAskUserHandler` 的宿主里 AskUser 工具会阻塞在服务器进程的标准输入上。现在 `RunHTTP` 自动配置（宿主已配置的不覆盖）。
+
+**新增字段**（加字段不升版本）
+
+| 字段 | 所在帧 | 说明 |
+|---|---|---|
+| `tool_is_error` | `tool_done` | 工具以错误结束时为 true，此时 `tool_result` 是错误信息。前端不必再用文本猜测工具是否失败 |
+| `usage.cache_read_input_tokens`、`usage.cache_creation_input_tokens` | `usage` | 缓存读写 token（`input_tokens` 不含这两部分） |
+
+**其他**
+
+- **`GET /protocol` 补全**：端点表此前漏了 10 个路由（`/pending-ask`、`/pending-approval`、任务增删改、计划进出、后台任务详情与停止），并且声称 `plan_confirm` 可用。现在与实际注册的路由逐一对应，`plan_confirm` 与 `interrupt` 帧标为"保留，当前不产生"。新增测试会在路由与端点表不一致时失败。
+- **删除 `websocket` 包**：它没有接入任何执行路径（只回显确认、从不调用 App），框架与两个宿主都没有导入。
+- **TS 客户端 `goagent-client` 0.2.0**（`sdk/typescript`，已重新构建 `dist/`）：
+  - 修复 `steer()`：此前对 SSE 响应调用 `res.json()`，必然抛错。现在读尽流并返回 `{steered, queuedId}`。
+  - 新增鉴权选项 `new GoAgentClient(url, { token })`（以 `Authorization: Bearer` 发送）。
+  - 新增 `pendingApprovals`、`pendingAsk`、`queue`、`removeQueued`、`getMode`、`setMode`；`enqueue` 改为返回 `{id, pending}`。
+  - 类型修正：`sessions()` 返回 `SessionSummary[]`（`turn_count`、毫秒时间戳、`first_message`）；`Envelope` 补 `tool_is_error`、`queued`、缓存 token；`ChatRequest` 补 `resume_queue`；删除错误的 `FrameType.StatusKey`。
+  - 导出 `FrameType`、`PROTOCOL_VERSION`、`parseSSE`；SSE 解析容忍 CRLF 行尾。
+  - `typescript` 从运行时依赖移到开发依赖。
+  - **宿主注意**：amobileCreater 桌面端 vendor 了旧版客户端，`enqueue()` 的返回值从数字变为对象。
+
+回归测试见 `http_b0_fix_test.go`；三处修复与端点表测试都做过反向验证（改回旧逻辑后测试失败）。TS 客户端用真实服务器做了 12 项冒烟验证，并用旧版客户端对照确认了 `steer()` 缺陷。
+
 ---
 
 ## 2. 新增 API

@@ -1,6 +1,6 @@
 {
   "name": "goagent-client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "GoAgent HTTP/SSE 协议的 TypeScript 客户端（零依赖，Node 18+ / 浏览器 / Electron 通用）",
   "type": "module",
   "main": "./dist/cjs/index.cjs",
@@ -20,7 +20,7 @@
     "node": ">=18"
   },
   "license": "MIT",
-  "dependencies": {
+  "devDependencies": {
     "typescript": "^5.9.3"
   }
 }

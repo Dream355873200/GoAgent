@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Dream355873200/GoAgent/internal/safename"
@@ -53,33 +52,41 @@ func (s *sseWriter) close() {
 	s.closed = true
 }
 
+// frameSink 是帧的写出目标（*sseWriter 实现；测试可替换）。
+type frameSink interface {
+	writeEvent(data []byte)
+}
+
+// frameWriter 给协议信封盖章 seq 与 v 后写出。事件流、审批与提问转发
+// 协程并发调用 write：盖章与写出必须在同一把锁内，锁外分配 seq 会让
+// 线上顺序与序号不一致，客户端据此判断的丢帧与乱序都会误报。
+type frameWriter struct {
+	mu   sync.Mutex
+	seq  int64
+	sink frameSink
+}
+
+func newFrameWriter(sink frameSink) *frameWriter {
+	return &frameWriter{sink: sink}
+}
+
+func (f *frameWriter) write(env protocol.Envelope) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seq++
+	env.Seq = f.seq
+	env.Version = protocol.Version
+	data, _ := json.Marshal(env)
+	f.sink.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", data)))
+}
+
 // sseHeartbeatInterval SSE 注释心跳间隔。任务长时间无帧（模型长思考、
 // 长工具）时连接仍有字节流动，客户端/代理的读空闲超时不会误断流。
 const sseHeartbeatInterval = 15 * time.Second
 
 // runHTTP 启动带 SSE 流式端点的 HTTP 服务器。
 func runHTTP(app *App, addr string) error {
-	// 未配置审批者时不自动批准：需要审批的工具调用会被拒绝。可信环境用
-	// WithApprover(AutoApprover())，交互审批用 WithApprover(NewPermissionHandler())。
-	if app.config.approver == nil {
-		app.logger.Warn("goagent: HTTP 模式未配置审批者，需要审批的工具调用将被拒绝；" +
-			"可信环境请用 WithApprover(goagent.AutoApprover())，交互审批请用 WithApprover(goagent.NewPermissionHandler())")
-	}
-
-	// /interrupt 依赖中断处理器：未配置时自动启用，否则中断请求无效。
-	if app.interruptHandler == nil {
-		app.SetInterruptHandler(NewInterruptHandler())
-	}
-
-	// HTTP 模式下如果未配置会话管理器，自动创建基于文件系统的持久化
-	// （对齐 RunCLI 的行为；会话存储在状态目录的 sessions/ 下，默认 .yume/sessions/）。
-	// 没有它，/chat 只能走无状态的 App.Run —— 每条消息都是全新会话，
-	// 前端传的 session_id 形同虚设，模型每轮都失忆从头探索。
-	if app.config.sessionManager == nil {
-		sessDir := statedir.Join("", "sessions")
-		store := session.NewFileStore(sessDir)
-		app.config.sessionManager = session.NewManager(store)
-	}
+	prepareHTTP(app)
 
 	mux := newHTTPMux(app)
 
@@ -127,6 +134,38 @@ func runHTTP(app *App, addr string) error {
 		MaxHeaderBytes:    1 << 20,
 	}
 	return srv.ListenAndServe()
+}
+
+// prepareHTTP 补齐 HTTP 模式依赖的默认组件（宿主已配置的不覆盖）。
+func prepareHTTP(app *App) {
+	// 未配置审批者时不自动批准：需要审批的工具调用会被拒绝。可信环境用
+	// WithApprover(AutoApprover())，交互审批用 WithApprover(NewPermissionHandler())。
+	if app.config.approver == nil {
+		app.logger.Warn("goagent: HTTP 模式未配置审批者，需要审批的工具调用将被拒绝；" +
+			"可信环境请用 WithApprover(goagent.AutoApprover())，交互审批请用 WithApprover(goagent.NewPermissionHandler())")
+	}
+
+	// /interrupt 依赖中断处理器：未配置时自动启用，否则中断请求无效。
+	if app.interruptHandler == nil {
+		app.SetInterruptHandler(NewInterruptHandler())
+	}
+
+	// 内置 AskUser 工具依赖提问处理器把问题下发给客户端：未配置时自动启用。
+	// 否则工具回退到读服务器进程的 stdin，HTTP 客户端永远收不到问题，
+	// 工具一直阻塞。
+	if app.askUserHandler == nil {
+		app.SetAskUserHandler(NewAskUserHandler())
+	}
+
+	// HTTP 模式下如果未配置会话管理器，自动创建基于文件系统的持久化
+	// （对齐 RunCLI 的行为；会话存储在状态目录的 sessions/ 下，默认 .yume/sessions/）。
+	// 没有它，/chat 只能走无状态的 App.Run —— 每条消息都是全新会话，
+	// 前端传的 session_id 形同虚设，模型每轮都失忆从头探索。
+	if app.config.sessionManager == nil {
+		sessDir := statedir.Join("", "sessions")
+		store := session.NewFileStore(sessDir)
+		app.config.sessionManager = session.NewManager(store)
+	}
 }
 
 // newHTTPMux 构建 HTTP API 的路由表（/chat /approve /tasks /plan ...）。
@@ -185,13 +224,7 @@ func newHTTPMux(app *App) *http.ServeMux {
 			}
 		}()
 		// 协议信封写出口：统一盖章 seq（连接内单调）与 v（协议版本）。
-		seq := &atomic.Int64{}
-		writeFrame := func(env protocol.Envelope) {
-			env.Seq = seq.Add(1)
-			env.Version = protocol.Version
-			data, _ := json.Marshal(env)
-			sw.writeEvent([]byte(fmt.Sprintf("data: %s\n\n", data)))
-		}
+		writeFrame := newFrameWriter(sw).write
 		// 未带 session_id 的请求也给本次运行一个真实的会话 ID：审批与提问按
 		// 会话路由回本连接（不持久化，语义同无状态单轮）。
 		sessionID := req.SessionID
@@ -249,6 +282,18 @@ func newHTTPMux(app *App) *http.ServeMux {
 				req.Message = ""
 			}
 			// 会话已空闲：落到下面正常开新 run。
+		}
+		// 未启用插话通道时会话忙：直接拒绝。必须在订阅之前返回——订阅会把
+		// 在跑那条连接的审批/提问通道换成本请求的，本请求一结束就注销，
+		// 在跑任务之后的审批与提问再也到不了它的连接。
+		if req.SessionID != "" && mgr != nil && !resume && app.config.steering == nil && mgr.IsBusy(req.SessionID) {
+			writeFrame(protocol.Envelope{
+				Type:      protocol.TypeError,
+				SessionID: req.SessionID,
+				Error:     fmt.Sprintf("会话 %s 正在运行中", req.SessionID),
+			})
+			writeFrame(protocol.Envelope{Type: protocol.TypeMetadata, SessionID: req.SessionID})
+			return
 		}
 
 		// 注册中断链路：/interrupt 按会话路由到本任务的 cancel。每个请求
@@ -1096,6 +1141,7 @@ func envelopeFromEvent(ev Event, sessionID string) protocol.Envelope {
 		ToolUseID:     ev.ToolUseID,
 		ToolInput:     ev.ToolInput,
 		ToolResult:    ev.ToolResult,
+		ToolIsError:   ev.ToolIsError,
 		Error:         errString(ev.Error),
 		AgentID:       ev.AgentID,
 		AgentDesc:     ev.AgentDesc,
@@ -1106,8 +1152,10 @@ func envelopeFromEvent(ev Event, sessionID string) protocol.Envelope {
 	}
 	if ev.Usage != nil {
 		env.Usage = &protocol.Usage{
-			InputTokens:  ev.Usage.InputTokens,
-			OutputTokens: ev.Usage.OutputTokens,
+			InputTokens:       ev.Usage.InputTokens,
+			OutputTokens:      ev.Usage.OutputTokens,
+			CacheReadTokens:   ev.Usage.CacheReadTokens,
+			CacheCreateTokens: ev.Usage.CacheCreateTokens,
 		}
 	}
 	return env

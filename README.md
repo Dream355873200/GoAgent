@@ -468,7 +468,7 @@ _ = item.ID
 
 ### HTTP 端点速览
 
-`app.RunHTTP(addr)` 暴露 SSE 对话 + REST 管理面，所有 SSE 帧共用统一信封 `{seq, v, type, session_id, ...}`（`seq` 连接内严格递增，跳号即丢帧）。客户端可用 [`sdk/typescript`](sdk/typescript) 零依赖 TS 客户端。
+`app.RunHTTP(addr)` 暴露 SSE 对话 + REST 管理面，所有 SSE 帧共用统一信封 `{seq, v, type, session_id, ...}`（`seq` 连接内严格递增且与线上顺序一致，跳号即丢帧）。`GET /protocol` 返回完整的帧类型与端点表。客户端可用 [`sdk/typescript`](sdk/typescript) 零依赖 TS 客户端。
 
 | 类别 | 端点 |
 |------|------|
@@ -1608,4 +1608,4 @@ InitCallbacks(ctx,...) 单次注入分层）。三个落地项：
 
 ## 许可证
 
-MIT License
+[MIT License](LICENSE) © 2026 残梦

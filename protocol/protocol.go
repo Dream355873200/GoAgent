@@ -81,9 +81,11 @@ type Envelope struct {
 	ToolInput json.RawMessage `json:"tool_input,omitempty"`
 	// ToolResult 工具执行结果文本（tool_done 携带）。
 	ToolResult string `json:"tool_result,omitempty"`
+	// ToolIsError 工具以错误结束（tool_done 携带），此时 ToolResult 是错误信息。
+	ToolIsError bool `json:"tool_is_error,omitempty"`
 	// Error 错误文本（error 帧）。
 	Error string `json:"error,omitempty"`
-	// Usage token 用量（usage 帧 / turn_complete 附带）。
+	// Usage token 用量（usage 帧）。
 	Usage *Usage `json:"usage,omitempty"`
 
 	// Question ask_user 的问题文本。
@@ -117,10 +119,13 @@ type Envelope struct {
 	AgentTokens   int    `json:"agent_tokens,omitempty"`
 }
 
-// Usage token 用量统计。
+// Usage token 用量统计。InputTokens 不含缓存部分，缓存读写单独计数
+// （字段名同 Anthropic API）。
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens       int `json:"input_tokens"`
+	OutputTokens      int `json:"output_tokens"`
+	CacheReadTokens   int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreateTokens int `json:"cache_creation_input_tokens,omitempty"`
 }
 
 // ChatRequest POST /chat 与 POST /queue 的请求体。
@@ -187,49 +192,60 @@ func Describe() Description {
 	return Description{
 		Version: Version,
 		Events: []FrameInfo{
-			{TypeRunStart, "一轮 run 开始（流内第一帧），绑定 session_id"},
+			{TypeRunStart, "一轮 run 开始，绑定 session_id（会话忙时的插话、排队、拒绝不开新 run，流里没有本帧）"},
 			{TypeTextDelta, "模型正文增量"},
 			{TypeThinking, "模型思考增量"},
 			{TypeToolStart, "工具即将执行"},
-			{TypeToolDone, "工具执行完成"},
+			{TypeToolDone, "工具执行完成（tool_is_error=true 表示以错误结束）"},
 			{TypeNeedApproval, "请求权限审批（回传 POST /approve）"},
 			{TypeAskUser, "向用户提问（回传 POST /askuser；payload 为结构化载荷）"},
-			{TypePlanConfirm, "请求确认计划（回传 POST /plan/confirm）"},
-			{TypeProgress, "工具中间进度（status_key 原地更新）"},
-			{TypeUsage, "token 用量更新"},
+			{TypePlanConfirm, "保留：请求确认计划（当前不产生）"},
+			{TypeProgress, "工具中间进度（status_key 非空时原地更新）"},
+			{TypeUsage, "token 用量更新（含缓存读写 token）"},
 			{TypeTurnComplete, "一轮 agent 循环完成"},
 			{TypeCompaction, "上下文压缩发生（信息性）"},
 			{TypeRetrieval, "RAG 前置检索完成（信息性）"},
 			{TypeSteer, "插话消息进入模型上下文"},
 			{TypeQueueRun, "排队消息作为新一轮输入开跑（队列消费）"},
-			{TypeSubAgentProgress, "子 agent 运行进度"},
+			{TypeSubAgentProgress, "子 agent 运行进度（agent_status：running/done/failed）"},
+			{TypeInterrupt, "保留：请求中断确认（当前不产生）"},
 			{TypeInterrupted, "用户主动终止"},
 			{TypeError, "错误终止"},
-			{TypeDone, "run 成功完成"},
-			{TypeMetadata, "run 结束元数据（流内最后一帧）"},
+			{TypeDone, "run 成功完成（排队续跑时一个流里可有多个）"},
+			{TypeMetadata, "流结束元数据（流内最后一帧：elapsed_ms / steered / queued）"},
 		},
 		Endpoints: []EndpointInfo{
-			{"POST", "/chat", "SSE 流式对话；会话忙时自动转插话通道（steered=true）"},
+			{"POST", "/chat", "SSE 流式对话；会话忙时：启用插话则转插话或排队（metadata.steered / queued），未启用则 error 拒绝"},
+			{"POST", "/execute", "同步执行（非流式、无会话）"},
+			{"POST", "/approve", "权限审批响应"},
+			{"GET", "/pending-approval?session_id=", "会话待处理的审批（断线重连后补齐）"},
+			{"POST", "/askuser", "提问回答响应"},
+			{"GET", "/pending-ask?session_id=", "会话待回答的提问（最新一条；断线重连后补齐）"},
+			{"POST", "/plan/confirm", "保留：计划确认响应（当前没有请求会产生）"},
+			{"POST", "/interrupt", "终止指定会话当前的 run（session_id 必填）"},
 			{"POST", "/queue", "排队消息（run 结束后自动续跑；返回条目 ID）"},
 			{"GET", "/queue?session_id=", "查看排队消息（含条目 ID）"},
 			{"POST", "/queue/remove", "按 ID 取走排队消息（撤回编辑 / 立即发送，返回原文）"},
-			{"POST", "/approve", "权限审批响应"},
-			{"GET", "/mode", "当前权限模式（default/accept_edits/auto/plan/bypass/deny_all）"},
-			{"POST", "/mode", "运行时切换权限模式（立即生效，含进行中的 run）"},
+			{"GET", "/mode", "当前权限模式（?session_id= 查询会话级设置）"},
+			{"POST", "/mode", "切换权限模式（带 session_id 只作用于该会话；mode 为空清除会话设置）"},
 			{"GET", "/thinking", "当前思考强度档位（off/low/medium/high；空 = 不干预）"},
 			{"POST", "/thinking", "运行时切换思考强度（自下一次 run 起生效）"},
 			{"GET", "/model", "当前模型 ID"},
-			{"POST", "/model", "运行时切换模型（无需重启；provider 需支持 ModelSwitcher）"},
-			{"POST", "/askuser", "提问回答响应"},
-			{"POST", "/plan/confirm", "计划确认响应"},
-			{"POST", "/interrupt", "终止当前 run"},
-			{"POST", "/execute", "同步执行（非流式）"},
+			{"POST", "/model", "运行时切换模型（provider 需支持 ModelSwitcher）"},
 			{"GET", "/sessions", "会话列表"},
-			{"GET", "/sessions/{id}/messages", "会话历史回放"},
+			{"GET", "/sessions/{id}/messages", "会话完整记录回放（不含元消息）"},
 			{"GET", "/tools", "已注册工具"},
 			{"GET", "/tasks", "任务列表（?session_id= 路由）"},
+			{"POST", "/tasks", "创建任务"},
+			{"GET", "/tasks/{id}", "获取任务"},
+			{"PUT", "/tasks/{id}", "更新任务"},
+			{"DELETE", "/tasks/{id}", "删除任务"},
 			{"GET", "/plan", "计划状态"},
+			{"POST", "/plan", "进入计划模式"},
+			{"DELETE", "/plan", "退出计划模式"},
 			{"GET", "/bgtasks", "后台任务列表"},
+			{"GET", "/bgtasks/{id}", "后台任务详情"},
+			{"POST", "/bgtasks/{id}/stop", "停止后台任务"},
 			{"GET", "/usage", "token 用量统计"},
 			{"GET", "/audit", "工具执行分析"},
 			{"GET", "/protocol", "本协议自描述"},

@@ -12,9 +12,9 @@ export const FrameType = {
   ToolDone: "tool_done",
   PermissionRequest: "permission_request",
   AskUser: "ask_user",
+  /** 保留，当前服务端不产生。 */
   PlanConfirm: "plan_confirm",
   Progress: "progress",
-  StatusKey: "status_key",
   Usage: "usage",
   TurnComplete: "turn_complete",
   Compaction: "compaction",
@@ -30,7 +30,7 @@ export const FrameType = {
 
 /** 统一事件信封——所有 SSE data 帧共用，按 type 分发后取对应字段。 */
 export interface Envelope {
-  /** 连接内单调递增（从 1 起）；跳号 = 丢帧，应走 messages() 回放补齐。 */
+  /** 连接内单调递增（从 1 起），与线上顺序一致；跳号 = 丢帧，应走 messages() 回放补齐。 */
   seq: number;
   /** 协议版本。 */
   v: number;
@@ -48,23 +48,32 @@ export interface Envelope {
   tool_use_id?: string;
   tool_input?: unknown;
   tool_result?: string;
+  /** tool_done：工具以错误结束，此时 tool_result 是错误信息。 */
+  tool_is_error?: boolean;
   error?: string;
-  usage?: { input_tokens: number; output_tokens: number };
+  /** input_tokens 不含缓存部分；缓存读写单独计数。 */
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
 
   /** ask_user 问题文本。 */
   question?: string;
   /** plan_confirm 计划全文。 */
   plan_content?: string;
-  /** permission_request 请求的权限级别。 */
+  /** permission_request 请求的权限级别（ReadOnly / Normal / RequireApproval / Dangerous）。 */
   permission?: string;
   /** 结构化交互载荷（确认卡选项等），按 payload.kind 分发渲染。 */
   payload?: Record<string, unknown>;
 
-  /** metadata 帧：run 耗时 / 插话确认。 */
+  /** metadata 帧：run 耗时 / 插话确认 / 排队回执（排队时 text 为排队项 ID）。 */
   elapsed_ms?: number;
   steered?: boolean;
+  queued?: boolean;
 
-  /** subagent_progress 帧。 */
+  /** subagent_progress 帧。agent_status 取值：running / done / failed。 */
   agent_id?: string;
   agent_desc?: string;
   agent_status?: string;
@@ -77,6 +86,26 @@ export interface Envelope {
 export interface ChatRequest {
   message: string;
   session_id?: string;
+  /** 空闲唤醒：message 为空时取该会话排队车道的队头作为本轮输入。 */
+  resume_queue?: boolean;
+}
+
+/** GET /sessions 列表项。 */
+export interface SessionSummary {
+  id: string;
+  state: string;
+  turn_count: number;
+  /** Unix 毫秒。 */
+  created_at: number;
+  /** Unix 毫秒。 */
+  updated_at: number;
+  first_message?: string;
+}
+
+/** 排队车道中的一条消息。 */
+export interface QueueItem {
+  id: string;
+  text: string;
 }
 
 /** GET /protocol 响应。 */
