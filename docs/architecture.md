@@ -312,3 +312,24 @@ App 登记所有进行中运行的权限门：
 - Guard 的增删作用于所有在跑运行。
 
 权限模式优先级：会话级运行时设置 > `WithSessionPermissionMode` 的解析结果 > 全局运行时覆写 > `WithPermissionMode`。
+
+---
+
+## 10. 会话事件日志与交互路由
+
+位置：`sessionlog.go`、`streambus.go`、`http.go`、`agui.go`
+
+v0.14 起，`/chat` 的每一帧都出自一份**每会话的追加式事件日志**（`sessionlog.go`）：环形缓冲（默认 2000 帧或 8 MiB），帧带会话内单调的 `session_seq`（seq 基值取日志创建时的 UnixMicro 时间戳，日志释放重建后续号）。读方是游标（`SessionWatcher`），发布永不阻塞，落后过多的游标拿到 `resync` 标记——断线续传端点 `GET /runs/{session}/stream?after=` 与 AG-UI 剖面都建在它上面。
+
+审批与提问的**交互路由**分三层优先级：显式订阅（`PermissionHandler` / `AskUserHandler` 的 `Subscribe`，一条连接绑定一个会话）→ 会话日志（HTTP 模式安装：请求发布进日志，挂在同一会话上的所有连接都收得到，断线重连后随补发恢复）→ 共享 channel（SDK 直连消费的兜底）。旧模式「每条连接各起一个转发 goroutine 消费同一份 channel」的抢帧与泄漏问题由此消除。
+
+```
+运行事件流 ──tee──▶ 会话事件日志 ──▶ /chat（frameWriter 带 id: session_seq）
+                        │             /runs/{session}/stream?after=
+                        └──▶ 审批/提问请求（installInteractionRouting）
+AG-UI：/agui 消费同一条日志，映射为 AG-UI 事件（aguiMapper）；
+       审批/提问/前端工具以「停车」结束本次流（aguiParks 登记 kernelRunID + 游标 + 超时），
+       resume / tool 消息从游标处接着输出
+```
+
+子代理以 tool_use_id 登记在会话运行时上（`subagents.go`）：可查询（`Subagents`）、可插话（每运行一条转向车道，`loop.WithChildSteering`）、可单独中断（`InterruptAgent` 经 `context.WithCancelCause` 只取消该子代理）。

@@ -550,3 +550,22 @@ app.UsePipeline(goagent.PipelineConfig{
 
 err := app.RunPipeline(ctx)
 ```
+
+---
+
+## 18. 会话事件总线与断线续传
+
+每会话一份追加式环形日志（`sessionlog.go`，默认 2000 帧或 8 MiB），帧带会话内单调 `session_seq`。要点：
+
+- **seq 基值 = 日志创建时刻的 UnixMicro**：日志因闲置（30 分钟）或 `CloseSession` 释放后重建，seq 继续增大——客户端永远不会再看到重复的 seq
+- **发布永不阻塞**：读方是游标（`SessionWatcher`），`after` 落在缓冲之外时首帧给 `resync{oldest}` 而不是错补
+- **交互走同一通道**：审批/提问请求按会话发布进日志（`installInteractionRouting`），断线重连后随补发重新到达；显式订阅（streamBus）优先于日志
+- 进程内读取：`app.WatchSession(sessionID, after)`，`after` 可为 `WatchFromActiveRun` / `WatchFromNow` / 具体 seq
+
+## 19. AG-UI 审批停车
+
+内核的审批是阻塞等待，AG-UI 的人机协同是两次运行——`aguiParks` 桥接（`agui.go`）：审批/提问/前端工具到达时，本次 AG-UI 流以 `RUN_FINISHED{outcome:interrupt}`（或前端工具的 `success + pendingToolCallIds`）结束并登记停车（内核运行 ID + 日志游标 + 超时定时器）；下次请求的 `resume[]` / `role:"tool"` 消息交给阻塞点后，新流从游标处接着输出。停车超时（默认 30 分钟）按拒绝处理。部分作答时立即再次停车列出未答项，避免客户端空等。
+
+## 20. 改参审批
+
+审批者批准时可以替换工具参数（`permission.SetEditedInput`，收集点由循环在权限检查前放进 ctx）：修改后的参数按工具入参 schema 校验，不合格不执行并把原因交给模型；执行成功时结果末尾注明「用户在审批时修改了参数」——模型知道自己看到的输出对应的是改过的参数。改参批准不记为"始终允许"。入口：`PermissionRequest.ApproveWithInput`、`PermissionHandler.ResolveWithInput`、v1 `/approve` 的 `input`、AG-UI resume 的 `editedArgs`。

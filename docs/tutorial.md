@@ -91,7 +91,7 @@ app.UseTools(
 
 现在对话中出现“北京天气怎么样”，LLM 会自动调用 `get_weather`，把结果组织进回答。**权限**默认 ReadOnly（自动放行）；写操作类工具传第四个参数 `goagent.Normal`（首次询问）或 `goagent.Dangerous`（每次询问）。
 
-### 2.2 多轮对话：自己管历史（嵌入推荐）
+### 2.2 多轮对话：自己管历史（先看懂机制）
 
 `Run` 每次调用都是独立会话。多轮对话用 `RunWithHistory`——历史由你加载/持久化，框架负责拼接：
 
@@ -116,8 +116,10 @@ ask("我叫小明")            // agent 记住了
 ask("我叫什么名字？")       // 能答上——历史被带上了
 ```
 
-> 嵌入 Web/API 应用时这是推荐方式：历史存你的数据库（AnimeCreater 就是这么用的——agent_message 表 + RunWithHistory）。
-> 如果想让框架管持久化（自动加载/落盘 JSONL），见 README 的「会话管理」。
+> 这一课用 `RunWithHistory` 是为了让你看清历史的机制。**生产上推荐 `RunSession`**：配置
+> `WithSessionManager(mgr)` 后框架自动按 sessionID 加载/落盘历史，"始终允许"授权与会话权限模式也随会话保留。
+> 历史已经在自己数据库里时用 `RunWithSessionHistory`（有会话身份，历史仍归你管）。
+> 四个入口怎么选见 README「运行入口怎么选」；框架管持久化见 reference.md「会话管理」。
 
 ### 2.3 完整示例
 
@@ -272,11 +274,15 @@ app.UsePipeline(goagent.PipelineConfig{
 
 | 想做什么 | 去哪 |
 |---------|------|
-| 嵌入 Web 服务（多用户/多会话） | README「会话管理」+「多会话并行」 |
+| 生产环境跑多轮会话 | README「运行入口怎么选」+ reference.md「会话管理」 |
+| 嵌入 Web 服务（HTTP/AG-UI 前端） | reference.md「运行模式」「AG-UI 1.0 剖面」 |
 | 长对话上下文不够 | README「上下文压缩」 |
-| 大任务委派给子 agent | README「子 Agent 系统」 |
+| 大任务委派给子 agent | reference.md「子 Agent 系统」（含子代理治理） |
+| 给前端发领域信号 | reference.md「自定义事件」 |
+| 生产环境链路追踪 | reference.md「OpenTelemetry 导出」 |
+| 接入 MCP 工具 / 对外提供 MCP | reference.md「MCP：客户端与服务端」 |
 | agent 运行时自建 DAG | README「动态 Pipeline」（L1 已实现） |
-| 定时任务 / git worktree 隔离 | README「Cron 调度」「Worktree 隔离」 |
+| 定时任务 / git worktree 隔离 | reference.md「Cron 调度」「Worktree 隔离」 |
 | 架构设计原理 | [architecture.md](architecture.md) / [mechanisms.md](mechanisms.md) |
 
 ## 学习路径总结

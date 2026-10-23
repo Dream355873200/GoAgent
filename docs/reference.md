@@ -212,6 +212,29 @@ mode := app.SessionPermissionMode("sess-1")                // 会话当前生效
 
 用户在审批时勾选"始终允许"后，同一会话的后续调用（包括之后的运行）不再询问；授权不跨会话。普通工具按工具名记忆，shell 命令按"工具名 + 命令的前一到两个词"记忆。`app.SessionGrants(id)` 返回会话的授权集合，可以查看（`Keys()`）和撤销（`Clear()`）；`app.CloseSession(id)` 释放会话的全部内存状态，授权随之撤销。
 
+### 改参审批
+
+批准工具调用时可以**替换它的参数**（完整替换）执行：
+
+```go
+// 自定义审批者（实现 goagent.ReasonApprover）：批准时给出替换后的参数
+func (a *MyApprover) ApproveReason(ctx context.Context, toolName, input string, perm goagent.Permission) (bool, bool, string) {
+    if edited := editArgsInUI(toolName, input); edited != nil {   // 你的改参 UI
+        if !permission.SetEditedInput(ctx, edited) {              // ctx 不支持改参时返回 false
+            return false, false, "该调用不支持修改参数"
+        }
+        return true, false, ""
+    }
+    ...
+}
+
+// PermissionHandler 的两种入口
+req.ApproveWithInput([]byte(`{"path":"b.txt"}`))                  // 拿到请求对象时
+handler.ResolveWithInput(sessionID, requestID, []byte(`{"path":"b.txt"}`)) // 按 requestID 处置
+```
+
+修改后的参数按工具的入参 schema 校验，不合格时**不执行**、原因作为工具结果交给模型；执行成功时结果末尾注明参数被修改过。改参批准不记为"始终允许"。AG-UI（`editedArgs`）与 v1 `POST /approve`（`input` 字段）的对应入口见「AG-UI 1.0 剖面」节。
+
 ---
 
 ## 运行模式
@@ -287,20 +310,37 @@ curl http://localhost:8080/audit
 
 ### 嵌入式 SDK
 
-```go
-// 单次执行（同步）
-result, err := app.Execute(ctx, "写一个 hello world")
+四个运行入口只差两个问题：**要不要多轮会话**（同一 sessionID 的历史、授权、权限模式跨请求保留），**历史谁管**（框架的 SessionManager，还是你自己的存储）。
 
-// 带历史的 SDK 调用
+| | 历史交给框架 | 历史你自己存取 |
+|------|------|------|
+| **多轮会话** | `RunSession(ctx, sessionID, input)` ← 推荐 | `RunWithSessionHistory(ctx, sessionID, history, input)` |
+| **一次性** | `Run(ctx, input)` | `RunWithHistory(ctx, history, input)` / `Execute` |
+
+- **`RunSession`**：唯一自动落盘的入口，**前提是配置 `WithSessionManager(mgr)`**（框架按 sessionID 向 mgr 加载/保存历史，未配置时直接报错）。mgr 用内置 `session.NewMemoryStore()` / `session.NewFileStore(dir)`，或实现 `session.StoreInterface`。
+- **`RunWithSessionHistory`**：历史存取你写，框架仍给该 sessionID 完整会话身份（工作目录、工具过滤、会话权限模式、跨运行授权）。
+- **`Run`**：问一句就走，不留状态。
+- **`RunWithHistory`**：同 `RunWithSessionHistory` 但没有会话身份（会话级特性不可用），只适合纯无状态的单次长上下文调用。
+
+```go
+// 多轮会话（自动落盘、重载续跑）
+for ev := range app.RunSession(ctx, "user-42", "继续上次的工作") { ... }
+
+// 历史在宿主自己的存储里
 history := loadHistoryFromDB(userID)
-for ev := range app.RunWithHistory(ctx, history, "继续上次的工作") {
+for ev := range app.RunWithSessionHistory(ctx, userID, history, "继续上次的工作") {
     if ev.Type == goagent.EventDone {
         // 完整对话记录：传入的历史 + 本轮消息 + 自动摘要时追加的摘要记录。
         // 原样存下、下一轮作为 history 传回即可；展示时过滤 IsMeta 消息。
         saveHistoryToDB(userID, ev.Messages)
     }
 }
+
+// 同步一次性调用
+result, err := app.Execute(ctx, "写一个 hello world")
 ```
+
+`RunHTTP` / `RunCLI` 是服务形态：`/chat` 配置了 SessionManager 时内部走 `RunSession`，否则退化为不落盘的 `RunWithSessionHistory`。
 
 ---
 
@@ -403,6 +443,78 @@ app := goagent.New(
     goagent.WithIssueTools(),
 )
 ```
+
+---
+
+## 会话事件总线与断线续传
+
+每个会话有一份追加式事件日志（默认保留最近 2000 帧或 8 MiB）：`/chat` 输出的每一帧都带会话内单调的 `session_seq`，运行帧还带 `run_id`。断线后从任意位置接着读：
+
+```
+GET /runs/{session}/stream?after=<已读到的 seq>
+```
+
+- `after=N`：先补发缓冲中 seq > N 的帧，再转实时；也可用 `Last-Event-ID` 头（浏览器 `EventSource` 重连时自动带上）
+- `after` 已滑出缓冲：首帧返回 `{type:"resync", oldest}`，客户端改用 `/sessions/{id}/messages` 全量重建
+- 省略 `after`：从进行中运行的开头读起；`follow=1` 跨运行持续推送
+- 会话被 `CloseSession` 关闭：游标读完缓冲后返回 `ErrSessionStreamClosed`
+
+审批与提问经会话日志下发：挂在同一会话上的所有连接都收得到，客户端断开后请求留在日志里、重连即恢复（`/pending-approval`、`/pending-ask` 保留作兼容）。运行被中断时 `interrupted` 帧带 `reason`（`POST /interrupt` 的 body）。会话忙错误可用 `errors.Is(err, session.ErrBusy)` 判断。
+
+进程内不经 HTTP 也可以读日志：
+
+```go
+watcher := app.WatchSession(sessionID, goagent.WatchFromActiveRun) // 或 WatchFromNow / 具体 seq
+defer watcher.Close()
+for {
+    ev, err := watcher.Next(ctx) // SessionEvent{Seq, Kind, RunID, Event, Elapsed, Oldest}
+    if err != nil {
+        break
+    }
+    ...
+}
+```
+
+---
+
+## 自定义事件
+
+工具、hook 里把领域信号发给前端，不用再塞进 `ask_user` 的 payload：
+
+```go
+// 运行之中：进入所在运行的事件流（子代理里发射同样到达最外层）
+ctx.Emit("anime.canvas_command", CanvasCommand{Action: "add_node"})
+
+// 运行之外：推给会话——有进行中的运行随流下发，否则进会话事件日志供续传
+app.EmitEvent(sessionID, "amc.device_changed", deviceState)
+```
+
+- 名称 `<命名空间>.<事件名>`（字母数字与 `_-`，点号分隔；`goagent.` 前缀保留给框架）
+- 值在发射点序列化；失败或不符合登记的 schema 时返回错误，不静默丢弃
+- 可选 schema 登记：`app.RegisterEvent(name, schema)`，`GET /protocol` 列出已登记事件
+- 线上：v1 帧为 `{type:"custom", name, value, session_seq}`；AG-UI 剖面为 `CUSTOM{name, value}`
+- 观察者实现 `observer.CustomEventObserver` 收到；事件是展示层信号，不进会话记录
+
+---
+
+## AG-UI 1.0 剖面
+
+`POST /agui` 用 [AG-UI](https://docs.ag-ui.com) 1.0 协议暴露同一个内核（与 v1 的 `/chat` 互不影响）：请求体是 `RunAgentInput`，响应是 AG-UI 事件流。正文、推理、工具调用、子代理、用量全部映射；扩展只走 `CUSTOM` 事件与 `goagent.` 前缀的 metadata。
+
+人机协同是"两次运行"：本次运行以 `RUN_FINISHED{outcome:{type:"interrupt", interrupts:[…]}}` 结束（内核在审批点继续阻塞），客户端下次请求带 `resume:[{interruptId, status, payload}]` 作答，新流从停车处接着输出、不重发 `TOOL_CALL_START`：
+
+| 中断类型 | reason | resume 载荷 |
+|---------|--------|------------|
+| 工具审批 | `tool_call`（带 `toolCallId` 与 `responseSchema`） | `{approved:true, editedArgs:{…}, reason?}`——`editedArgs` 替换工具参数执行（见「改参审批」） |
+| 提问 | `ask_user`（结构化载荷在 `metadata["goagent.payload"]`） | `{answer:"…"}` 或字符串 |
+
+- **前端工具**：请求 `tools` 里的工具由前端执行——模型调用时本次运行以 `success + pendingToolCallIds` 结束，客户端下次以 `role:"tool"` 消息带回结果（`error` 字段作为工具错误）
+- **历史归服务端**：客户端 `messages` 按 id 去重，运行结束发 `MESSAGES_SNAPSHOT` 对齐；流式消息 id 与会话记录的 UID 一致
+- 停车默认 30 分钟超时按拒绝处理：`WithAGUI(goagent.AGUIConfig{ParkTimeout})` 可调
+- 有待作答的中断时发来无关请求：`RUN_ERROR{code:"pending_interrupts"}`；会话忙为 `thread_busy`；待回答的前端工具未带回结果为 `pending_tool_calls`
+- `GET /agui/capabilities` 声明能力（审批、改参、前端工具、子代理、推理）
+
+每个事件都经官方 schema 校验（`protocol/agui/testdata/schema-1.0.json`），官方 `@ag-ui/client` 的 `HttpAgent` 实连验证零告警。
 
 ---
 
@@ -551,6 +663,54 @@ goagent.WithToolKits(goagent.WebKit())
 | `InteractKit()` | AskUser |
 | `CodeKit()` | FileKit + SearchKit + ShellKit |
 | `AllKit()` | FileKit + SearchKit + ShellKit + WebKit |
+
+---
+
+## MCP：客户端与服务端
+
+### 客户端：连接 MCP 服务器
+
+```go
+// 方式一：声明式（New 时连接，发现的工具自动注册）
+app := goagent.New(cfg,
+    goagent.WithMCP(agent.MCPServerConfig{
+        Name:    "fs",
+        Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-filesystem", dir},
+        // HTTP 服务器：Name + URL（+ Auth 作为 Authorization 头）
+    }),
+)
+
+// 方式二：自己管理连接
+client, tools, err := mcp.Connect(ctx, mcp.ServerConfig{Name: "fs", Command: "…"})
+for _, t := range tools {
+    app.Tool(t.Name, goagent.MCPToolDef(t))
+}
+defer client.Disconnect()
+```
+
+底层是官方 Go SDK（`github.com/modelcontextprotocol/go-sdk`），门面（`ServerConfig` / `Connect` / `Client` / `MCPToolDef`）不变。可用能力：调用取消（运行中断时通知服务端）、进度通知（显示为工具状态行）、图片结果（内联交给模型）、工具列表变更（`client.OnToolsChanged`，配合 `app.ReplaceTool` / `app.RemoveTool` 同步注册表）。工具注册名为 `mcp__<服务器名>__<工具名>`（`mcp.ToolName`，服务器名会做净化）。
+
+服务器在工具调用中向用户索取输入（elicitation）时，转成所在会话的一次提问：payload 为 `{kind:"mcp_elicitation", server, mode, message, schema|url, error?}`；回答可以是表单 JSON、`{"action":"decline"}` / `{"action":"cancel"}`、单字段表单的直接文本（按字段类型转换）。`WithMCP` 默认启用；自行 `mcp.Connect` 时给 `ServerConfig.Elicit` 填 `goagent.ElicitViaAskUser`。
+
+### 服务端：把工具与 agent 暴露为 MCP
+
+```go
+// Streamable HTTP（挂在宿主自己的路由与鉴权之后）
+h, _ := app.MCPHandler(goagent.MCPServerOptions{
+    Tools: []string{"search_docs", "create_ticket"},  // 只暴露列出的工具
+    Agent: &goagent.MCPAgentTool{KeepSessions: true}, // agent 本身暴露为 run_agent 工具
+})
+
+// stdio（MCP 客户端以子进程启动宿主；stdout 是协议流，日志写 stderr）
+app.ServeMCPStdio(ctx, opts)
+
+// 或拿 SDK 的 *mcp.Server 自选传输、追加提示词/资源
+server, _ := app.MCPServer(opts)
+```
+
+- 直接调用的工具不经模型、不经审批者（MCP 客户端负责向它的用户确认，工具带 `readOnlyHint` / `destructiveHint` 注解）；deny 规则、Guard 与权限模式照常生效；`Context.Progress` 转成 MCP 进度通知；结果开头的内联图片转成 MCP 图片
+- agent 工具（默认名 `run_agent`）：入参 `{task, session_id?}`，跑完返回最终回复；`KeepSessions` 延续会话（省略 session_id 时新建并返回）；客户端取消调用即中断运行；带进度令牌时工具调用与子代理进展以进度通知下发
+- agent 运行中的审批与提问经 elicitation 交给客户端的用户；客户端不支持 elicitation 时审批被拒绝（原因交给模型）
 
 ---
 
@@ -741,6 +901,79 @@ curl http://localhost:8080/audit
 
 ---
 
+## OpenTelemetry 导出
+
+`observer/oteltrace` 把运行导出为 OpenTelemetry span，名称与属性遵循 [gen_ai.* 语义约定](https://opentelemetry.io/docs/specs/semconv/gen-ai/)：
+
+```
+invoke_agent goagent                     一次运行（gen_ai.conversation.id、goagent.turns、goagent.cost_usd）
+├── chat claude-sonnet-4-6               模型请求（请求/响应模型、用量含缓存、结束原因；失败带 error.type）
+└── execute_tool Bash                    工具调用（goagent.duration_ms；失败为 Error 状态）
+    └── chat / execute_tool …            子代理的请求与调用，挂在派发它的 Agent_* 调用下
+```
+
+```go
+tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(otlpExporter)) // 宿主自己的导出管线
+app := goagent.New(
+    goagent.ProviderConfig{Model: "gpt-4o", APIKey: "sk-..."},
+    goagent.WithObservers(oteltrace.New(tp, oteltrace.Options{
+        AgentName:    "engine",    // gen_ai.agent.name
+        ProviderName: "openai",    // gen_ai.provider.name
+    })),
+)
+```
+
+- span 随 ctx 传递（观察者可选接口 `observer.ContextObserver`）：工具内部用 otelhttp 包装的 HTTP 客户端、带追踪的数据库驱动自动挂到对应 `execute_tool` 的下面
+- 权限决定、压缩、自定义事件记为所在 span 的事件；用户中断记为 `goagent.cancelled` 事件，不算失败
+- 默认不记录提示词与回复内容（语义约定把内容采集定为可选项）
+- 运行 ctx 里已有 span（如 HTTP 中间件的请求 span）时，`invoke_agent` 挂在它下面
+
+每次 `OnLLMStart` 恰好对应一次 `OnLLMDone` 或 `OnLLMError`：换后备模型、压缩后重试、流中断恢复都会先结束上一次请求的 span。
+
+---
+
+## 测试工具
+
+### 脚本化模型（provider/scripted）
+
+按脚本应答的 `provider.Provider`，确定性测试多轮循环：每次模型请求按顺序消费一个 Step，并记录请求供断言。
+
+```go
+m := scripted.New(
+    scripted.Tool("Read", map[string]any{"path": "a.go"}),      // 发起工具调用
+    scripted.Text("读完了，没问题。").WithUsage(120, 30),          // 流式正文 + 用量
+)
+m.Route(scripted.SystemContains("你是代码探索助手"),             // 按请求分流（子代理与主 agent 共用模型时）
+    scripted.Tool("Grep", map[string]any{"pattern": "TODO"}),
+    scripted.Text("找到 3 处"))
+
+app := goagent.New(goagent.WithProvider(m), ...)
+// ... 运行 ...
+m.AssertDone(t)          // 脚本恰好用完（比脚本多跑会报错，少了会残留）
+```
+
+Step 支持：思考（`WithThinking`）、分块流出（`WithChunkSize`）、多个并行工具调用（`Tools`）、请求直接失败（`Fail`，如 `&provider.RateLimitError{}` 测重试）、流出正文后断流（`StreamErr`，测锚点恢复）、请求断言（`Expect`）。`Requests()` 返回收到的全部请求。
+
+### HTTP 录制回放（httprr）
+
+第一次对真实服务录制（模型端点、MCP 服务器），之后离线回放——没有网络、没有密钥也能跑同一轮对话：
+
+```go
+rr, err := httprr.Open("testdata/chat.httprr", http.DefaultTransport)
+if errors.Is(err, fs.ErrNotExist) {
+    t.Skip("没有录制：设置 GOAGENT_HTTPRR=record 并提供密钥后录制")
+}
+defer rr.Close()
+prov := anthropic.New(os.Getenv("ANTHROPIC_API_KEY"), anthropic.WithHTTPClient(rr.Client()))
+```
+
+- 模式由环境变量 `GOAGENT_HTTPRR` 决定：`record` 录制、未设置回放、其他值按正则匹配文件路径
+- 匹配键是方法 + URL + 请求体（请求头不参与——SDK 的 User-Agent、X-Stainless-* 随版本变化）；同一请求录到多次按顺序回放（先 429 后成功的重试）
+- 录制自动清洗：`Authorization`、`X-Api-Key`、`Cookie`、`User-Agent`、`X-Stainless-*`、URL 的 `key` 参数、响应的 `Set-Cookie` 都不会进录制文件；`ScrubReq` / `ScrubResp` 追加自定义清洗（同时作用于回放的匹配键）
+- `openai.Config{HTTPClient: rr.Client()}` 同理
+
+---
+
 ## 子 Agent 系统
 
 注册子 agent 供主 agent 调用：
@@ -778,6 +1011,24 @@ app.Tool("Agent_explore", app.AgentTool(agent.Definition{
 // 直接构造的工具：标上权限级别；Serial 表示不与同轮其他调用并行
 agent.ToolDef{Name: "deploy", InputSchema: schema, Permission: permission.LevelNormal, Serial: true, Execute: deploy}
 ```
+
+### 子代理治理
+
+每个 `Agent_*` 调用（同步或后台）以它的 tool_use_id 登记为可寻址的子代理：主 agent 与宿主都能查状态、发指示、单独中断，父运行不受影响。
+
+```go
+app.Subagents(sessionID)                        // 运行中 + 最近结束的子代理
+app.Subagent(sessionID, agentID)                // 快照与结束后保留的对话记录
+app.SteerAgent(sessionID, agentID, "先只看 go 文件") // 向运行中的子代理插话（找不到返回 ErrAgentNotFound）
+app.InterruptAgent(sessionID, agentID, "方向不对")   // 只中断它，父运行继续
+```
+
+- 子代理的过程事件并入父运行的事件流：默认摘要（状态/活动/工具次数/token），`WithSubagentStream(goagent.SubagentStreamFull)` 全量转发文本与思考；每个事件带 `agent_path` 归属
+- 模型自己也能用 `agent_send` / `agent_status` 工具协作（`WithSubAgents` 自动注册；`WithSessionToolFilter` 可过滤）
+- 审批与提问带 `agent_path`，前端知道卡片属于哪个子代理
+- HTTP：`GET /agents?session_id=`、`GET /agents/{id}`；`/chat`、`/queue`、`/interrupt` 都接受 `agent_id`
+- 每会话同时运行的子代理默认上限 8（`WithMaxSubagents(n)`）；超出时 `Agent_*` 返回错误让模型串行化
+- 后台子代理的启动回执带 `agent_id`，`TaskOutput` / `TaskStop` 也接受 agent_id；会话关闭时运行中的子代理被中断
 
 ---
 

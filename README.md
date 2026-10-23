@@ -193,14 +193,19 @@ for ev := range events {
 
 ### 运行入口怎么选
 
-| 入口 | 什么时候用 | 历史与落盘 |
-|------|-----------|-----------|
-| `Run(ctx, input)` | 单次问答、无状态嵌入调用 | 内存内一次性行走，不落盘 |
-| `RunWithHistory(ctx, history, input)` | 宿主自己保管历史（自己存 `[]message.Message`） | 不落盘 |
-| `RunSession(ctx, sessionID, input)` | 多轮会话（**推荐**，sessionID 须为安全文件名） | **唯一自动落盘**的入口：逐条持久化，重载续跑不重复压缩，"始终允许"授权/会话权限模式随会话保留 |
-| `RunWithSessionHistory(ctx, sessionID, history, input)` | 需要会话身份（工作目录/工具过滤/权限随 sessionID 生效）但历史由宿主自管 | 不落盘 |
-| `RunHTTP(addr)` | 把 App 变成 HTTP SSE 服务 | 见「HTTP API」节 |
-| `RunPipeline(ctx)` / `RunDynPipeline(...)` | 固定/动态多 agent 流水线 | 见「Pipeline」节 |
+四个入口只差两个问题的答案：**要不要多轮会话**（同一 sessionID 的历史、"始终允许"授权、会话权限模式、工作目录要跨请求保留），以及**历史消息谁来管**（框架的 SessionManager，还是你自己的存储）。
+
+| | 历史交给框架管 | 历史你自己存取 |
+|------|------|------|
+| **多轮会话**（带 sessionID） | `RunSession(ctx, sessionID, input)` ← 推荐 | `RunWithSessionHistory(ctx, sessionID, history, input)` |
+| **一次性**（不带 sessionID） | `Run(ctx, input)` | `RunWithHistory(ctx, history, input)` |
+
+- **`RunSession`**：多轮会话的推荐入口，也是唯一自动落盘的：每条消息即时持久化，重载续跑不重复压缩，"始终允许"授权与会话权限模式跨运行保留。**前提是先配置 `WithSessionManager(mgr)`**——框架按 sessionID 向 mgr 加载和保存历史，没配置时 `RunSession` 直接报错。mgr 可以用内置的 `session.NewMemoryStore()`（内存）或 `session.NewFileStore(dir)`（JSONL 文件），也可以实现 `session.StoreInterface` 接到你自己的数据库。sessionID 须为安全文件名（通过 `safename` 校验）。
+- **`RunWithSessionHistory`**：历史存放在你自己的存储里，读取（`history` 参数）与保存（事件流里的消息）都由你负责；框架仍给这个 sessionID 完整的会话身份——会话工作目录、会话级工具过滤、会话权限模式、进程内跨运行保留的授权。
+- **`Run`**：问一句就走，不留任何状态；不需要后续对话时用它。
+- **`RunWithHistory`**：与 `RunWithSessionHistory` 的唯一区别是**没有会话身份**（内部用固定 ID）：会话工作目录、会话级注入、授权跨运行保留这些按 sessionID 的特性都不可用。只适合"单次调用带一大段上下文、之后不延续"的纯无状态场景——宿主管历史的多数场景其实应该用 `RunWithSessionHistory`。
+
+`RunHTTP(addr)` / `RunCLI()` 是服务形态：`/chat` 在配置了 SessionManager 时走 `RunSession`，否则退化为 `RunWithSessionHistory`（不落盘）。Pipeline 的 `RunPipeline` / `RunDynPipeline` 是多 agent 编排，见「Pipeline」节。
 
 ---
 
@@ -248,64 +253,142 @@ goagent.WithAnthropic()
 
 ### With* Option 列表
 
-共 66 个选项，按需取用——**日常使用只需 ★ 标记的 10 个**，其余面向高级场景，不读也不影响上手。
+共 66 个选项，按用途分成 13 组。**日常使用只需 ★ 标记的约 10 个**，其余面向高级场景，按组查阅即可。
 
 > ⚠️ 带 ⚠️ 的 builtin 系选项要求 `import _ "github.com/Dream355873200/GoAgent/builtin"`：
 > 工具实现由该包的 `init()` 向框架注册（避免循环依赖），漏掉导入时选项静默无效，
 > 运行时日志会给出警告。
 
+#### 模型与 Provider
+
+| Option | 说明 | 默认值 |
+|--------|------|--------|
+| `WithProvider(p)` | 直接传入 `provider.Provider` 实例（脚本化模型、自研 Provider） | 无 |
+| `WithOpenAI()` | 从环境变量读取 OpenAI 兼容配置（OPENAI_MODEL / OPENAI_BASE_URL / OPENAI_API_KEY） | 无 |
+| `WithAnthropic()` | 从环境变量读取 Anthropic 配置（ANTHROPIC_MODEL / ANTHROPIC_API_KEY） | 无 |
+| `WithFallback(p)` | 备用 Provider（主 Provider 过载时切换，对下一次请求生效） | 无 |
+| `WithThinkingEffort(e)` | 思考强度 `off/low/medium/high`（运行时 `SetThinkingEffort` 可改） | `""`（不干预） |
+
+#### 工具注册
+
+| Option | 说明 | 默认值 |
+|--------|------|--------|
+| ★ ⚠️ `WithBuiltinTools()` | 开启全部内置工具（Read/Write/Edit/Glob/Grep/Bash/run_js/GitCommit/WebSearch/WebFetch） | 不启用 |
+| `WithToolKits(kits...)` | 按领域注册工具包（FileKit、ShellKit、JSCapabilityKit 等） | 无 |
+| ⚠️ `WithTaskTools()` | Task 管理工具（TaskCreate/Update/Get/List） | 不启用 |
+| ⚠️ `WithPlanTools()` | Plan Mode 工具（EnterPlanMode/ExitPlanMode） | 不启用 |
+| ⚠️ `WithAskTools()` | AskUser 工具（向用户提问确认） | 不启用 |
+| ⚠️ `WithBgTaskTools()` | 后台任务工具（TaskStop/TaskOutput） | 不启用 |
+| ⚠️ `WithIssueTools()` | 问题记录工具（IssueReport/IssueResolve，测试驱动场景） | 不启用 |
+| `WithToolInputValidation(enabled)` | 工具入参按 schema 校验（不合规的调用不执行，错误说明交模型修正）。仅当宿主工具有意接受 schema 之外的入参时关闭 | 开启 |
+
+#### 权限与审批
+
+| Option | 说明 | 默认值 |
+|--------|------|--------|
+| ★ `WithPermissionMode(mode)` | 权限模式：Default / AcceptEdits / Auto / Bypass / PlanOnly / DenyAll。Auto 每个非只读调用经分类器判定；Bypass 不询问，高风险调用仍经分类器把关 | `Default`（ReadOnly 自动通过，其余询问） |
+| ★ `WithPermissionRules(rules)` | 权限规则（Allow / Deny / Ask，按工具名模式与入参内容匹配） | 无 |
+| ★ `WithApprover(a)` | 审批者：需要用户确认的调用交给它决定 | CLI 交互式询问；SDK 未配置时拒绝 |
+| `WithPermissionGuard(gd)` | 外部策略 Guard（单调：可拒不可放；可多次调用，运行期 `App.AddPermissionGuard` 可增改） | 无 |
+| `WithPermissionClassifier(c)` | 自定义分类器替换默认 YOLO（规则引擎、外部策略服务等） | 无（用 YOLO） |
+| `WithYoloClassifier(enabled)` | 开关 YOLO 分类器 | 开启（需要 provider） |
+| `WithYoloClassifierModel(model)` | YOLO 判定用的模型 ID（同一 provider 上更快更便宜的小模型） | 主 provider 当前模型 |
+| `WithYoloPromptFile(path)` | YOLO 分类提示词文件 | 嵌入默认值 |
+
+#### 会话
+
+| Option | 说明 | 默认值 |
+|--------|------|--------|
+| ★ `WithSessionManager(mgr)` | 会话管理器——`RunSession` 的前提，选型见「运行入口怎么选」 | 不启用 |
+| ★ `WithAutoPersist(bool)` | 会话消息逐条自动落盘 | `true` |
+| `WithSessionStream(cfg)` | 会话事件日志容量（断线续传 `/runs/{session}/stream` 的基础；HTTP 模式总是启用） | 2000 帧 / 8 MiB |
+| `WithSessionWorkDir(fn)` | 按 sessionID 解析会话工作目录（Bash 与文件工具的相对路径以此为基准，单进程多项目互不串） | 不启用（进程 cwd） |
+| `WithStateDir(name)` | 运行状态目录名（会话存储、计划、后台任务输出、项目 skill、worktree；进程级） | `.yume` |
+
+#### 提示词与记忆
+
 | Option | 说明 | 默认值 |
 |--------|------|--------|
 | ★ `WithSystemPrompt(s)` | 系统提示词（纯字符串模式，不走 prompt 体系） | 无 |
-| `WithPromptDir(dir)` | 外部 prompt 目录（优先从此加载，找不到 fallback 嵌入默认值） | 无 |
-| ★ ⚠️ `WithBuiltinTools()` | 开启所有内置工具（Read/Write/Edit/Glob/Grep/Bash/run_js/GitCommit/WebSearch/WebFetch） | 不启用 |
-| ⚠️ `WithTaskTools()` | 启用 Task 管理工具（TaskCreate/Update/Get/List），默认内存存储 | 不启用 |
-| ⚠️ `WithPlanTools()` | 启用 Plan Mode 工具（EnterPlanMode/ExitPlanMode） | 不启用 |
-| ⚠️ `WithAskTools()` | 启用 AskUser 工具（用户交互确认） | 不启用 |
-| ⚠️ `WithBgTaskTools()` | 启用后台任务工具（TaskStop/TaskOutput） | 不启用 |
-| ⚠️ `WithIssueTools()` | 启用问题记录工具（IssueReport/IssueResolve，测试驱动场景） | 不启用 |
-| `WithLogger(l)` | 注入库内日志（pipeline 轨迹/节点错误现场），标准 `log/slog` | `slog.Default()` |
-| `WithDebugMode()` | 测试模式：loop 细节日志（逐轮请求参数、工具调用明细）额外输出；关键事件（限流/切后备/错误）默认就有 | 不启用 |
-| `WithToolKits(kits...)` | 按领域注册工具包（FileKit、ShellKit 等） | 无 |
-| ★ `WithMaxTurns(n)` | 最大循环次数 | `100` |
-| ★ `WithMaxConcurrency(n)` | 最大并发工具数 | `10` |
-| `WithTokenBudget(n)` | Token 预算上限 | `0`（无限） |
-| ★ `WithPermissionMode(mode)` | 权限模式（Default/AcceptEdits/Auto/Bypass/PlanOnly/DenyAll）；Auto 由 YOLO 分类器判定每个非只读调用，Bypass 不询问但高风险操作仍经分类器 | `Default`（ReadOnly 自动通过，其他询问） |
-| ★ `WithPermissionRules(rules)` | 自定义权限规则（Allow/Deny/Ask） | 无 |
-| ★ `WithApprover(a)` | 自定义审批者 | CLI 交互式询问，SDK 自动拒绝 |
-| `WithMemoryDir(dir)` | 跨会话持久化内存目录 | 不启用 |
-| `WithStateDir(name)` | 项目目录下存放运行状态的目录名（会话存储、计划、后台任务输出、项目 skill、worktree 等；进程级） | `.yume` |
+| `WithPromptDir(dir)` | 外部提示词目录（优先从此加载，缺失回落嵌入默认值） | 无 |
 | `WithProjectContext(path)` | 项目上下文文件（类似 CLAUDE.md） | 无 |
-| ★ `WithSessionManager(mgr)` | 会话管理器，启用多轮持久化 | 不启用（单次会话） |
-| ★ `WithAutoPersist(bool)` | 会话结束自动持久化 | `true` |
-| `WithSessionWorkDir(fn)` | 按 sessionID 解析会话工作目录（注入 ctx，Bash cmd.Dir / 文件工具相对路径以此为基准，单进程多会话多项目互不串） | 不启用（进程 cwd） |
-| `WithSessionToolFilter(fn)` | 按会话过滤本次 run 暴露给模型的工具（`fn(sessionID, toolName) bool`，不改注册表） | 不启用（全部工具） |
-| `WithSessionPromptDir(fn)` | 按会话解析提示词目录（返回 `""` 沿用全局 `WithPromptDir`） | 不启用 |
-| `WithSessionProjectContext(fn)` | 按会话追加项目上下文文件（接在全局 `WithProjectContext` 之后） | 不启用 |
-| `WithSteering()` | 启用运行中插话双车道（guide 注入活跃 run / queue 排队续跑），`app.Steering()` 取回 hub | 不启用 |
-| `WithPostCompactReminder(rs)` | 注册压缩后重注入源（可多次调用） | 无 |
-| `WithSuspend()` | 启用挂起/恢复门闩（SuspendGate） | 不启用 |
-| `WithThinkingEffort(e)` | 思考强度 `off/low/medium/high`（运行时 `SetThinkingEffort` 可改） | `""`（不干预） |
-| `WithHTTPRoutes(routes)` | RunHTTP 内置路由之外注册宿主端点（复用同一 mux/App） | 无 |
-| `WithSandbox(sb, policy)` | 启用工具执行沙箱（Tier 0-3，见「沙箱」节）：每次 Run/RunPipeline 创建隔离会话，路径白名单 + 工作副本 | 不启用（无沙箱，零开销） |
-| `WithCompaction(cfg)` | 上下文压缩配置 | 阈值 `0.8`，结果上限 `50000` 字符 |
+| `WithGitContext()` | system prompt 注入环境信息与 Git 状态 | 不启用 |
+| `WithMemoryDir(dir)` | 跨会话持久化记忆（Auto Memory）目录 | 不启用 |
 | `WithSessionMemory(cfg)` | 会话内定期记忆提取 | 不启用 |
-| `WithSubAgents(defs...)` | 注册子 agent | 无 |
-| `WithFallback(p)` | 备用 Provider（主 Provider 过载时切换） | 无 |
-| ★ `WithHooks(h...)` | 注册 Hook 回调 | 无 |
-| `WithObservers(obs...)` | 注册 Observer | 无 |
-| `WithCostTracking()` | 启用成本追踪 | 不启用 |
-| `WithAnalytics()` | 启用使用分析 | 不启用 |
-| `WithMCP(servers...)` | 配置 MCP 服务器 | 无 |
-| `WithTaskStore(s)` / `WithPlanStore(s)` / `WithBgTaskStore(s)` | 自定义存储后端（需配合对应的 Tools Option） | 内存/文件存储 |
-| `WithGitContext()` | 在 system prompt 中注入环境信息和 Git 状态 | 不启用 |
-| `WithYoloPromptFile(path)` | YOLO 分类 prompt 外部文件路径 | 嵌入默认值 |
-| `WithYoloClassifier(bool)` | 开关 YOLO 分类器（auto / bypass 模式用它裁决调用） | 开启（需要 provider） |
-| `WithPermissionClassifier(c)` | 用自定义分类器替换 YOLO（规则引擎、外部策略服务等） | 无 |
-| `WithSessionStream(cfg)` | 会话事件日志（断线续传）的容量；HTTP 模式总是启用 | 2000 帧 / 8 MiB |
-| `WithSubagentStream(mode)` / `WithMaxSubagents(n)` | 子代理事件并入父流的方式（摘要 / 全量）与每会话并发上限 | 摘要 / 8 |
+| `WithPostCompactReminder(rs)` | 压缩后重注入源（可多次调用，全部生效） | 无 |
+
+#### 限制与压缩
+
+| Option | 说明 | 默认值 |
+|--------|------|--------|
+| ★ `WithMaxTurns(n)` | 最大循环轮数 | `100` |
+| ★ `WithMaxConcurrency(n)` | 最大并发工具数 | `10` |
+| `WithTokenBudget(n)` | Token 预算上限（含边际收益递减检测） | `0`（无限） |
+| `WithCompaction(cfg)` | 上下文压缩 | 阈值 `0.8`，结果上限 50000 字符 |
+
+#### 子代理
+
+| Option | 说明 | 默认值 |
+|--------|------|--------|
+| `WithSubAgents(defs...)` | 注册子 agent（自动附带 `agent_send` / `agent_status` 治理工具，见「子代理治理」节） | 无 |
+| `WithSubagentStream(mode)` | 子代理事件并入父流的方式：摘要（默认）/ 全量 | 摘要 |
+| `WithMaxSubagents(n)` | 每会话同时运行的子代理上限 | `8` |
+| `WithSubAgentTraceDir(fn)` | 子代理运行轨迹按 toolUseID 落 JSONL（宿主渲染子代理时间线用） | 不启用 |
+
+#### 运行中交互
+
+| Option | 说明 | 默认值 |
+|--------|------|--------|
+| `WithSteering()` | 插话双车道（guide 注入活跃 run / queue 排队续跑），`app.Steering()` 取回 hub | 不启用 |
+| `WithSuspend()` | 挂起/恢复门闩（SuspendGate：等到人后从原处继续） | 不启用 |
+| `WithTranscriptSink(fn)` | 每轮结束把完整对话记录交给 fn（宿主做即时持久化或审计） | 无 |
+
+#### 会话级注入（多模式）
+
+同一进程内不同会话跑不同「模式」，解析函数返回零值时回落全局配置。见「多会话多模式」节。
+
+| Option | 说明 | 默认值 |
+|--------|------|--------|
+| `WithSessionToolFilter(fn)` | 按会话裁剪暴露给模型的工具表（不改注册表） | 不启用 |
+| `WithSessionPromptDir(fn)` | 按会话解析提示词目录 | 不启用 |
+| `WithSessionProjectContext(fn)` | 按会话追加项目上下文文件 | 不启用 |
+| `WithSessionPermissionMode(fn)` | 按会话覆盖权限模式（如团队成员会话强制 auto） | 不启用 |
+| `WithSessionRoleCard(fn)` | 按会话给 agent 一张「身份卡」：你是谁、会什么、能用什么工具、向谁汇报 | 不启用 |
+
+#### 检索与隔离
+
+| Option | 说明 | 默认值 |
+|--------|------|--------|
+| `WithRetrieval(cfg)` | RAG 形态 1：run 前置检索管道（retrieve→rerank→拼 prompt，agent 无感知）；形态 2 见 `NewRetrieveTool` | 不启用 |
+| `WithSandbox(sb, policy)` | 工具执行沙箱（Tier 0-1，路径白名单 + 工作副本，见「沙箱」节） | 不启用（零开销） |
+
+#### MCP 与 HTTP 服务
+
+| Option | 说明 | 默认值 |
+|--------|------|--------|
+| `WithMCP(servers...)` | 连接 MCP 服务器并注册其工具（elicitation 自动转会话提问） | 无 |
+| `WithHTTPRoutes(routes)` | RunHTTP 内置路由之外注册宿主端点（同一 mux） | 无 |
+| `WithHTTPAuthToken(t)` | HTTP 鉴权令牌 | 无（只监听回环地址） |
+| `WithHTTPInsecure()` | 允许监听非回环地址（已受保护的网络） | 不启用 |
+| `WithHTTPAllowedOrigins(origins...)` | 放行跨源访问的前端来源 | 无（拒绝跨站请求） |
 | `WithAGUI(cfg)` | AG-UI 剖面参数（审批、提问、前端工具的停车超时） | 30 分钟 |
-| `WithHTTPAuthToken(t)` | HTTP 鉴权令牌（未配置时只监听回环地址） | 无 |
+
+#### 可观测与调试
+
+| Option | 说明 | 默认值 |
+|--------|------|--------|
+| ★ `WithHooks(h...)` | Hook 回调（工具前后、stop 等事件） | 无 |
+| `WithObservers(obs...)` | Observer（含 LLM 调用级钩子；OTel 导出也从这里接入） | 无 |
+| `WithCostTracking()` | 成本追踪 | 不启用 |
+| `WithAnalytics()` | 使用分析（per-tool 统计） | 不启用 |
+| `WithLogger(l)` | 库内日志（标准 `log/slog`；pipeline 轨迹、错误现场） | `slog.Default()` |
+| `WithDebugMode()` | 测试模式：loop 细节日志全量输出（关键事件默认就有） | 不启用 |
+
+#### 存储后端
+
+| Option | 说明 | 默认值 |
+|--------|------|--------|
+| `WithTaskStore(s)` / `WithPlanStore(s)` / `WithBgTaskStore(s)` | 自定义存储后端（需配合对应的 Tools Option；`WithBgTaskStore(bgtask.NewManager(dir))` 可同时指定后台任务输出目录） | 内存 / 文件 |
 
 ---
 
@@ -494,6 +577,37 @@ _ = item.ID
 
 注入给模型的非对话文本（插话、压缩后重注入、工具结果内联提醒、后台任务完成通知）统一经 `reminder.Wrap` 打上 `<system-reminder source="…">` 标记，模型可辨识其工具性质，前端可按标记剥壳渲染。
 
+### 子代理治理：每个子代理可寻址
+
+`WithSubAgents` 注册的每个 `Agent_*` 调用（同步或后台）都以它的 tool_use_id 登记为可寻址的子代理：主 agent 与宿主都能查状态、发指示、单独中断，父运行不受影响。
+
+```go
+app.Subagents(sessionID)                        // 运行中 + 最近结束的子代理（状态/活动/工具次数/token）
+app.Subagent(sessionID, agentID)                // 单个子代理的快照与对话记录
+app.SteerAgent(sessionID, agentID, "先只看 go 文件") // 向运行中的子代理插话
+app.InterruptAgent(sessionID, agentID, "方向不对")   // 只中断它，父运行继续
+```
+
+- 子代理的过程事件并入父运行的事件流（默认摘要，`WithSubagentStream(SubagentStreamFull)` 全量），每个事件带 `agent_path` 归属
+- 模型自己也能用 `agent_send` / `agent_status` 工具与子代理协作（`WithSubAgents` 自动注册；不想暴露给模型时用 `WithSessionToolFilter` 过滤）
+- 审批与提问带 `agent_path`，前端知道卡片属于哪个子代理
+- HTTP：`GET /agents?session_id=`、`GET /agents/{id}`；`/chat`、`/queue`、`/interrupt` 都接受 `agent_id`
+- 每会话同时运行的子代理默认上限 8（`WithMaxSubagents(n)` 可调）
+
+### 自定义事件
+
+工具、hook 里把领域信号发给前端，不用再塞进 `ask_user` 的 payload：
+
+```go
+// 运行之中：事件进入所在运行的事件流（子代理里发射同样到达最外层）
+ctx.Emit("anime.canvas_command", CanvasCommand{Action: "add_node"})
+
+// 运行之外：推给会话——有进行中的运行随流下发，否则进会话事件日志供断线续传
+app.EmitEvent(sessionID, "amc.device_changed", deviceState)
+```
+
+名称用 `<命名空间>.<事件名>`（`goagent.` 前缀保留给框架），值在发射点序列化并按注册的 schema 校验（`app.RegisterEvent`，`GET /protocol` 会列出）。自定义事件是展示层信号，不进会话记录。
+
 ### 动态 Pipeline：agent 现场建图
 
 `create_pipeline` 工具让模型在运行时把大任务拆成 DAG 并执行：节点的工具只能从已注册的工具里按名选，节点间用 `push_task`（框架自动注入）向 `injects` 声明的下游推送任务，节点失败即终止。
@@ -512,6 +626,46 @@ err := app.RunDynPipeline(ctx, &goagent.DynPipelineSpec{Nodes: []goagent.DynNode
 - 校验失败（有环、引用不存在的工具、超过 12 个节点、instruction 过长）返回模型可读的错误，模型修正后重试
 - `depends_on` 省略时自动等待所有向它推送任务的上游；`output` 向下游声明本节点的产出格式
 - 适合依赖关系由任务本身决定的多阶段任务（先提取→再润色→再审核）；需要现场判断的委派用子 agent
+
+### AG-UI 1.0 剖面：接入 AG-UI 生态前端
+
+`POST /agui` 用 [AG-UI](https://docs.ag-ui.com) 1.0 协议暴露同一个内核：请求体是 `RunAgentInput`，响应是 AG-UI 事件流（正文、推理、工具调用、子代理、用量全部映射；扩展只走 `CUSTOM` 事件与 `goagent.` 前缀的 metadata，不破坏封闭的事件对象）。与 v1 的 `/chat` 互不影响，可以同时接两个前端。
+
+人机协同是"两次运行"：
+
+```
+RUN_FINISHED{outcome:{type:"interrupt",
+    interrupts:[{id, reason:"tool_call", toolCallId, responseSchema, expiresAt}]}}
+    ↓ 客户端展示确认/表单
+POST /agui {resume:[{interruptId, status:"resolved",
+    payload:{approved:true, editedArgs:{...}, reason:"..."}}]}
+    → 新流从停车处接着输出，不重发 TOOL_CALL_START
+```
+
+- **改参审批**：`editedArgs` 替换工具参数执行（按入参 schema 校验，结果注明被修改过）；v1 的 `POST /approve` 同样支持（`input` 字段）
+- **前端工具**：请求 `tools` 里的工具由前端执行——模型调用时本次运行以 `success + pendingToolCallIds` 结束，客户端下次以 `role:"tool"` 消息带回结果
+- **历史归服务端**：客户端 `messages` 按 id 去重，运行结束时 `MESSAGES_SNAPSHOT` 对齐；流式消息 id 与会话记录的 UID 一致
+- 提问与审批共用停车机制；停车默认 30 分钟超时按拒绝处理（`WithAGUI(AGUIConfig{ParkTimeout})` 可调）
+- `GET /agui/capabilities` 声明能力；每个事件都经官方 schema 校验，官方 `@ag-ui/client`（HttpAgent）实连验证零告警
+
+### OpenTelemetry：gen_ai.* 语义约定的链路追踪
+
+`observer/oteltrace` 把运行导出为 OpenTelemetry span，名称与属性遵循 [gen_ai.* 语义约定](https://opentelemetry.io/docs/specs/semconv/gen-ai/)：
+
+```
+invoke_agent goagent                     一次运行（会话、轮数、累计成本）
+├── chat claude-sonnet-4-6               模型请求（用量、结束原因；失败带 error.type）
+└── execute_tool Bash                    工具调用（耗时；失败为 Error 状态）
+    └── chat / execute_tool …            子代理的请求与调用，挂在派发它的 Agent_* 调用下
+```
+
+```go
+tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(otlpExporter)) // 宿主自己的导出管线
+app := goagent.New(..., goagent.WithObservers(
+    oteltrace.New(tp, oteltrace.Options{AgentName: "engine", ProviderName: "anthropic"})))
+```
+
+span 随 ctx 传递（`observer.ContextObserver`）：工具内部用 otelhttp 包装的 HTTP 客户端、带追踪的数据库驱动会自动挂到对应 `execute_tool` 的下面。权限决定、压缩、自定义事件记为 span 事件；默认不记录提示词与回复内容（语义约定把内容采集定为可选项）。运行的 ctx 里已有 span（例如 HTTP 中间件建立的请求 span）时，`invoke_agent` 挂在它下面。
 
 ### HTTP 端点速览
 
@@ -549,6 +703,10 @@ err := app.RunDynPipeline(ctx, &goagent.DynPipelineSpec{Nodes: []goagent.DynNode
 | [Pipeline DAG 编排](docs/reference.md#pipeline-dag-编排) | 拓扑调度 + 并行 + Supervisor 审核 | 确定性多阶段任务 |
 | [沙箱](#沙箱sandbox工具执行层的隔离) | 工具执行层隔离（Tier 0-3，路径白名单 + worktree 副本） | 不受信 agent / benchmark 自迭代 |
 | [动态 Pipeline](#动态-pipelineagent-现场建图) | LLM 运行时自建 DAG | agent 自主拆解任务 |
+| [子代理治理](#子代理治理每个子代理可寻址) | 可寻址、插话、单独中断、事件并入父流 | 多子代理任务的观测与干预 |
+| [自定义事件](#自定义事件) | `ctx.Emit` / `EmitEvent` + schema 登记 | 给前端发领域信号 |
+| [AG-UI 1.0 剖面](#ag-ui-10-剖面接入-ag-ui-生态前端) | `/agui` 事件流、审批停车、前端工具 | 接入 AG-UI 生态前端（CopilotKit 等） |
+| [OpenTelemetry](#opentelemetrygen_ai-语义约定的链路追踪) | `gen_ai.*` span 树导出 | 生产环境链路追踪 |
 | [内存与记忆](docs/reference.md#内存与记忆) | CLAUDE.md / Auto Memory / SessionMemory | 长期上下文 |
 | [上下文压缩](docs/reference.md#上下文压缩) | 四层压缩 + Circuit Breaker | 长对话 |
 | [Provider 配置](docs/reference.md#provider-配置) | 多端点 + 备用切换 + 运行时换模型 | 模型管理 |
@@ -558,6 +716,8 @@ err := app.RunDynPipeline(ctx, &goagent.DynPipelineSpec{Nodes: []goagent.DynNode
 
 
 ## 完整选项参考
+
+按用途分组的逐项说明见上一节；这里是一份可直接复制的 `New()` 骨架：
 
 ```go
 goagent.New(
