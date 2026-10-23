@@ -1,5 +1,7 @@
 # Benchmark 子系统设计输入（调研合成）
 
+> [English](en/benchmark-research.md) | 简体中文
+
 > 2026-09-01 调研四路合成：SWE-bench 系 / τ-bench（pass^k）/ METR 方法论 /
 > promptfoo·LangSmith·Braintrust（工程形态）+ Go 生态空白确认。
 > 定位：**通用型 benchmark 库**——评任何用 GoAgent 搭的 agent，业务专属
