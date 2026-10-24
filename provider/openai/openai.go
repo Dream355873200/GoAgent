@@ -103,13 +103,31 @@ func New(cfg Config) *Provider {
 	}
 }
 
-const (
-	// responseHeaderTimeout 请求发出后等待响应头的上限（网关排队/挂死）。
-	responseHeaderTimeout = 2 * time.Minute
+// 响应头/流式空闲超时：慢思考模型（opus 等首字节可能数分钟）容易撞坏短超时，
+// 默认放宽到 5 分钟；可经环境变量覆盖（FLAI_RESPONSE_HEADER_TIMEOUT /
+// FLAI_STREAM_IDLE_TIMEOUT，支持 Go duration 如 "8m" 或纯秒数 "300"）。
+var (
+	// responseHeaderTimeout 请求发出后等待响应头的上限（网关排队/上游首字节慢）。
+	responseHeaderTimeout = envDuration("FLAI_RESPONSE_HEADER_TIMEOUT", 5*time.Minute)
 	// streamIdleTimeout 流式响应连续无数据的上限：上游连接不断但不再
 	// 吐字节时，run 会永远卡在读流上，只能靠用户中断。
-	streamIdleTimeout = 3 * time.Minute
+	streamIdleTimeout = envDuration("FLAI_STREAM_IDLE_TIMEOUT", 5*time.Minute)
 )
+
+// envDuration 读环境变量时长：非法/未设置回落默认值
+func envDuration(key string, def time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	if d, err := time.ParseDuration(v); err == nil && d > 0 {
+		return d
+	}
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return def
+}
 
 // ---------- OpenAI API 请求/响应类型 ----------
 
