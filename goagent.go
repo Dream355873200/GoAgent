@@ -1111,6 +1111,7 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	compCfg := compaction.Config{
 		AutoCompactThreshold: cfg.compaction.AutoCompactThreshold,
 		MaxResultSize:        cfg.compaction.MaxResultSize,
+		TailBudgetRatio:      cfg.compaction.TailBudgetRatio,
 		PostCompact:          cfg.postCompact,
 	}
 	if promptDir != "" {

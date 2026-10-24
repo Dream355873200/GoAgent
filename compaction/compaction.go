@@ -68,6 +68,17 @@ type Config struct {
 	// 文件原地打转）。默认值：0.5；设为负数可完全禁用剥离。
 	MicroStripThreshold float64
 
+	// TailBudgetRatio 是 L1/L3"保护尾部"的 token 预算比例（相对
+	// contextWindow）：折叠与截断只作用于预算之外的旧消息，预算内的
+	// 近期原文原样保留。0（默认）= 窗口的 10%；负数 = 关闭预算，按
+	// 固定条数保护（折叠保护最后 6 条、截断保护最后 4 条，v0.14 及
+	// 之前的行为）。保护条数在任何模式下都不低于对应下限。
+	//
+	// 为什么要按比例：固定条数是按 200k 窗口校准的——百万上下文的
+	// 模型上 6 条原文只占窗口的 ~1%，"长期不保护、一旦折叠只保 6 条"
+	// 的悬崖在长上下文下不可接受。按比例让保护随窗口自动缩放。
+	TailBudgetRatio float64
+
 	// Layers 指定启用的压缩层（可选）。
 	// nil 或空 = 启用全部层（向后兼容）。
 	// 例如：[]Layer{LayerBudget, LayerMicro, LayerAuto} 只启用 L0+L2+L4。
@@ -192,6 +203,9 @@ func NewManager(cfg Config) *Manager {
 	if cfg.MicroStripThreshold == 0 {
 		cfg.MicroStripThreshold = 0.5
 	}
+	if cfg.TailBudgetRatio == 0 {
+		cfg.TailBudgetRatio = 0.1
+	}
 
 	// 构建启用层映射。nil/空 = 全部启用（向后兼容）。
 	enabled := make(map[Layer]bool)
@@ -209,9 +223,9 @@ func NewManager(cfg Config) *Manager {
 		config:        cfg,
 		enabledLayers: enabled,
 		budget:        &budgetCompressor{maxSize: cfg.MaxResultSize},
-		snip:          &snipCompressor{},
+		snip:          &snipCompressor{tailBudgetRatio: cfg.TailBudgetRatio, protectTail: 4},
 		micro:         &microCompressor{},
-		collapse:      &collapseCompressor{},
+		collapse:      &collapseCompressor{tailBudgetRatio: cfg.TailBudgetRatio, protectTail: 6},
 		auto:          &autoCompressor{summarizer: cfg.Summarizer, threshold: cfg.AutoCompactThreshold},
 	}
 }
@@ -421,24 +435,24 @@ func headTail(s string, head, tail int, mark string) string {
 
 // --- Layer 1: Snip ---
 
-type snipCompressor struct{}
+type snipCompressor struct {
+	tailBudgetRatio float64
+	protectTail     int
+}
 
 func (s *snipCompressor) apply(messages []message.Message, contextWindow int) ([]message.Message, int) {
 	if len(messages) <= 4 {
 		return messages, 0 // 消息太少，不需要截断
 	}
 
-	// 仅在上下文压力达到阈值时才截断旧文本（与 L2 micro 的
-	// MicroStripThreshold 一致）；无压力时保留完整文本，
-	// 避免每轮截断导致模型丢失先前推理内容、原地打转。
+	// 尾部保护区（预算内 + 下限条数）之外的旧文本才截断；无压力时
+	// 保留完整文本，避免每轮截断导致模型丢失先前推理内容、原地打转。
 	if estimateMessagesTokens(messages) < int(float64(contextWindow)*0.5) {
 		return messages, 0
 	}
 
+	cutoff := protectStart(messages, contextWindow, s.tailBudgetRatio, s.protectTail)
 	freed := 0
-	// 保护最后 4 条消息（近期上下文）与第一条用户消息（原始任务）。
-	protectedTail := 4
-	cutoff := len(messages) - protectedTail
 
 	cow := cowText{}
 	result := make([]message.Message, len(messages))
@@ -549,10 +563,13 @@ func (mc *microCompressor) apply(messages []message.Message, contextWindow int, 
 
 // --- Layer 3: Collapse ---
 
-type collapseCompressor struct{}
+type collapseCompressor struct {
+	tailBudgetRatio float64
+	protectTail     int
+}
 
 func (c *collapseCompressor) apply(messages []message.Message, contextWindow int) ([]message.Message, int) {
-	if len(messages) <= 6 {
+	if len(messages) <= c.protectTail {
 		return messages, 0
 	}
 
@@ -563,9 +580,11 @@ func (c *collapseCompressor) apply(messages []message.Message, contextWindow int
 		return messages, 0
 	}
 
-	// 将旧的轮次折叠为摘要消息，保护最后 6 条消息。切点按 API 轮次对齐：
-	// 尾部不能以 tool_result 开头（否则与它的 tool_use 被拆开，请求 400）。
-	cutoff := roundStart(messages, len(messages)-6)
+	// 将保护区之外的旧轮次折叠为摘要消息。保护区 = token 预算内的近期
+	// 原文（TailBudgetRatio×contextWindow，随窗口自动缩放），且不少于
+	// protectTail 条。切点按 API 轮次对齐：尾部不能以 tool_result 开头
+	//（否则与它的 tool_use 被拆开，请求 400）。
+	cutoff := roundStart(messages, protectStart(messages, contextWindow, c.tailBudgetRatio, c.protectTail))
 	if cutoff <= 0 {
 		return messages, 0
 	}
@@ -626,6 +645,36 @@ func (c *collapseCompressor) apply(messages []message.Message, contextWindow int
 
 // roundStart 把切点 idx 向前移到 API 轮次边界：只要 messages[idx] 是工具
 // 结果消息，就继续前移，直到包含发起这些调用的 assistant 消息。
+// protectStart 返回保护区（不截断/不折叠的近期原文）的起始下标：尾部至少
+// 保留 protectTail 条消息；配置了正的 tailBudgetRatio 时，保护区按
+// "尾部累计估计 token 不超过 contextWindow×ratio" 向更早的方向扩展——
+// 窗口越大，原样保留的近期上下文越多。tailBudgetRatio 为负时回到固定
+// 条数模式（v0.14 及之前的行为）。
+func protectStart(messages []message.Message, contextWindow int, tailBudgetRatio float64, protectTail int) int {
+	n := len(messages)
+	if n <= protectTail {
+		return 0
+	}
+	floorStart := n - protectTail
+	if tailBudgetRatio < 0 || contextWindow <= 0 {
+		return floorStart
+	}
+	budget := int(float64(contextWindow) * tailBudgetRatio)
+	used, idx := 0, n-1
+	for idx >= 0 && used < budget {
+		used += message.EstimateTokens(messages[idx])
+		idx--
+	}
+	start := idx + 1
+	if start > floorStart {
+		start = floorStart // 预算过小时保底 protectTail 条
+	}
+	if start < 0 {
+		start = 0
+	}
+	return start
+}
+
 func roundStart(messages []message.Message, idx int) int {
 	if idx >= len(messages) {
 		idx = len(messages) - 1

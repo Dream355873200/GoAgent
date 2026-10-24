@@ -1286,11 +1286,14 @@ Before every request, the compaction layer processes the model view in order:
 
 L0–L3 only change the view. L4's summary is appended to the transcript as a **summary record** (`IsCompactSummary`, `CompactBoundary`; also a meta message) and persisted with the session; on reload, queue continuation, or `RunWithHistory`, the loop restores the view via `compaction.Project` without asking the model again. `EventDone.Messages` and `WithTranscriptSink` return the full transcript.
 
+The L1/L3 protected tail scales with the window: `TailBudgetRatio` (default 0.1) reserves ~10% of the context window as verbatim recent messages (minimum 6 for collapse / 4 for snip; a negative ratio restores the fixed-count behavior). Fixed message-count protection calibrated for 200k windows would protect only ~1% of a 1M-window context.
+
 ```go
 app := goagent.New(
     goagent.WithCompaction(goagent.CompactionConfig{
         AutoCompactThreshold: 0.8,    // trigger at 80% context usage
         MaxResultSize:        50_000, // max characters per result
+        TailBudgetRatio:      0.1,    // protected tail: keep ~10% of the window verbatim
     }),
 )
 ```

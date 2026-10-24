@@ -1358,6 +1358,7 @@ app := goagent.New(
     goagent.WithCompaction(goagent.CompactionConfig{
         AutoCompactThreshold: 0.8,  // 上下文达到 80% 时触发
         MaxResultSize:        50_000, // 单个结果最大字符数
+        TailBudgetRatio:      0.1,  // 保护尾部：原样保留约 10% 窗口的近期消息
     }),
 )
 ```

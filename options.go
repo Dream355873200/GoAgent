@@ -222,6 +222,12 @@ type CompactionConfig struct {
 	// Results larger than this are persisted to disk and replaced with a reference.
 	// Default: 50000
 	MaxResultSize int
+
+	// TailBudgetRatio is the token budget (as a fraction of the context window)
+	// protecting recent messages verbatim from compaction (snip/collapse).
+	// 0 = 10% of the window; negative = legacy fixed-count tail (collapse keeps
+	// the last 6 messages, snip the last 4). See compaction.Config.TailBudgetRatio.
+	TailBudgetRatio float64
 }
 
 // Approver is the interface for handling user permission prompts.
