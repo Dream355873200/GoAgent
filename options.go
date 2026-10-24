@@ -47,6 +47,7 @@ type appConfig struct {
 	toolKits            []ToolKit
 	sessionManager      *session.Manager
 	sessionWorkDirFn    func(sessionID string) string                       // 会话 → 工作目录解析（多会话多根目录）
+	sessionModelFn      func(sessionID string) string                       // 会话 → 模型覆盖（每会话记忆模型；空 = 全局默认）
 	sessionProjectCtxFn func(sessionID string) []string                     // 会话 → 追加项目上下文文件
 	sessionPromptDirFn  func(sessionID string) string                       // 会话 → 提示词目录（覆盖全局）
 	sessionToolFilterFn func(sessionID, toolName string) bool               // 会话 → 工具可见性谓词（true 保留）
@@ -310,6 +311,16 @@ func WithMaxConcurrency(n int) Option {
 func WithSessionWorkDir(fn func(sessionID string) string) Option {
 	return optionFunc(func(c *appConfig) {
 		c.sessionWorkDirFn = fn
+	})
+}
+
+// WithSessionModel 注册会话 → 模型解析函数：每次运行开始时按会话解析模型
+// 覆盖（非空则该会话的所有请求用此模型，provider 默认模型不受影响）。
+// 单进程多会话各自记住自己的模型，切换互不影响；宿主负责持久化（读取侧），
+// 写入侧走宿主自己的 API（如引擎的 POST /threads/{id}）。
+func WithSessionModel(fn func(sessionID string) string) Option {
+	return optionFunc(func(c *appConfig) {
+		c.sessionModelFn = fn
 	})
 }
 

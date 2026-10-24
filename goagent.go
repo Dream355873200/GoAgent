@@ -26,6 +26,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -750,6 +751,14 @@ func (a *App) Analytics() analytics.Summary {
 	return a.analyticsTracker.GetSummary()
 }
 
+// SessionModel 会话级模型覆盖（WithSessionModel 解析；未配置/无覆盖返回空）。
+func (a *App) SessionModel(sessionID string) string {
+	if a.config.sessionModelFn == nil || sessionID == "" {
+		return ""
+	}
+	return strings.TrimSpace(a.config.sessionModelFn(sessionID))
+}
+
 // ModelID 返回当前使用的模型 ID。
 func (a *App) ModelID() string {
 	a.mu.RLock()
@@ -1241,6 +1250,11 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 
 		SkipInputValidation: cfg.skipInputValidation,
 		InputUID:            inputUIDFrom(ctx),
+	}
+	// 会话级模型覆盖（WithSessionModel）：每会话记住自己的模型，运行全程
+	// 以 req.Model 下发（后备模型切换时仍由 loop 让位，见 state.usingFallback）。
+	if m := a.SessionModel(sessionID); m != "" {
+		loopCfg.Model = m
 	}
 
 	// PlanChecker 仅在 Plan 系统启用时注入。

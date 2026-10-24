@@ -790,8 +790,15 @@ func newHTTPMux(app *App) *http.ServeMux {
 	})
 
 	// GET /model — 当前模型 ID（Capabilities.ModelID，随运行时切换而变）。
+	// 带 session_id 时优先返回该会话的模型覆盖（WithSessionModel；无覆盖回退全局）。
 	mux.HandleFunc("GET /model", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if sid := r.URL.Query().Get("session_id"); sid != "" {
+			if m := app.SessionModel(sid); m != "" {
+				json.NewEncoder(w).Encode(map[string]any{"model": m, "session": true})
+				return
+			}
+		}
 		json.NewEncoder(w).Encode(map[string]any{"model": app.ModelID()})
 	})
 
