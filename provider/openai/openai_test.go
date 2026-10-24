@@ -3,6 +3,7 @@ package openai
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -78,12 +79,43 @@ func TestToolResultImageMarker(t *testing.T) {
 		{Role: message.RoleAssistant, Content: []message.ContentBlock{{Type: "tool_use", ToolUseID: "t1", ToolName: "look", Input: []byte(`{}`)}}},
 		{Role: message.RoleUser, Content: []message.ContentBlock{{Type: "tool_result", ForToolUseID: "t1", Text: "[IMAGE png " + b64 + "]\n第 3 帧：标题溢出"}}},
 	}
-	out := p.toOpenAIMessages("", "", msgs)
+	out := p.toOpenAIMessages("", true, "", msgs)
 	parts, isParts := out[len(out)-1].Content.([]chatContentPart)
 	if !isParts || len(parts) != 2 || parts[1].ImageURL == nil || !strings.HasSuffix(parts[1].ImageURL.URL, b64) {
 		t.Fatalf("tool 消息应为 text+image_url 多模态内容，实际 %#v", out[len(out)-1].Content)
 	}
 	if parts[0].Text != "第 3 帧：标题溢出" {
 		t.Fatalf("图片说明应随图送达，实际 %q", parts[0].Text)
+	}
+
+	// toolImgs=false（Bedrock 类通道）时同一标记必须降级为文本占位，不发 image_url 块
+	out = p.toOpenAIMessages("", false, "", msgs)
+	if parts, ok := out[len(out)-1].Content.([]chatContentPart); ok {
+		t.Fatalf("降级后 tool 消息不应是多模态内容，实际 %#v", parts)
+	}
+	if s, _ := out[len(out)-1].Content.(string); !strings.Contains(s, "图片已省略") || !strings.Contains(s, "第 3 帧") {
+		t.Fatalf("降级后应为文本占位+说明，实际 %q", out[len(out)-1].Content)
+	}
+}
+
+// 通道拒收工具内嵌图片的自适应识别：image_url 块只可能来自本框架的工具结果，
+// 任何 400 引用它都应触发该 端点|模型 降级记忆；编码类错误（不含 image_url）
+// 不应误触发。
+func TestMaybeDisableToolImages(t *testing.T) {
+	p := &Provider{imgFormats: map[string]string{}, toolImgOff: map[string]bool{}}
+
+	bedrock := "API 错误 (HTTP 400): {\"error\":{\"message\":\"InvokeModelWithResponseStream: ValidationException: tool_result.content.1: Input tag 'image_url' found using 'type' does not match any of the expected tags: 'image', 'text'\"}}"
+	if !p.maybeDisableToolImages("opus-5.5", fmt.Errorf("API 错误 (HTTP 400): %s", bedrock)) {
+		t.Fatalf("Bedrock 拒收 image_url 应触发降级")
+	}
+	if !p.toolImagesOff("opus-5.5") {
+		t.Fatalf("降级应按 端点|模型 记忆")
+	}
+	if p.toolImagesOff("glm-5") {
+		t.Fatalf("记忆应按模型隔离，不得影响其他模型")
+	}
+
+	if p.maybeDisableToolImages("glm-5", fmt.Errorf("API 错误 (HTTP 400): 图片输入格式/解析错误")) {
+		t.Fatalf("编码类错误（不含 image_url）不应触发降级")
 	}
 }

@@ -70,6 +70,10 @@ type Provider struct {
 	// imgFormats 记录每个 端点|模型 实测可用的图片编码（datauri/base64）。
 	// 首次图片 4xx 自动探测切换并记忆——对任意中转自愈，无需逐个适配。
 	imgFormats map[string]string
+	// toolImgOff 记录 端点|模型 是否拒绝工具结果内嵌图片（如 AWS Bedrock 通道
+	// 只认 image/text 等块，不认 OpenAI 的 image_url）。命中后工具图片降级为
+	// 文本占位重试并记忆，同通道后续请求直接降级。
+	toolImgOff map[string]bool
 }
 
 // New 创建一个新的 OpenAI Provider。
@@ -100,6 +104,7 @@ func New(cfg Config) *Provider {
 		config:     cfg,
 		client:     client,
 		imgFormats: map[string]string{},
+		toolImgOff: map[string]bool{},
 	}
 }
 
@@ -334,7 +339,9 @@ func (p *Provider) doChat(ctx context.Context, jsonBody []byte) (*http.Response,
 
 // sendChat 发送对话请求；若因图片编码被 4xx 拒绝（各家中转对 data URI /
 // 裸 base64 支持不一），自动切换编码重试一次并按 端点|模型 记忆——一次
-// 探测，之后所有请求直接用对的格式，无需逐家中转适配。
+// 探测，之后所有请求直接用对的格式，无需逐家中转适配。若因通道不支持
+// 工具结果内嵌图片被拒（Bedrock 校验 image_url 块），降级为文本占位重试
+// 一次并记忆（见 maybeDisableToolImages）。
 func (p *Provider) sendChat(ctx context.Context, req *provider.Request, stream bool) (*http.Response, error) {
 	body := p.buildChatRequest(req, stream)
 	jsonBody, err := p.marshalChat(body)
@@ -342,10 +349,17 @@ func (p *Provider) sendChat(ctx context.Context, req *provider.Request, stream b
 		return nil, err
 	}
 	resp, err := p.doChat(ctx, jsonBody)
-	if err != nil && requestHasImage(req.Messages) && p.maybeSwitchImageFormat(body.Model, body.imgFormat, err) {
-		body = p.buildChatRequest(req, stream)
-		if jsonBody, err = p.marshalChat(body); err == nil {
-			resp, err = p.doChat(ctx, jsonBody)
+	if err != nil && requestHasImage(req.Messages) {
+		if p.maybeSwitchImageFormat(body.Model, body.imgFormat, err) {
+			body = p.buildChatRequest(req, stream)
+			if jsonBody, err = p.marshalChat(body); err == nil {
+				resp, err = p.doChat(ctx, jsonBody)
+			}
+		} else if p.maybeDisableToolImages(body.Model, err) {
+			body = p.buildChatRequest(req, stream)
+			if jsonBody, err = p.marshalChat(body); err == nil {
+				resp, err = p.doChat(ctx, jsonBody)
+			}
 		}
 	}
 	return resp, err
@@ -455,7 +469,7 @@ func (p *Provider) buildChatRequest(req *provider.Request, stream bool) chatRequ
 	imgFormat := p.imageFormat(model)
 	cr := chatRequest{
 		Model:     model,
-		Messages:  p.toOpenAIMessages(imgFormat, req.SystemPrompt, req.Messages),
+		Messages:  p.toOpenAIMessages(imgFormat, !p.toolImagesOff(model), req.SystemPrompt, req.Messages),
 		Stream:    stream,
 		imgFormat: imgFormat,
 	}
@@ -837,6 +851,9 @@ func (p *Provider) maybeSwitchImageFormat(model, used string, err error) bool {
 		return false // 已识别的错误与图片编码无关，错误体里出现 image 字样也不应误切
 	}
 	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "image_url") {
+		return false // 结构性拒绝：通道不认 image_url 块，换编码没用（交给 maybeDisableToolImages）
+	}
 	hit := strings.Contains(msg, "base64") || strings.Contains(msg, "image") ||
 		strings.Contains(msg, "图片") || strings.Contains(msg, "格式") || strings.Contains(msg, "解析")
 	if !hit {
@@ -860,6 +877,37 @@ func (p *Provider) maybeSwitchImageFormat(model, used string, err error) bool {
 	return true
 }
 
+// maybeDisableToolImages 通道拒绝工具结果内嵌图片时降级重试。识别不变量：
+// image_url 块只可能是本框架随工具结果发出的——任何端点/中转的 400 引用它，
+// 都说明该通道不收这种块（Bedrock 校验、Anthropic 原生校验、中转透传校验，
+// 措辞各异但块名一致），按 端点|模型 记忆并降级为文本占位重试一次。
+// 与图片编码切换互斥：编码切换处理「格式不对」，这里处理「根本不收」。
+func (p *Provider) maybeDisableToolImages(model string, err error) bool {
+	if err == nil {
+		return false
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "image_url") {
+		return false
+	}
+	key := p.imgFormatKey(model)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.toolImgOff == nil { // 防御：任何构造路径漏掉初始化也不崩
+		p.toolImgOff = map[string]bool{}
+	}
+	p.toolImgOff[key] = true
+	return true
+}
+
+// toolImagesOff 该 端点|模型 是否已知不支持工具结果内嵌图片（命中后组装期
+// 直接降级，不再发 image_url 块去撞 400）。
+func (p *Provider) toolImagesOff(model string) bool {
+	key := p.imgFormatKey(model)
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.toolImgOff[key]
+}
+
 // requestHasImage 请求中是否存在待发送的内联图片。
 func requestHasImage(msgs []message.Message) bool {
 	for _, msg := range msgs {
@@ -873,8 +921,9 @@ func requestHasImage(msgs []message.Message) bool {
 }
 
 // toOpenAIMessages 将框架消息转换为 OpenAI API 消息格式；imgFormat 是图片编码
-// 记忆值（见 imageFormat）。
-func (p *Provider) toOpenAIMessages(imgFormat, systemPrompt string, msgs []message.Message) []chatMessage {
+// 记忆值（见 imageFormat），toolImgs=false 时工具结果内嵌图片降级为文本占位
+// （部分通道如 Bedrock 不认 tool_result 里的 image_url 块，见 maybeDisableToolImages）。
+func (p *Provider) toOpenAIMessages(imgFormat string, toolImgs bool, systemPrompt string, msgs []message.Message) []chatMessage {
 	var result []chatMessage
 
 	// 系统提示作为第一条消息。
@@ -950,6 +999,16 @@ func (p *Provider) toOpenAIMessages(imgFormat, systemPrompt string, msgs []messa
 						text := img.Body
 						if text == "" {
 							text = "[截图已附上]"
+						}
+						if !toolImgs {
+							// 该 端点|模型 实测不支持工具结果内嵌图片（Bedrock 通道
+							// 只认 image/text 等块）：降级为文本占位，指回原图来源
+							result = append(result, chatMessage{
+								Role:       "tool",
+								Content:    "[图片已省略：当前模型通道不支持工具结果内嵌图片；如需查看画面请重新调用产生该图的工具]\n" + text,
+								ToolCallID: block.ForToolUseID,
+							})
+							continue
 						}
 						result = append(result, chatMessage{
 							Role: "tool",
