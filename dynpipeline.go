@@ -78,6 +78,11 @@ const (
 	maxDynInstruction   = 8000
 )
 
+// PipelineNodeEvent 是动态 pipeline 节点生命周期的自定义事件名
+// （custom 帧；值 {node, status, text}）。与 subagent_progress 并行下发，
+// 宿主可不依赖 agent_id=node 约定直接消费类型化状态。
+const PipelineNodeEvent = "goagent.pipeline_node"
+
 // BuildDynPipeline 把 LLM 生成的 spec 解释为 PipelineConfig。
 // 工具按名从 app 注册表解析；每节点构造独立 agent def。
 // 校验失败返回可读错误（供 LLM 自我纠正后重试）。
@@ -437,7 +442,9 @@ func (a *App) CreatePipelineTool() NamedTool {
 
 				outputs := map[string][]string{}
 				// 节点生命周期与产出事件经 subagent_progress 透出到主对话流的
-				// create_pipeline 工具卡（前端实时渲染节点进度）。
+				// create_pipeline 工具卡（前端实时渲染节点进度）；同时发结构化
+				// 自定义事件 goagent.pipeline_node（{node,status,text}），宿主
+				// 可不依赖 agent_id=node 约定直接消费类型化状态。
 				onEvent := func(ev PipelineEvent) {
 					status := "running"
 					text := ev.Text
@@ -474,6 +481,13 @@ func (a *App) CreatePipelineTool() NamedTool {
 					}
 					if text == "" {
 						return
+					}
+					if b, err := json.Marshal(map[string]string{"node": ev.Node, "status": status, "text": text}); err == nil {
+						loop.EmitFromTool(ctx, loop.Event{
+							Type:        loop.EvtCustom,
+							CustomName:  PipelineNodeEvent,
+							CustomValue: b,
+						})
 					}
 					loop.EmitFromTool(ctx, loop.Event{
 						Type:          loop.EvtSubAgentProgress,
