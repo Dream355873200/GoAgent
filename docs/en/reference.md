@@ -1276,13 +1276,14 @@ app := goagent.New(
 
 ## Context Compaction
 
-Before every request, the compaction layer processes the model view in order:
+Before every request, the compaction layer processes the model view. **AI-assisted compaction is the primary path**:
 
 1. **Budget truncation (L0)**: tool results over `MaxResultSize` keep head and tail (results with inline images are never truncated; older images become placeholders)
-2. **Snip (L1)**: truncate long text in older messages
-3. **Micro-compact (L2)**: near the window limit, strip tool results already consumed by the model
-4. **Collapse (L3)**: fold middle turns into a summarized view
-5. **Auto summary (L4)**: still over `AutoCompactThreshold` — ask the model to summarize, keeping the most recent turn; the circuit breaker trips after 3 consecutive failures
+2. **Micro-compact (L2)**: near the window limit, strip tool results already consumed by the model
+3. **Auto summary (L4)**: over `AutoCompactThreshold`, **ask the model for a semantic summary** of older messages, keeping recent ones — this is the main compaction mechanism
+4. **Deterministic fallback (L1 snip / L3 collapse)**: runs only when L4 is disabled, the summary call failed, or the circuit breaker tripped
+
+In short: a successful summary ends this round's compaction (no deterministic folding); when summarization fails or is unavailable, compaction automatically degrades to the deterministic scheme (the request never fails).
 
 L0–L3 only change the view. L4's summary is appended to the transcript as a **summary record** (`IsCompactSummary`, `CompactBoundary`; also a meta message) and persisted with the session; on reload, queue continuation, or `RunWithHistory`, the loop restores the view via `compaction.Project` without asking the model again. `EventDone.Messages` and `WithTranscriptSink` return the full transcript.
 

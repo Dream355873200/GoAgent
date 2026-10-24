@@ -79,6 +79,8 @@ Location: `compaction/`
 | 3 | `LayerCollapse` | Collapse | `compaction.go` | Fold middle turns | no |
 | 4 | `LayerAuto` | Auto | `compaction.go` | Ask the model to summarize | yes |
 
+AI-assisted compaction is the primary path: L4 (model summary) runs first when usage reaches `AutoCompactThreshold`; L1/L3 deterministic folding is the fallback (only when L4 is disabled, the summary failed, or the circuit breaker tripped). L0/L2 always run.
+
 ### 3.2 Composable layers
 
 `Config.Layers` enables compaction layers selectively:

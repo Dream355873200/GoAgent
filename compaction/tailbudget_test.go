@@ -1,6 +1,7 @@
 package compaction
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -68,6 +69,39 @@ func TestDefaultManagerUsesTailBudget(t *testing.T) {
 	}
 	if !got[0].Compacted {
 		t.Fatal("首条应为折叠摘要")
+	}
+}
+
+
+// AI 优先（v0.14 后的新默认）：占用越过阈值时 L4 模型摘要先于确定性折叠执行，
+// 摘要成功则本轮不再走 L1/L3。
+func TestApplySummaryBeforeCollapse(t *testing.T) {
+	// 12 条 × 500 token ≈ 6000 token，窗口 1000、阈值 0.8 → 越过 800 触发 L4
+	msgs := make([]message.Message, 0, 12)
+	for i := 0; i < 12; i++ {
+		msgs = append(msgs, message.Message{Role: message.RoleUser,
+			Content: []message.ContentBlock{{Type: "text", Text: strings.Repeat("x", 2000)}}})
+	}
+	summarized := false
+	m := NewManager(Config{
+		Summarizer: func(ctx context.Context, text string) (string, error) {
+			summarized = true
+			return "模型写的摘要", nil
+		},
+	})
+	got, _ := m.Apply(context.Background(), msgs, 1000)
+
+	if !summarized {
+		t.Fatal("越过阈值应触发 L4 模型摘要")
+	}
+	if !got[0].Compacted || !strings.Contains(got[0].Content[0].Text, "模型写的摘要") {
+		t.Fatalf("视图首条应为模型摘要: %+v", got[0])
+	}
+	// L4 成功后不应再走抽取式折叠（折叠的签名是"之前的对话摘要"块）
+	for _, m := range got {
+		if strings.Contains(message.ExtractText(m), "之前的对话摘要") {
+			t.Fatal("L4 成功后不应再走确定性折叠")
+		}
 	}
 }
 

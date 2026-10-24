@@ -79,6 +79,8 @@ user:      [tool_result id="abc" content="工具执行被用户中断" is_error=
 | 3 | `LayerCollapse` | Collapse | `compaction.go` | 折叠中间轮次 | 否 |
 | 4 | `LayerAuto` | Auto | `compaction.go` | 调模型压缩为摘要 | 是 |
 
+AI 辅助压缩是主路径：L4（模型摘要）在占用达到 `AutoCompactThreshold` 时优先执行；L1/L3 确定性折叠降级为兜底（仅在未启用 L4、摘要失败或熔断触发时运行）。L0/L2 两层始终执行。
+
 ### 3.2 可组合层（Composable Layers）
 
 `Config.Layers` 字段允许选择性启用压缩层：

@@ -273,12 +273,6 @@ func (m *Manager) Apply(ctx context.Context, messages []message.Message, context
 		totalFreed += freed
 	}
 
-	// Layer 1: Snip — 截断旧消息内容。
-	if m.enabledLayers[LayerSnip] {
-		messages, freed = m.snip.apply(messages, contextWindow)
-		totalFreed += freed
-	}
-
 	// Layer 2: Micro — 截断超长工具结果；仅在上下文达到压力阈值时
 	// 剥离已消费的工具结果（对齐 Claude Code：接近窗口上限才剥离，
 	// 而非每轮剥离，否则模型会因失忆反复读取同一批文件原地打转）。
@@ -287,21 +281,15 @@ func (m *Manager) Apply(ctx context.Context, messages []message.Message, context
 		totalFreed += freed
 	}
 
-	// Layer 3: Collapse — 折叠中间轮次。
-	if m.enabledLayers[LayerCollapse] {
-		messages, freed = m.collapse.apply(messages, contextWindow)
-		totalFreed += freed
-	}
-
-	// Layer 4: Auto — 基于模型的摘要（仅在仍超过阈值时触发）。
-	// 检查熔断器：如果连续失败过多则跳过。
-	if !m.enabledLayers[LayerAuto] || m.CircuitBreakerTripped() {
-		return messages, totalFreed
-	}
-
-	currentTokens := estimateMessagesTokens(messages)
+	// Layer 4: Auto — AI 辅助压缩，主路径：估算占用达到阈值且熔断未触发
+	// 时，直接调模型做语义摘要（上下文质量优于确定性截断/折叠）。
 	threshold := int(float64(contextWindow) * m.config.AutoCompactThreshold)
-	if currentTokens > threshold {
+	summaryOK := false
+	if !m.enabledLayers[LayerAuto] || m.CircuitBreakerTripped() {
+		// 未启用 L4 或熔断已触发：直接走确定性兜底。
+	} else if currentTokens := estimateMessagesTokens(messages); currentTokens <= threshold {
+		summaryOK = true // 未达压缩阈值：本轮无需任何压缩
+	} else {
 		compacted, err := m.auto.apply(ctx, messages, contextWindow)
 		if err == nil {
 			after := estimateMessagesTokens(compacted)
@@ -311,10 +299,26 @@ func (m *Manager) Apply(ctx context.Context, messages []message.Message, context
 			messages = compacted
 			// 摘要后仍超过阈值（例如保留的尾部本身就很大）视为失败：继续
 			// 每轮重新摘要只会烧钱，连续失败交给熔断器止损。
-			m.RecordAutocompactResult(after <= threshold, 0)
+			afterOK := after <= threshold
+			m.RecordAutocompactResult(afterOK, 0)
+			summaryOK = afterOK
 		} else {
 			m.RecordAutocompactResult(false, 0)
 		}
+	}
+	if summaryOK {
+		return messages, totalFreed
+	}
+
+	// Layer 1 + Layer 3: 确定性截断/折叠——降级为兜底：仅在未启用 L4、
+	// 摘要调用失败、或熔断已触发（模型路径当前不可用）时执行。
+	if m.enabledLayers[LayerSnip] {
+		messages, freed = m.snip.apply(messages, contextWindow)
+		totalFreed += freed
+	}
+	if m.enabledLayers[LayerCollapse] {
+		messages, freed = m.collapse.apply(messages, contextWindow)
+		totalFreed += freed
 	}
 
 	return messages, totalFreed
