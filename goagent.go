@@ -751,6 +751,14 @@ func (a *App) Analytics() analytics.Summary {
 	return a.analyticsTracker.GetSummary()
 }
 
+// SessionThinking 会话级思考档位覆盖（WithSessionThinking 解析；未配置/无覆盖返回空）。
+func (a *App) SessionThinking(sessionID string) string {
+	if a.config.sessionThinkingFn == nil || sessionID == "" {
+		return ""
+	}
+	return strings.TrimSpace(a.config.sessionThinkingFn(sessionID))
+}
+
 // SessionModel 会话级模型覆盖（WithSessionModel 解析；未配置/无覆盖返回空）。
 func (a *App) SessionModel(sessionID string) string {
 	if a.config.sessionModelFn == nil || sessionID == "" {
@@ -1255,6 +1263,10 @@ func (a *App) run(ctx context.Context, input string, sess *session.Session, out 
 	// 以 req.Model 下发（后备模型切换时仍由 loop 让位，见 state.usingFallback）。
 	if m := a.SessionModel(sessionID); m != "" {
 		loopCfg.Model = m
+	}
+	// 会话级思考档位覆盖（WithSessionThinking）：非空则该会话全程用此档位。
+	if e := a.SessionThinking(sessionID); e != "" {
+		loopCfg.ReasoningEffort = e
 	}
 
 	// PlanChecker 仅在 Plan 系统启用时注入。

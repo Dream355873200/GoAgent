@@ -74,6 +74,9 @@ type Provider struct {
 	// 只认 image/text 等块，不认 OpenAI 的 image_url）。命中后工具图片降级为
 	// 文本占位重试并记忆，同通道后续请求直接降级。
 	toolImgOff map[string]bool
+	// thinkingKnobOff 记录 端点|模型 是否拒绝思考档位参数（reasoning_effort /
+	// enable_thinking 校验错）。命中后停发全部思考参数。
+	thinkingKnobOff map[string]bool
 }
 
 // New 创建一个新的 OpenAI Provider。
@@ -105,6 +108,7 @@ func New(cfg Config) *Provider {
 		client:     client,
 		imgFormats: map[string]string{},
 		toolImgOff: map[string]bool{},
+		thinkingKnobOff: map[string]bool{},
 	}
 }
 
@@ -145,7 +149,8 @@ type chatRequest struct {
 	Stream          bool           `json:"stream"`
 	StreamOptions   *streamOptions `json:"stream_options,omitempty"` // 仅流式请求可带，非流式带上会被官方 API 拒绝
 	Temperature     *float64       `json:"temperature,omitempty"`
-	ReasoningEffort string         `json:"reasoning_effort,omitempty"` // 思考强度（o-series 约定；后端不支持时会校验报错）
+	ReasoningEffort string         `json:"reasoning_effort,omitempty"` // 思考强度（按模型家族翻译，见 thinking.go）
+	EnableThinking  *bool          `json:"enable_thinking,omitempty"`  // 开关型模型（GLM/Qwen）的思考开关
 
 	// imgFormat 是组装本请求图片时使用的编码记忆值，供图片 4xx 自适应判断。
 	imgFormat string
@@ -362,6 +367,13 @@ func (p *Provider) sendChat(ctx context.Context, req *provider.Request, stream b
 			}
 		}
 	}
+	if err != nil && req.ReasoningEffort != "" && p.maybeDisableThinkingKnob(body.Model, err) {
+		// 思考档位参数被端点拒绝：记忆并停发参数重试一次
+		body = p.buildChatRequest(req, stream)
+		if jsonBody, err = p.marshalChat(body); err == nil {
+			resp, err = p.doChat(ctx, jsonBody)
+		}
+	}
 	return resp, err
 }
 
@@ -480,12 +492,10 @@ func (p *Provider) buildChatRequest(req *provider.Request, stream bool) chatRequ
 		cr.MaxTokens = req.MaxTokens
 	}
 
-	// 思考强度：off 映射为 "none"（关闭思考的通用约定），其余档位原样透传。
-	switch req.ReasoningEffort {
-	case "off":
-		cr.ReasoningEffort = "none"
-	case "low", "medium", "high":
-		cr.ReasoningEffort = req.ReasoningEffort
+	// 思考强度：按模型家族翻译（ThinkingLevels 声明档位，resolveThinking
+	// 出参数）；端点曾拒绝档位参数的（thinkingKnobOff）直接停发。
+	if !p.thinkingKnobDisabled(model) {
+		cr.ReasoningEffort, cr.EnableThinking = resolveThinking(model, req.ReasoningEffort)
 	}
 
 	// 转换工具定义（仅在未禁用工具时）。

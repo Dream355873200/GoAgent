@@ -48,6 +48,7 @@ type appConfig struct {
 	sessionManager      *session.Manager
 	sessionWorkDirFn    func(sessionID string) string                       // 会话 → 工作目录解析（多会话多根目录）
 	sessionModelFn      func(sessionID string) string                       // 会话 → 模型覆盖（每会话记忆模型；空 = 全局默认）
+	sessionThinkingFn   func(sessionID string) string                       // 会话 → 思考档位覆盖（空 = 全局默认）
 	sessionProjectCtxFn func(sessionID string) []string                     // 会话 → 追加项目上下文文件
 	sessionPromptDirFn  func(sessionID string) string                       // 会话 → 提示词目录（覆盖全局）
 	sessionToolFilterFn func(sessionID, toolName string) bool               // 会话 → 工具可见性谓词（true 保留）
@@ -321,6 +322,15 @@ func WithSessionWorkDir(fn func(sessionID string) string) Option {
 func WithSessionModel(fn func(sessionID string) string) Option {
 	return optionFunc(func(c *appConfig) {
 		c.sessionModelFn = fn
+	})
+}
+
+// WithSessionThinking 注册会话 → 思考档位解析函数：每次运行按会话解析
+// 档位覆盖（非空则该会话用此档位）。宿主负责校验档位在当前模型的支持
+// 集内（openai.ThinkingLevels）与持久化；写入侧走宿主自己的 API。
+func WithSessionThinking(fn func(sessionID string) string) Option {
+	return optionFunc(func(c *appConfig) {
+		c.sessionThinkingFn = fn
 	})
 }
 

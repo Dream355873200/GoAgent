@@ -11,13 +11,15 @@ import (
 	"github.com/Dream355873200/GoAgent/provider"
 )
 
-// 思考强度档位 → 请求体 reasoning_effort 的映射约定：
-// off → "none"（关闭思考），low/medium/high 原样透传，空 = 不发字段。
+// 思考档位按模型家族翻译（thinking.go）：未知家族 off=省略字段（旧版映射
+// "none" 会被 o-series 拒收）；开关型走 enable_thinking；端点拒收过档位
+// 参数的（thinkingKnobOff）停发全部思考参数。
 func TestBuildChatRequestReasoningEffort(t *testing.T) {
 	p := New(Config{BaseURL: "http://x/v1", Model: "m"})
 
+	// 未知家族：默认五档，off 省略字段
 	cases := map[string]string{
-		"off":  "none",
+		"off":  "",
 		"low":  "low",
 		"high": "high",
 		"":     "",
@@ -29,20 +31,39 @@ func TestBuildChatRequestReasoningEffort(t *testing.T) {
 		}
 	}
 
-	// 序列化后字段名与 omitempty 行为
+	// 序列化后 off 不携带 reasoning_effort
 	b, _ := json.Marshal(p.buildChatRequest(&provider.Request{ReasoningEffort: "off"}, false))
 	var m map[string]any
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m["reasoning_effort"] != "none" {
-		t.Errorf("off 应序列化为 reasoning_effort=none，得到 %v", m["reasoning_effort"])
+	if _, ok := m["reasoning_effort"]; ok {
+		t.Errorf("off 应省略 reasoning_effort，得到 %v", m["reasoning_effort"])
 	}
-	b2, _ := json.Marshal(p.buildChatRequest(&provider.Request{}, false))
-	var m2 map[string]any
-	_ = json.Unmarshal(b2, &m2)
-	if _, ok := m2["reasoning_effort"]; ok {
-		t.Error("空档位不应携带 reasoning_effort 字段")
+
+	// 开关型（GLM/Qwen）：档位翻成 enable_thinking，不写 reasoning_effort
+	pc := New(Config{BaseURL: "http://x/v1", Model: "glm-5"})
+	cr := pc.buildChatRequest(&provider.Request{ReasoningEffort: "on"}, false)
+	if cr.EnableThinking == nil || !*cr.EnableThinking || cr.ReasoningEffort != "" {
+		t.Fatalf("glm-5 的 on 应为 enable_thinking=true 且无 effort，实际 %+v", cr)
+	}
+	cr = pc.buildChatRequest(&provider.Request{ReasoningEffort: "off"}, false)
+	if cr.EnableThinking == nil || *cr.EnableThinking {
+		t.Fatalf("glm-5 的 off 应为 enable_thinking=false，实际 %+v", cr)
+	}
+
+	// Claude 家族：max 档原样透传给兼容层
+	pa := New(Config{BaseURL: "http://x/v1", Model: "claude-opus-4"})
+	cr = pa.buildChatRequest(&provider.Request{ReasoningEffort: "max"}, false)
+	if cr.ReasoningEffort != "max" {
+		t.Fatalf("claude max 应透传 reasoning_effort=max，实际 %q", cr.ReasoningEffort)
+	}
+
+	// 端点拒收过档位参数：停发全部思考参数
+	p.markThinkingKnobRejected("m")
+	cr = p.buildChatRequest(&provider.Request{ReasoningEffort: "high"}, false)
+	if cr.ReasoningEffort != "" || cr.EnableThinking != nil {
+		t.Fatalf("knobOff 后不应携带思考参数，实际 %+v", cr)
 	}
 }
 

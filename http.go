@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/Dream355873200/GoAgent/internal/safename"
 	"github.com/Dream355873200/GoAgent/message"
+	"github.com/Dream355873200/GoAgent/provider/openai"
 	"github.com/Dream355873200/GoAgent/protocol"
 	"github.com/Dream355873200/GoAgent/session"
 	"github.com/Dream355873200/GoAgent/statedir"
@@ -763,13 +765,27 @@ func newHTTPMux(app *App) *http.ServeMux {
 		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "mode": permissionModeString(mode)})
 	})
 
-	// GET /thinking — 当前思考强度档位（off/low/medium/high；空 = 不干预）。
+	// GET /thinking — 当前思考档位；带 session_id 时优先返回会话覆盖。
+	// values 是当前生效模型（会话覆盖模型 ?? 全局模型）支持的档位集
+	//（ThinkingLevels，各模型家族不同），前端按它渲染档位选择。
 	mux.HandleFunc("GET /thinking", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"effort": app.CurrentThinkingEffort()})
+		effort := app.CurrentThinkingEffort()
+		model := app.ModelID()
+		if sid := r.URL.Query().Get("session_id"); sid != "" {
+			if e := app.SessionThinking(sid); e != "" {
+				effort = e
+			}
+			if m := app.SessionModel(sid); m != "" {
+				model = m
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"effort": effort, "values": openai.ThinkingLevels(model)})
 	})
 
 	// POST /thinking — 运行时切换思考强度档位（自下一次 run 起生效）。
+	// 档位合法性由模型家族翻译层决定（ThinkingLevels/resolveThinking），
+	// 端点不认的参数走 400 自适应停发，这里不再硬编码枚举。
 	mux.HandleFunc("POST /thinking", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Effort string `json:"effort"`
@@ -778,13 +794,12 @@ func newHTTPMux(app *App) *http.ServeMux {
 			http.Error(w, "无效的请求体", http.StatusBadRequest)
 			return
 		}
-		switch req.Effort {
-		case "off", "low", "medium", "high", "":
-			app.SetThinkingEffort(req.Effort)
-		default:
-			http.Error(w, "effort 必须是 off/low/medium/high 或空", http.StatusBadRequest)
+		req.Effort = strings.TrimSpace(req.Effort)
+		if len(req.Effort) > 16 {
+			http.Error(w, "effort 取值非法", http.StatusBadRequest)
 			return
 		}
+		app.SetThinkingEffort(req.Effort)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"status": "ok", "effort": req.Effort})
 	})
