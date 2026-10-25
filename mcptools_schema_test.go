@@ -2,6 +2,7 @@ package goagent
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -73,5 +74,32 @@ func TestSanitizeMCPSchemaPassThrough(t *testing.T) {
 	in := map[string]any{"type": "object"}
 	if v := sanitizeMCPSchema(in); v == nil || v["type"] != "object" {
 		t.Error("普通 map 应原样透传")
+	}
+}
+
+func TestSanitizeMCPSchemaCollapsesTupleItems(t *testing.T) {
+	m := sanitizeMCPSchema(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"location": map[string]any{
+				"type":     "array",
+				"items":    []any{map[string]any{"type": "number"}, map[string]any{"type": "number"}, map[string]any{"type": "number"}},
+				"minItems": 3, "maxItems": 3, "description": "New location.",
+			},
+		},
+	})
+	loc := m["properties"].(map[string]any)["location"].(map[string]any)
+	items, ok := loc["items"].(map[string]any)
+	if !ok {
+		t.Fatalf("元组 items 应折叠为单 schema，实际 %v", loc["items"])
+	}
+	if items["type"] != "number" {
+		t.Errorf("折叠后应取唯一元素脸，实际 %v", items)
+	}
+	if fmt.Sprint(loc["minItems"]) != "3" || fmt.Sprint(loc["maxItems"]) != "3" {
+		t.Errorf("定长约束 minItems/maxItems 应保留，实际 %v/%v", loc["minItems"], loc["maxItems"])
+	}
+	if loc["description"] != "New location." {
+		t.Error("description 应保留")
 	}
 }

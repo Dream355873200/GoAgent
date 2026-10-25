@@ -75,6 +75,30 @@ func derefSchemaNode(node, root map[string]any, depth int) {
 	if depth > 32 { // 防循环引用失控（正常 schema 不会到这个深度）
 		return
 	}
+	// 元组式 items（draft-07 定长数组："items":[s,s,s]）DeepSeek 等端点拒收——
+	// 折叠为单 schema：元素全相同取其一脸，不同取空 schema（任意值）；
+	// 定长语义已由 minItems/maxItems 保留
+	if items, ok := node["items"].([]any); ok {
+		sigs := map[string]bool{}
+		var first map[string]any
+		same := true
+		for _, it := range items {
+			m, _ := it.(map[string]any)
+			b, _ := json.Marshal(m)
+			sigs[string(b)] = true
+			if first == nil {
+				first = m
+			}
+			if len(sigs) > 1 {
+				same = false
+			}
+		}
+		if same && first != nil {
+			node["items"] = first
+		} else {
+			node["items"] = map[string]any{}
+		}
+	}
 	for k, v := range node {
 		switch val := v.(type) {
 		case map[string]any:
