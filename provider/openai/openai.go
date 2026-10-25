@@ -104,10 +104,10 @@ func New(cfg Config) *Provider {
 		client = &http.Client{Transport: transport}
 	}
 	return &Provider{
-		config:     cfg,
-		client:     client,
-		imgFormats: map[string]string{},
-		toolImgOff: map[string]bool{},
+		config:          cfg,
+		client:          client,
+		imgFormats:      map[string]string{},
+		toolImgOff:      map[string]bool{},
 		thinkingKnobOff: map[string]bool{},
 	}
 }
@@ -727,10 +727,7 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, out c
 			if state.name == "" {
 				continue
 			}
-			args := state.arguments.String()
-			if args == "" {
-				args = "{}"
-			}
+			args := sanitizeToolCallArgs(state.arguments.String())
 			calls = append(calls, message.ToolCall{ID: state.id, Name: state.name, Input: json.RawMessage(args)})
 		}
 
@@ -1114,4 +1111,22 @@ func (p *Provider) toOpenAIMessages(imgFormat string, toolImgs bool, systemPromp
 	// 收尾：仍有未应答的 tool_calls（历史末尾被压缩截断）→ 补占位
 	flushPendingToolResults()
 	return result
+}
+
+// sanitizeToolCallArgs 校验流式拼接出的 tool_use 参数：非法 JSON（模型输出
+// 截断/坏转义，实测出现过值后跟裸反斜杠的碎片）降级为可解析的占位参数——
+// 坏 JSON 入历史后会随每轮请求回传，端点 400 invalid_argument 且会话落盘
+// 失败。原文保留在占位内，工具执行报错后模型可自行纠正。
+func sanitizeToolCallArgs(args string) string {
+	if args == "" {
+		return "{}"
+	}
+	if json.Valid([]byte(args)) {
+		return args
+	}
+	fixed, _ := json.Marshal(map[string]any{
+		"_invalid_arguments": args,
+		"_hint":              "参数 JSON 非法（可能被截断或含坏转义）。请拆小参数后重新调用，或改用其他工具。",
+	})
+	return string(fixed)
 }
