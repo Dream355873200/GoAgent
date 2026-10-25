@@ -605,6 +605,9 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, out c
 	}
 	toolStates := make(map[int]*toolCallState)
 	var assistantText strings.Builder
+	// 思考伪标签分流：模型偶尔把手写思考（<think>/<thinking>/<thought>）
+	// 混进 content 通道，这里改道 thinking，避免污染正文与历史。
+	thinkFilter := &thinkStreamFilter{}
 	// finish 块与随后的纯 usage 块都可能携带用量（后者可能晚于 finish_reason
 	// 到达）：只保留最后一次（累计终值），流结束时上报一次。
 	var usage *chatUsage
@@ -663,19 +666,27 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, out c
 
 		choice := chunk.Choices[0]
 
-		// 处理文本增量。
+		// 处理文本增量。先过伪标签分流器：混进 content 的手写思考改道
+		// thinking 通道，其余照常累积与转发。
 		if choice.Delta.Content != nil && *choice.Delta.Content != "" {
-			text := *choice.Delta.Content
-			assistantText.WriteString(text)
-			out <- provider.StreamEvent{
-				Type: provider.EventTextDelta,
-				Text: text,
+			text, think := thinkFilter.Feed(*choice.Delta.Content)
+			if think != "" {
+				out <- provider.StreamEvent{
+					Type:     provider.EventThinkingDelta,
+					Thinking: think,
+				}
+			}
+			if text != "" {
+				assistantText.WriteString(text)
+				out <- provider.StreamEvent{
+					Type: provider.EventTextDelta,
+					Text: text,
+				}
 			}
 		}
 
 		// 处理推理增量（DeepSeek-R1/V4 等经 delta.reasoning_content 下发）。
-		// 只作展示流转发（loop 层会累积为 thinking block 并在下一轮以
-		// <thinking> 标签回填历史），不拼进 assistantText。
+		// 只作展示流转发（loop 层会累积为 thinking block），不拼进 assistantText。
 		if choice.Delta.ReasoningContent != nil && *choice.Delta.ReasoningContent != "" {
 			out <- provider.StreamEvent{
 				Type:     provider.EventThinkingDelta,
@@ -727,6 +738,23 @@ func (p *Provider) consumeStream(ctx context.Context, resp *http.Response, out c
 		if finishReason == "tool_calls" || finishReason == "stop" {
 			for i := range calls {
 				out <- provider.StreamEvent{Type: provider.EventToolUseStart, ToolCall: &calls[i]}
+			}
+		}
+
+		// 吐出分流器悬挂缓冲（跨 chunk 截断的标签残余），再组装完整消息。
+		if tailText, tailThink := thinkFilter.Flush(); tailText != "" || tailThink != "" {
+			if tailThink != "" {
+				out <- provider.StreamEvent{
+					Type:     provider.EventThinkingDelta,
+					Thinking: tailThink,
+				}
+			}
+			if tailText != "" {
+				assistantText.WriteString(tailText)
+				out <- provider.StreamEvent{
+					Type: provider.EventTextDelta,
+					Text: tailText,
+				}
 			}
 		}
 
@@ -1049,15 +1077,12 @@ func (p *Provider) toOpenAIMessages(imgFormat string, toolImgs bool, systemPromp
 			Role: string(msg.Role),
 		}
 
-		// 提取 thinking 内容，拼到 text 前面。
-		// OpenAI 兼容 API 不支持 thinking block，用 XML 标记包裹保留在历史中。
-		thinking := message.ExtractThinking(msg)
-		text := message.ExtractText(msg)
-		if thinking != "" && text != "" {
-			openaiMsg.Content = "<thinking>\n" + thinking + "\n</thinking>\n\n" + text
-		} else if thinking != "" {
-			openaiMsg.Content = "<thinking>\n" + thinking + "\n</thinking>"
-		} else if text != "" {
+		// 思考不回传历史：OpenAI 兼容 API 无思考块，此前用 <thinking> 标签
+		// 包裹回填，实测会教模型模仿该格式把手写思考混进 content（泄漏进
+		// 正文），且智谱/DeepSeek 官方均建议 reasoning 不进下一轮上下文。
+		// 正文里的伪标签块（历史会话已落盘的泄漏残留）就地清洗。
+		text := stripThinkTags(message.ExtractText(msg))
+		if text != "" {
 			openaiMsg.Content = text
 		}
 
