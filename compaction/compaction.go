@@ -137,7 +137,15 @@ func (m *Manager) SetProvider(p provider.Provider) {
 }
 
 // injectPostCompactReminders 调用全部重注入源，把提醒追加为 user 消息。
+// 内置一条继续重定向：压缩把执行证据折叠成摘要后，模型最容易在边界处
+// 误判「任务已完成」而提前收轮（stop=end_turn），每轮压缩后显式纠正一次。
 func (m *Manager) injectPostCompactReminders(ctx context.Context, msgs []message.Message) []message.Message {
+	msgs = appendReminderMessages(msgs, []string{
+		"以上对话已被压缩成摘要，部分执行细节可能不在上下文里。" +
+			"请继续完成摘要中「未完成事项 / 下一步」列出的工作；" +
+			"不要因为上下文被压缩而重新开始、缩水交付或宣告完成。" +
+			"若不确定当前进度，先用工具核实（读文件 / 查状态 / 看画面）再继续。",
+	})
 	for _, src := range m.config.PostCompact {
 		if src == nil {
 			continue
@@ -686,6 +694,13 @@ func roundStart(messages []message.Message, idx int) int {
 	for idx > 0 && message.IsToolResultMessage(messages[idx]) {
 		idx--
 	}
+	// 切点落在带工具调用的助手消息上时，把触发它的用户指令一起带上：
+	// 尾部从用户输入开始，模型能看到「这轮要干什么」而不只是工具残段。
+	// 前一条若是上一轮的 tool_result（本轮没有用户开场）则不跨——跨过去
+	// 会把上一轮的孤儿 tool_result 留在尾部，配对即非法。
+	if idx > 0 && message.HasToolUse(messages[idx]) && !message.IsToolResultMessage(messages[idx-1]) {
+		idx--
+	}
 	return idx
 }
 
@@ -715,17 +730,10 @@ func (a *autoCompressor) apply(ctx context.Context, messages []message.Message, 
 		return messages, fmt.Errorf("自动压缩缺少 summarizer")
 	}
 
-	// 构建请求模型摘要的提示。
-	// 图片标记剥离：内联 base64（150KB+/张）会撑爆摘要输入、截断尾部还会
-	// 产出损坏数据。
-	var conv strings.Builder
-	for _, msg := range messages {
-		text := stripImageMarkers(message.ExtractText(msg))
-		if text != "" {
-			conv.WriteString(fmt.Sprintf("[%s]: %s\n", msg.Role, text))
-		}
-	}
-	conversationText := conv.String()
+	// 构建请求模型摘要的提示。buildConversationText 含工具调用与结果
+	// （截断防爆炸）——执行证据链是摘要质量的生命线；图片标记剥离：
+	// 内联 base64（150KB+/张）会撑爆摘要输入、截断尾部还会产出损坏数据。
+	conversationText := buildConversationText(messages)
 
 	// 对话本身对摘要调用来说太长时，保留开头（原始任务）与结尾（最近进展），
 	// 截断中间。
@@ -734,8 +742,14 @@ func (a *autoCompressor) apply(ctx context.Context, messages []message.Message, 
 		conversationText = headTail(conversationText, maxChars/5, maxChars-maxChars/5, "\n[... 中间的对话已省略 ...]\n")
 	}
 
-	prompt := "Summarize the following conversation. Preserve the user's original task and requirements, " +
-		"key decisions, file paths, code changes, open problems and next steps. Be concise.\n\n" +
+	// 提示词要求显式的未完成清单：摘要的读者是一个只拿得到摘要的模型，
+	// 「做到哪了/还差什么」是它恢复工作最需要的信息；不写明就会把过程性
+	// 叙述误读成已完成，压缩后输出错误内容或提前收轮。
+	prompt := "Summarize the following conversation for an AI agent that will continue the work with ONLY this summary as prior context. " +
+		"Preserve: the user's original task and requirements, key decisions, file paths, code changes, " +
+		"what was executed via tools and how it turned out, open problems, " +
+		"and an explicit list of UNFINISHED work / next steps at the end. " +
+		"Do not present in-progress work as completed. Be concise.\n\n" +
 		conversationText
 
 	summaryText, err := a.summarizer(ctx, prompt)

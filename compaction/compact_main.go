@@ -194,16 +194,16 @@ func buildCompactedMessages(summary string, recentMessages []message.Message) []
 		IsCompactSummary: true,
 	}
 
-	// 保留最近的消息（通常 2 条）
-	recentCount := 2
-	if len(recentMessages) < recentCount {
-		recentCount = len(recentMessages)
+	// 保留尾部：切点按 API 轮次对齐（roundStart 遇 tool_result 会回退到
+	// 轮次起点），避免把 tool_use/tool_result 配对从中间切掉——孤儿结果
+	// 会让压缩后的首个请求 400 或让模型困惑。
+	start := roundStart(recentMessages, len(recentMessages)-2)
+	if start < 0 {
+		start = 0
 	}
 
 	result := []message.Message{summaryMsg}
-	if recentCount > 0 {
-		result = append(result, recentMessages[len(recentMessages)-recentCount:]...)
-	}
+	result = append(result, recentMessages[start:]...)
 
 	return result
 }

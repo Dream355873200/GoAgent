@@ -79,16 +79,68 @@ func CompactSummary(ctx context.Context, messages []message.Message, cfg Summary
 	return formatted, nil
 }
 
-// buildConversationText 将消息转换为对话文本（图片标记已剥离）。
+// buildConversationText 将消息转换为摘要输入文本。
+// text 块全量保留；tool_use 序列化为一行调用摘要（工具名+参数要点），
+// tool_result 取正文并截断——执行证据链（改了哪些文件/跑了什么命令/
+// 结果如何）是摘要质量的生命线：压缩后模型全靠它恢复「做到哪了」，
+// 缺了它摘要会误报进度，模型随之输出错误内容或提前收轮。
+// 图片标记剥离（base64 会撑爆摘要输入）。
 func buildConversationText(messages []message.Message) string {
 	var parts []string
 	for _, msg := range messages {
-		text := stripImageMarkers(message.ExtractText(msg))
-		if text != "" {
-			parts = append(parts, fmt.Sprintf("[%s]: %s\n", msg.Role, text))
+		if s := summaryLineFor(msg); s != "" {
+			parts = append(parts, fmt.Sprintf("[%s]: %s\n", msg.Role, s))
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+const (
+	// 摘要输入里单块的截断上限与尾部保留量：足够还原事实，又不让单个
+	// 超长结果淹没摘要模型。
+	summaryBlockMax  = 1200
+	summaryBlockTail = 300
+	summaryClipMark  = "\n[...过长已截断...]\n"
+)
+
+func clipForSummary(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= summaryBlockMax {
+		return s
+	}
+	return headTail(s, summaryBlockMax-summaryBlockTail, summaryBlockTail, summaryClipMark)
+}
+
+// summaryLineFor 把一条消息序列化为摘要输入行（含工具块）。
+func summaryLineFor(msg message.Message) string {
+	var b strings.Builder
+	for _, blk := range msg.Content {
+		switch blk.Type {
+		case "text":
+			if t := strings.TrimSpace(stripImageMarkers(blk.Text)); t != "" {
+				b.WriteString(t)
+				b.WriteString("\n")
+			}
+		case "tool_use":
+			input := clipForSummary(string(blk.Input))
+			if input == "" || input == "null" {
+				input = "{}"
+			}
+			fmt.Fprintf(&b, "调用工具 %s(%s)\n", blk.ToolName, input)
+		case "tool_result":
+			t := clipForSummary(stripImageMarkers(blk.Text))
+			if t == "" {
+				t = "（空结果）"
+			}
+			if blk.IsError {
+				t = "[错误] " + t
+			}
+			b.WriteString("工具结果: ")
+			b.WriteString(t)
+			b.WriteString("\n")
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // CompactSummaryStream 流式调用 LLM 生成摘要。

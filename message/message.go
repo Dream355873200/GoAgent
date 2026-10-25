@@ -102,6 +102,16 @@ func IsToolResultMessage(m Message) bool {
 	return true
 }
 
+// HasToolUse 报告消息是否发出过工具调用（含 tool_use 块）。
+func HasToolUse(m Message) bool {
+	for _, b := range m.Content {
+		if b.Type == "tool_use" {
+			return true
+		}
+	}
+	return false
+}
+
 // ToolCall 从 tool_use 内容块中提取，供执行器使用。
 type ToolCall struct {
 	ID    string          `json:"id"`
