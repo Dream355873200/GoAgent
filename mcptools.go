@@ -31,12 +31,104 @@ func MCPToolDef(t mcp.FrameworkTool) ToolDef {
 	exec := t.Execute
 	return ToolDef{
 		Description: t.Description,
-		Schema:      t.InputSchema,
+		Schema:      sanitizeMCPSchema(t.InputSchema),
 		Permission:  Normal,
 		Execute: func(ctx Context, in json.RawMessage) (string, error) {
 			return exec(mcp.WithElicitScope(mcp.WithProgressReporter(ctx, ctx.Progress), ctx.SessionID), in)
 		},
 	}
+}
+
+// sanitizeMCPSchema 把 MCP 服务器声明的入参 schema 归一化为 map 形式，
+// 并做端点兼容清洗：解内联 $ref（"#/properties/..." 类本地引用，展开为目标
+// 子树并保留兄弟键如 description）、移除 $schema 关键字——GLM 等兼容端点
+// 不解引用式 schema（$ref 带同级键直接 400 invalid_argument）。
+// 组合关键字（anyOf 等）保留；解不开的引用降级为空 schema（任意值）。
+// 返回 nil 表示无法归一化（交由上层按无显式 schema 处理）。
+func sanitizeMCPSchema(v any) map[string]any {
+	var m map[string]any
+	switch s := v.(type) {
+	case nil:
+		return nil
+	case map[string]any:
+		m = s
+	case json.RawMessage:
+		if json.Unmarshal(s, &m) != nil {
+			return nil
+		}
+	case []byte:
+		if json.Unmarshal(s, &m) != nil {
+			return nil
+		}
+	default:
+		b, err := json.Marshal(v)
+		if err != nil || json.Unmarshal(b, &m) != nil {
+			return nil
+		}
+	}
+	derefSchemaNode(m, m, 0)
+	delete(m, "$schema")
+	return m
+}
+
+func derefSchemaNode(node, root map[string]any, depth int) {
+	if depth > 32 { // 防循环引用失控（正常 schema 不会到这个深度）
+		return
+	}
+	for k, v := range node {
+		switch val := v.(type) {
+		case map[string]any:
+			if ref, ok := val["$ref"].(string); ok && strings.HasPrefix(ref, "#/") {
+				if target := resolveSchemaRef(root, ref); target != nil {
+					cp := deepCopyMap(target)
+					for kk, vv := range val { // 保留 $ref 的兄弟键（description 等）
+						if kk != "$ref" {
+							cp[kk] = vv
+						}
+					}
+					node[k] = cp
+					derefSchemaNode(cp, root, depth+1)
+					continue
+				}
+				delete(val, "$ref") // 解不开的引用：降级为空 schema（任意值）
+			}
+			derefSchemaNode(val, root, depth+1)
+		case []any:
+			for _, item := range val {
+				if m, ok := item.(map[string]any); ok {
+					derefSchemaNode(m, root, depth+1)
+				}
+			}
+		}
+	}
+}
+
+// resolveSchemaRef 解析 "#/a/b~1c" 形式的本地 JSON Pointer。
+func resolveSchemaRef(root map[string]any, ref string) map[string]any {
+	cur := any(root)
+	for _, seg := range strings.Split(strings.TrimPrefix(ref, "#/"), "/") {
+		seg = strings.ReplaceAll(strings.ReplaceAll(seg, "~1", "/"), "~0", "~")
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur, ok = m[seg]
+		if !ok {
+			return nil
+		}
+	}
+	m, ok := cur.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return m
+}
+
+func deepCopyMap(m map[string]any) map[string]any {
+	b, _ := json.Marshal(m)
+	var out map[string]any
+	_ = json.Unmarshal(b, &out)
+	return out
 }
 
 // mcpServerConfig 把 WithMCP 的配置映射为 mcp.ServerConfig。
