@@ -994,7 +994,33 @@ func (p *Provider) toOpenAIMessages(imgFormat string, toolImgs bool, systemPromp
 		pendingSet = map[string]bool{}
 	}
 
-	for _, msg := range msgs {
+	// 历史截图瘦身：视觉循环（如 blender 每步 vision_snapshot）会在历史里
+	// 留下几十张内联截图，每轮请求全量转成多模态发给端点——上下文按 1-2K
+	// tokens/张 暴涨、请求体MB 级。滑动窗口保留**最近 8 张**多模态（当前
+	// 反馈循环 + 多图对比需要），更早的替换为省略占位。
+	imgKeys := []string{}
+	for mi, msg := range msgs {
+		for _, b := range msg.Content {
+			if b.Type == "tool_result" {
+				if img, ok := message.SplitImageMarker(b.Text); ok && img.Valid {
+					imgKeys = append(imgKeys, fmt.Sprintf("%d:%s", mi, b.ForToolUseID))
+				}
+			}
+		}
+	}
+	const keepRecentImages = 8
+	keepImg := map[string]bool{}
+	if start := len(imgKeys) - keepRecentImages; start > 0 {
+		for _, k := range imgKeys[start:] {
+			keepImg[k] = true
+		}
+	} else {
+		for _, k := range imgKeys {
+			keepImg[k] = true
+		}
+	}
+
+	for mi, msg := range msgs {
 		// 检查是否包含 tool_result — 需要特殊处理。
 		hasToolResult := false
 		for _, block := range msg.Content {
@@ -1041,6 +1067,16 @@ func (p *Provider) toOpenAIMessages(imgFormat string, toolImgs bool, systemPromp
 							result = append(result, chatMessage{
 								Role:       "tool",
 								Content:    "[图片已省略：当前模型通道不支持工具结果内嵌图片；如需查看画面请重新调用产生该图的工具]\n" + text,
+								ToolCallID: block.ForToolUseID,
+							})
+							continue
+						}
+						// 历史瘦身：窗口外的旧截图替换为占位（全量多模态会让
+						// 上下文按 1-2K tokens/张 暴涨、请求体 MB 级）
+						if !keepImg[fmt.Sprintf("%d:%s", mi, block.ForToolUseID)] {
+							result = append(result, chatMessage{
+								Role:       "tool",
+								Content:    "[历史截图已省略：仅保留最新一张；如需查看请重新调用产生该图的工具]\n" + text,
 								ToolCallID: block.ForToolUseID,
 							})
 							continue
