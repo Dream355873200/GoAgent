@@ -159,6 +159,22 @@ func (b *streamBlock) contentBlock() (message.ContentBlock, bool) {
 	return message.ContentBlock{}, false
 }
 
+// emitFilteredText 把 text 增量过伪标签过滤器后按通道下发：
+// 正文部分累计进当前 text 块并发 text 事件，伪标签段改道 thinking。
+func emitFilteredText(f *message.ThinkStreamFilter, cur *streamBlock, s string, out chan<- provider.StreamEvent) {
+	text, think := f.Feed(s)
+	if cur != nil {
+		cur.text.WriteString(text)
+		cur.thinking.WriteString(think)
+	}
+	if text != "" {
+		out <- provider.StreamEvent{Type: provider.EventTextDelta, Text: text}
+	}
+	if think != "" {
+		out <- provider.StreamEvent{Type: provider.EventThinkingDelta, Thinking: think}
+	}
+}
+
 // consumeStream 消费 SDK 事件流并转为 provider.StreamEvent，结束时关闭 out。
 func consumeStream(stream *ssestream.Stream[anthropic.MessageStreamEventUnion], out chan<- provider.StreamEvent) {
 	defer close(out)
@@ -170,6 +186,10 @@ func consumeStream(stream *ssestream.Stream[anthropic.MessageStreamEventUnion], 
 		startUsage provider.Usage
 		deltaUsage provider.Usage
 		stopReason provider.StopReason
+		// 伪标签防线：Anthropic 的思考走独立 thinking 块，但模型仍可能在
+		// text 里手写 <think>/<thinking> 伪标签（用户诱导、中转注入）——
+		// 流式层把伪标签段改道 thinking 通道，不让泄漏进正文。
+		textFilter message.ThinkStreamFilter
 	)
 
 	for stream.Next() {
@@ -191,8 +211,7 @@ func consumeStream(stream *ssestream.Stream[anthropic.MessageStreamEventUnion], 
 			cur.signature.WriteString(cb.Signature)
 			// 官方 API 的起始块内容为空，兼容直接在起始块给出内容的实现。
 			if cb.Type == "text" && cb.Text != "" {
-				cur.text.WriteString(cb.Text)
-				out <- provider.StreamEvent{Type: provider.EventTextDelta, Text: cb.Text}
+				emitFilteredText(&textFilter, cur, cb.Text, out)
 			}
 			if cb.Type == "thinking" && cb.Thinking != "" {
 				cur.thinking.WriteString(cb.Thinking)
@@ -206,8 +225,7 @@ func consumeStream(stream *ssestream.Stream[anthropic.MessageStreamEventUnion], 
 			delta := event.Delta
 			switch delta.Type {
 			case "text_delta":
-				cur.text.WriteString(delta.Text)
-				out <- provider.StreamEvent{Type: provider.EventTextDelta, Text: delta.Text}
+				emitFilteredText(&textFilter, cur, delta.Text, out)
 			case "thinking_delta":
 				cur.thinking.WriteString(delta.Thinking)
 				out <- provider.StreamEvent{Type: provider.EventThinkingDelta, Thinking: delta.Thinking}
@@ -249,6 +267,18 @@ func consumeStream(stream *ssestream.Stream[anthropic.MessageStreamEventUnion], 
 	if err := stream.Err(); err != nil {
 		out <- provider.StreamEvent{Type: provider.EventError, Error: classifyError(err)}
 		return
+	}
+
+	// 流末吐出过滤器悬挂缓冲（跨 chunk 断裂的标签尾巴），按通道回填事件与块
+	if text, think := textFilter.Flush(); text != "" || think != "" {
+		if think != "" {
+			blocks = append(blocks, message.ContentBlock{Type: "thinking", Thinking: think})
+			out <- provider.StreamEvent{Type: provider.EventThinkingDelta, Thinking: think}
+		}
+		if text != "" {
+			blocks = append(blocks, message.ContentBlock{Type: "text", Text: text})
+			out <- provider.StreamEvent{Type: provider.EventTextDelta, Text: text}
+		}
 	}
 
 	// 两处用量都是累计值，message_delta 的 input 部分可能为 0：逐字段取大，
@@ -391,7 +421,11 @@ func convertMessages(msgs []message.Message) []anthropic.MessageParam {
 		for _, cb := range msg.Content {
 			switch cb.Type {
 			case "text":
-				blocks = append(blocks, anthropic.NewTextBlock(cb.Text))
+				// 伪标签兜底：历史消息里已落盘的泄漏残留（含用户把带泄漏的
+				// 回复贴回对话的再污染路径）不回放，与 openai 通道口径一致。
+				if text := message.StripThinkTags(cb.Text); text != "" {
+					blocks = append(blocks, anthropic.NewTextBlock(text))
+				}
 
 			case "tool_use":
 				// assistant 发出的 tool_use 块。
@@ -530,7 +564,7 @@ func convertResponseMessage(resp *anthropic.Message) message.Message {
 		case "text":
 			blocks = append(blocks, message.ContentBlock{
 				Type: "text",
-				Text: cb.Text,
+				Text: message.StripThinkTags(cb.Text),
 			})
 		case "tool_use":
 			inputData, _ := json.Marshal(cb.Input)
